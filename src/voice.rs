@@ -80,10 +80,36 @@ impl Voice {
     }
   }
 
-  /// silences the voice. its note and the pitch it glides from stay
-  pub(crate) fn reset(&mut self) {
-    self.engine.reset();
-    self.envelope = Envelope::default();
+  /// back to how `new` makes it, without allocating
+  pub(crate) fn reset(&mut self, input_pitch: f64) {
+    // every field is named so that one added later cannot be left out
+    let Self {
+      sample_rate: _,
+      control_step: _,
+      engine,
+      note,
+      tuning,
+      bend,
+      sounding,
+      started,
+      envelope,
+      pressure,
+      pressure_sent,
+      slide,
+      slide_sent,
+      pitch,
+      note_blend,
+    } = self;
+    engine.reset();
+    *note = None;
+    (*tuning, *bend) = (0.0, 0.0);
+    *sounding = false;
+    *started = 0;
+    *envelope = Envelope::default();
+    (*pressure, *pressure_sent) = (0.0, 0.0);
+    (*slide, *slide_sent) = (SLIDE_REST, SLIDE_REST);
+    *pitch = input_pitch;
+    *note_blend = 0.0;
   }
 
   /// takes up `note` with the bend, pressure and slide of its channel. they are where the

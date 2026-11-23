@@ -80,17 +80,31 @@ impl Shifter {
     }
   }
 
+  /// back to how `new` makes it but for the detector's range, which is the host's setting.
   /// does not allocate
   pub(crate) fn reset(&mut self) {
-    self.detector.reset();
-    self.input_pitch = lowest_pitch(&self.detector, self.sample_rate as f32);
-    self.smear.reset();
-    for line in &mut self.input {
+    // every field is named so that one added later cannot be left out
+    let Self {
+      sample_rate,
+      detector,
+      input_pitch,
+      smear,
+      input,
+      notes,
+      vibrato_phase,
+      detune,
+      stereo,
+    } = self;
+    detector.reset();
+    *input_pitch = lowest_pitch(detector, *sample_rate as f32);
+    smear.reset();
+    for line in input {
       line.clear();
     }
-    self.notes.reset();
-    self.detune.reset();
-    self.stereo.reset();
+    notes.reset(*input_pitch);
+    *vibrato_phase = 0.0;
+    detune.reset();
+    stereo.reset();
   }
 
   /// the effect alone, with no latency against the input
@@ -513,6 +527,47 @@ mod tests {
       2.0 * FORMANT_HZ,
       A3,
       "formant slid up",
+    );
+  }
+
+  /// after a reset the shifter gives what a new one gives, whatever it was doing before
+  #[test]
+  fn reset_is_a_fresh_start() {
+    let settings = Settings {
+      vibrato: Vibrato {
+        depth: 0.5,
+        step: 5.0 / f64::from(RATE),
+        phase: None,
+      },
+      play: Play {
+        glide: 0.6,
+        ..NEUTRAL.play
+      },
+      effects: Amounts {
+        detune: 0.3,
+        smear: 0.2,
+        stereo: 0.5,
+      },
+      ..NEUTRAL
+    };
+    let play = |shifter: &mut Shifter| {
+      // the first sample puts the shifter in the settings' mode, which a note needs
+      shifter.process([0.0; 2], &settings);
+      shifter.notes.on(key(57));
+      run(shifter, &vowel(), &settings)
+    };
+
+    let mut used = shifter_in(&settings);
+    used.notes.bend(0, 2.0);
+    used.notes.on(note(3, 81));
+    used.notes.channel_pressure(3, 0.7);
+    used.notes.channel_slide(3, 0.9);
+    run(&mut used, &vowel(), &settings);
+    used.reset();
+
+    assert!(
+      play(&mut used) == play(&mut Shifter::new(RATE)),
+      "a reset shifter differs from a new one"
     );
   }
 

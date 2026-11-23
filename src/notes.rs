@@ -157,12 +157,26 @@ impl Notes {
     notes
   }
 
+  /// back to how `new` makes it but for the mode and latch, which are the host's settings.
   /// does not allocate
-  pub(crate) fn reset(&mut self) {
-    for voice in &mut self.voices {
-      voice.reset();
+  pub(crate) fn reset(&mut self, input_pitch: f64) {
+    // every field is named so that one added later cannot be left out. `release_all` sees
+    // to the ones passed over here
+    let Self {
+      voices,
+      channels,
+      clock,
+      follower: _,
+      waiting: _,
+      down: _,
+      latch: _,
+      mode: _,
+    } = self;
+    for voice in voices {
+      voice.reset(input_pitch);
     }
-    self.channels = [Channel::REST; CHANNELS];
+    *channels = [Channel::REST; CHANNELS];
+    *clock = 0;
     self.release_all();
   }
 
