@@ -10,17 +10,59 @@ use crate::voice::{SLIDE_REST, Voice};
 const VOICES: usize = 16;
 /// notes that wait for a voice while more are held than there are voices
 const MAX_WAITING: usize = 16;
-/// keys tracked as down at once, for latch to know when the last one comes up
-const MAX_DOWN: usize = 64;
 /// channels a note can be on
 const CHANNELS: usize = 16;
+/// keys a channel has
+const KEYS: u8 = 128;
 
 /// a key on a channel. under MPE each sounding note has a channel to itself, so what is sent
 /// on the channel bends that note alone
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Note {
-  pub(crate) channel: u8,
-  pub(crate) key: u8,
+  /// under `CHANNELS`
+  channel: u8,
+  /// under `KEYS`
+  key: u8,
+}
+
+impl Note {
+  /// none for a channel or key there is no such note on
+  pub(crate) fn new(channel: u8, key: u8) -> Option<Self> {
+    (usize::from(channel) < CHANNELS && key < KEYS).then_some(Self { channel, key })
+  }
+
+  pub(crate) fn key(self) -> u8 {
+    self.key
+  }
+}
+
+/// the keys that are down, a bit for each key of each channel
+struct Down([u128; CHANNELS]);
+
+impl Down {
+  fn bit(note: Note) -> u128 {
+    1 << note.key
+  }
+
+  fn press(&mut self, note: Note) {
+    self.0[usize::from(note.channel)] |= Self::bit(note);
+  }
+
+  fn lift(&mut self, note: Note) {
+    self.0[usize::from(note.channel)] &= !Self::bit(note);
+  }
+
+  fn holds(&self, note: Note) -> bool {
+    self.0[usize::from(note.channel)] & Self::bit(note) != 0
+  }
+
+  fn is_empty(&self) -> bool {
+    self.0 == [0; CHANNELS]
+  }
+
+  fn clear(&mut self) {
+    self.0 = [0; CHANNELS];
+  }
 }
 
 /// how notes are played, which is also a parameter the host sets
@@ -84,18 +126,18 @@ pub(crate) struct Notes {
   waiting: Vec<Note>,
   latch: bool,
   /// the keys that are down, which under latch are not all the notes that sound
-  down: Vec<Note>,
+  down: Down,
   channels: [Channel; CHANNELS],
   mode: Mode,
   /// counts notes, to tell which voice has had its note longest
   clock: u64,
 }
 
-/// semitones a note on `channel` is bent by. a channel the host should not have sent bends
-/// nothing
-fn channel_bend(channels: &[Channel; CHANNELS], channel: u8) -> f64 {
-  let own = channels.get(usize::from(channel)).filter(|_| channel != 0);
-  channels[0].bend + own.map_or(0.0, |own| own.bend)
+/// semitones `note` is bent by, the first channel's bend and its own channel's if that is
+/// another
+fn note_bend(channels: &[Channel; CHANNELS], note: Note) -> f64 {
+  let own = &channels[usize::from(note.channel)];
+  channels[0].bend + if note.channel == 0 { 0.0 } else { own.bend }
 }
 
 impl Notes {
@@ -106,7 +148,7 @@ impl Notes {
       follower: None,
       waiting: Vec::with_capacity(MAX_WAITING),
       latch: false,
-      down: Vec::with_capacity(MAX_DOWN),
+      down: Down([0; CHANNELS]),
       channels: [Channel::REST; CHANNELS],
       mode: Mode::Off,
       clock: 0,
@@ -157,11 +199,11 @@ impl Notes {
       // what only the latch was holding goes, a waiting note before the voices so that
       // none of them takes it up
       let down = &self.down;
-      self.waiting.retain(|note| down.contains(note));
+      self.waiting.retain(|&note| down.holds(note));
       for index in 0..VOICES {
         if let Some(note) = self.voices[index]
           .note
-          .filter(|note| !self.down.contains(note))
+          .filter(|&note| !self.down.holds(note))
         {
           self.release(note);
         }
@@ -184,9 +226,7 @@ impl Notes {
         voice.note = None;
       }
     }
-    if !self.down.contains(&note) && self.down.len() < MAX_DOWN {
-      self.down.push(note);
-    }
+    self.down.press(note);
     self.clock += 1;
     let voices = &mut self.voices[..count];
     // the follower first, then a voice with nothing to play, then the one longest on its note
@@ -205,18 +245,14 @@ impl Notes {
       }
       self.waiting.push(displaced);
     }
-    // a channel past the sixteenth is not one anything was sent on
-    let sent = self
-      .channels
-      .get(usize::from(note.channel))
-      .unwrap_or(&Channel::REST);
-    let bend = channel_bend(&self.channels, note.channel);
+    let sent = &self.channels[usize::from(note.channel)];
+    let bend = note_bend(&self.channels, note);
     voice.start(note, bend, sent.pressure, sent.slide);
     voice.started = self.clock;
   }
 
   pub(crate) fn off(&mut self, note: Note) {
-    self.down.retain(|&down| down != note);
+    self.down.lift(note);
     if !self.latch {
       self.release(note);
     }
@@ -322,12 +358,39 @@ impl Notes {
     for voice in &mut self.voices {
       let bend = voice
         .note
-        .map_or(0.0, |note| channel_bend(&self.channels, note.channel));
+        .map_or(0.0, |note| note_bend(&self.channels, note));
       let voiced = voice.tick(input_pitch, bend, vibrato, settings, input);
       for (out, sample) in out.iter_mut().zip(voiced) {
         *out += sample;
       }
     }
     out
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// more keys can be down than there are voices or places to wait, and latch starts over
+  /// only when the last of them is up
+  #[test]
+  fn latch_counts_every_key_that_is_down() {
+    let key = |key| Note::new(0, key).expect("a key under 128");
+    let mut notes = Notes::new(48_000.0, 0.01);
+    notes.set_mode(Mode::Poly);
+    notes.set_latch(true);
+    for down in 0..=70 {
+      notes.on(key(down));
+    }
+    for up in 0..70 {
+      notes.off(key(up));
+    }
+    // key 70 is still down, so this one joins the notes that sound
+    notes.on(key(100));
+    assert!(
+      notes.voice_of(key(69)).is_some(),
+      "the latched notes were dropped"
+    );
   }
 }

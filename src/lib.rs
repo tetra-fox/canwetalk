@@ -132,10 +132,7 @@ impl Plugin for CanWeTalk {
 /// a host that names no channel for a note is not sending MPE, so the note goes on the first
 /// channel with every other. one it names no key for is not a note to play
 fn note(channel: Channel, key: Key) -> Option<Note> {
-  Some(Note {
-    channel: channel.number().unwrap_or(0),
-    key: key.number()?,
-  })
+  Note::new(channel.number().unwrap_or(0), key.number()?)
 }
 
 impl CanWeTalk {

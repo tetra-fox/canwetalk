@@ -95,7 +95,7 @@ impl Voice {
     (self.slide, self.slide_sent) = (slide, slide);
     if !self.sounding && self.envelope.is_silent() {
       // a voice coming from silence has no pitch to glide from
-      self.pitch = note_pitch(f64::from(note.key) + bend, self.sample_rate);
+      self.pitch = note_pitch(f64::from(note.key()) + bend, self.sample_rate);
       self.engine.reset();
     }
     self.note = Some(note);
@@ -121,7 +121,7 @@ impl Voice {
         self.bend += self.control_step * (bend + self.tuning - self.bend);
         self.pressure += self.control_step * (self.pressure_sent - self.pressure);
         self.slide += self.control_step * (self.slide_sent - self.slide);
-        note_pitch(f64::from(note.key) + self.bend, self.sample_rate)
+        note_pitch(f64::from(note.key()) + self.bend, self.sample_rate)
       }
       None => input_pitch,
     };

@@ -474,10 +474,7 @@ mod tests {
     };
     let loudest = |signal: &[f32]| signal.iter().fold(0f32, |peak, x| peak.max(x.abs()));
     let mut shifter = shifter_in(&settings);
-    shifter.notes.on(Note {
-      channel: 3,
-      key: 57,
-    });
+    shifter.notes.on(note(3, 57));
     shifter.notes.channel_pressure(5, 1.0);
     assert_eq!(loudest(&run(&mut shifter, &vowel(), &settings)), 0.0);
 
@@ -499,10 +496,7 @@ mod tests {
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&settings);
-    let note = Note {
-      channel: 3,
-      key: 57,
-    };
+    let note = note(3, 57);
     shifter.notes.on(note);
     let output = run(&mut shifter, &vowel(), &settings);
     assert_near(
@@ -522,18 +516,19 @@ mod tests {
     );
   }
 
+  fn note(channel: u8, key: u8) -> Note {
+    Note::new(channel, key).expect("a channel under 16 and a key under 128")
+  }
+
   fn key(key: u8) -> Note {
-    Note { channel: 0, key }
+    note(0, key)
   }
 
   /// a bend on a note's own channel moves that note, and no note on another channel
   #[test]
   fn a_channel_bends_its_own_note() {
     let mut shifter = shifter_in(&NEUTRAL);
-    let note = Note {
-      channel: 3,
-      key: 57,
-    };
+    let note = note(3, 57);
     shifter.notes.on(note);
     shifter.notes.bend(5, 7.0);
     let output = run(&mut shifter, &vowel(), &NEUTRAL);
