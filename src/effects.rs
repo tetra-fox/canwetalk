@@ -2,7 +2,7 @@
 
 use std::f64::consts::PI;
 
-use crate::ring::Ring;
+use crate::ring::{Ring, cubic};
 
 /// adds `step` to a phase kept in -1..1 and reports whether it wrapped
 fn advance(phase: &mut f64, step: f64) -> bool {
@@ -205,62 +205,81 @@ impl Detune {
   }
 }
 
-/// gains of the four all-pass sections each channel goes through
-const ALLPASS_GAINS: [f32; 4] = [0.692_387_8, 0.936_065_43, 0.988_229_5, 0.998_748_84];
-const STEREO_DELAY_SECONDS: f64 = 0.006;
-/// samples the sections take to ring down by 60 dB, which the gain nearest one sets
-const ALLPASS_RING: usize = 12_000;
+/// the all-pass delay of each side at full stereo. they differ so the sides' phases differ
+const STEREO_DELAY_SECONDS: [f64; 2] = [0.006, 0.006 * 1.37];
+/// the all-pass gain at half stereo and above
+const STEREO_FEEDBACK: f32 = 0.6;
+/// the most samples a delay moves by in a sample, which is how far the pitch bends meanwhile
+const STEREO_SLEW: f64 = 0.05;
 
-/// widens by adding a phase-shifted, delayed copy of each side to itself, with opposite signs
+/// widens by putting each side through an all-pass delay of its own length. each side keeps
+/// the level of everything in it, only its phase is turned
 pub(crate) struct Stereo {
-  channels: [StereoChannel; 2],
-}
-
-struct StereoChannel {
-  /// the last two inputs and outputs of each all-pass section
-  sections: [[f32; 4]; 4],
-  line: Ring,
+  /// what goes round each side's loop, the input plus what comes back
+  lines: [Ring; 2],
+  /// each side's delay in samples. it moves to the whole number nearest what the amount
+  /// asks for and rests there, since a read between samples loses highs each time round
+  delays: [f64; 2],
 }
 
 impl Stereo {
   pub(crate) fn new(sample_rate: f32) -> Self {
-    let channel = || StereoChannel {
-      sections: [[0.0; 4]; 4],
-      line: Ring::new((f64::from(sample_rate) * STEREO_DELAY_SECONDS) as usize + 4),
-    };
     Self {
-      channels: [channel(), channel()],
+      lines: STEREO_DELAY_SECONDS
+        .map(|seconds| Ring::new((f64::from(sample_rate) * seconds) as usize + 4)),
+      delays: [0.0; 2],
     }
   }
 
   pub(crate) fn reset(&mut self) {
-    for channel in &mut self.channels {
-      channel.sections = [[0.0; 4]; 4];
-      channel.line.clear();
+    for line in &mut self.lines {
+      line.clear();
     }
+    self.delays = [0.0; 2];
   }
 
   /// the most samples ago that what comes out can have gone in, to within 60 dB
   pub(crate) fn longest_delay(&self) -> usize {
-    self.channels[0].line.len() + ALLPASS_RING
+    // each time round the loop takes what is in it down by the feedback
+    let rounds = (-3.0 / STEREO_FEEDBACK.log10()).ceil() as usize;
+    self.lines.iter().map(Ring::len).fold(0, usize::max) * rounds
   }
 
-  /// at an `amount` of zero the frame comes back as it is, and still goes through the
-  /// sections and into the lines for the copy to start from
+  /// at an `amount` of zero the frame comes back as it is once the delays have come down
+  /// to nothing, and still goes into the lines for the loops to start from
   pub(crate) fn process(&mut self, frame: [f32; 2], amount: f64, sample_rate: f64) -> [f32; 2] {
-    let gain = (2.0 * amount).min(1.0) as f32;
-    let delay = STEREO_DELAY_SECONDS * sample_rate * amount;
+    let feedback = STEREO_FEEDBACK * (2.0 * amount).min(1.0) as f32;
     let mut out = frame;
-    for ((out, channel), sign) in out.iter_mut().zip(&mut self.channels).zip([1.0, -1.0]) {
-      let mut sample = *out;
-      for (state, gain) in channel.sections.iter_mut().zip(ALLPASS_GAINS) {
-        let [x1, x2, y1, y2] = *state;
-        let y = gain * (sample + y2) - x2;
-        *state = [sample, x1, y, y1];
-        sample = y;
-      }
-      channel.line.push(sample);
-      *out += sign * gain * channel.line.read(delay);
+    for (((out, line), delay), seconds) in out
+      .iter_mut()
+      .zip(&mut self.lines)
+      .zip(&mut self.delays)
+      .zip(STEREO_DELAY_SECONDS)
+    {
+      let asked = (seconds * sample_rate * amount).round();
+      let gap = asked - *delay;
+      *delay = if gap.abs() <= STEREO_SLEW {
+        asked
+      } else {
+        *delay + STEREO_SLEW.copysign(gap)
+      };
+      let input = *out;
+      // `back` is what went round the loop `delay` samples ago
+      let (round, back) = if *delay >= 1.0 {
+        let back = line.read(*delay - 1.0);
+        (input + feedback * back, back)
+      } else {
+        // under a sample, what comes back is partly what goes round now. the cubic of
+        // `Ring::read` is linear in its taps, so the loop is solved for that part
+        let part = *delay as f32;
+        let [newest, next] = [line.ago(0), line.ago(1)];
+        let now = cubic([2.0, 1.0, 0.0, 0.0], part);
+        let before = cubic([-newest, 0.0, newest, next], part);
+        let round = (input + feedback * before) / (1.0 - feedback * now);
+        (round, now * round + before)
+      };
+      line.push(round);
+      *out = back - feedback * round;
     }
     out
   }
@@ -276,12 +295,54 @@ mod tests {
     (0..RATE as usize).map(move |i| (std::f32::consts::TAU * (i as f32 * hz / RATE).fract()).sin())
   }
 
+  fn power(samples: &[f32]) -> f32 {
+    samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32
+  }
+
+  /// each side is an all-pass, so a tone comes out of it as loud as it went in, whatever
+  /// its pitch and however much stereo there is. the highest tones are a few of the dips
+  /// apart that delays resting between samples would give
   #[test]
-  fn stereo_leaves_the_sum_of_a_centred_signal_alone() {
-    let mut stereo = Stereo::new(RATE);
-    for x in tone(220.0) {
-      let [left, right] = stereo.process([x, x], 0.8, f64::from(RATE));
-      assert!((left + right - 2.0 * x).abs() < 1e-5);
+  fn stereo_keeps_the_level_of_a_tone_on_each_side() {
+    let high = (0..5).map(|step| 15_000.0 + 50.0 * step as f32);
+    let tones: Vec<f32> = [110.0, 3100.0].into_iter().chain(high).collect();
+    for amount in [0.0, 0.001, 0.3, 0.7, 1.0] {
+      for &hz in &tones {
+        let mut stereo = Stereo::new(RATE);
+        let (dry, wet): (Vec<f32>, Vec<[f32; 2]>) = tone(hz)
+          .map(|x| (x, stereo.process([x, x], amount, f64::from(RATE))))
+          .skip(RATE as usize / 2)
+          .unzip();
+        for side in 0..2 {
+          let wet: Vec<f32> = wet.iter().map(|frame| frame[side]).collect();
+          let ratio = power(&wet) / power(&dry);
+          assert!(
+            (0.98..1.02).contains(&ratio),
+            "side {side} at {hz} Hz and {amount} is {ratio} of the power"
+          );
+        }
+      }
+    }
+  }
+
+  /// under a sample of delay the loop is solved for what goes round now. what it pushes
+  /// and gives has to be what the loop's two sums come to with `Ring::read` at that delay
+  #[test]
+  fn stereo_under_a_sample_reads_what_it_pushes() {
+    for start in [0.0, 0.2, 0.45, 0.7, 0.9] {
+      let mut stereo = Stereo::new(RATE);
+      for x in tone(3100.0).take(100) {
+        stereo.process([x, -x], 0.0, f64::from(RATE));
+      }
+      stereo.delays = [start; 2];
+      let frame = [0.3, -0.8];
+      let out = stereo.process(frame, 1.0, f64::from(RATE));
+      let delay = start + STEREO_SLEW;
+      for ((line, input), out) in stereo.lines.iter().zip(frame).zip(out) {
+        let (round, back) = (line.ago(0), line.read(delay));
+        assert!((round - (input + STEREO_FEEDBACK * back)).abs() < 1e-6);
+        assert!((out - (back - STEREO_FEEDBACK * round)).abs() < 1e-6);
+      }
     }
   }
 

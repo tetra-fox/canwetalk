@@ -280,7 +280,7 @@ impl EffectParams {
     Amounts {
       detune: f64::from(self.detune.smoothed.next()),
       smear: f64::from(self.smear.smoothed.next()),
-      // one channel has no sides to widen, and the widener would only comb it
+      // one channel has no sides to widen
       stereo: if mono { 0.0 } else { f64::from(stereo) },
     }
   }

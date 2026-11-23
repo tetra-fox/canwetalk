@@ -924,7 +924,7 @@ mod tests {
     ("vibrato", 0xd71839b0320faa6b),
     ("vibrato by the tempo", 0x98ac99cdf5b06e80),
     ("vibrato by the tempo of a stopped host", 0x368e84c6c5f64531),
-    ("effects", 0xa475d49e8d03a40c),
+    ("effects", 0xc2f20bcf1d7ccbc0),
     ("effects mono", 0xad3c8b949deb0ebd),
     ("mix", 0x7d825a8372ea69d2),
     ("bass", 0x98de606d6873eb6d),
@@ -936,10 +936,10 @@ mod tests {
     ("mode poly", 0x9cbe1e2f4df0b1b1),
     ("mode mono gate", 0x37ac0e270e4faf54),
     ("mode poly gate", 0x81803f9d8e481493),
-    ("chord at 44.1 kHz", 0xba8e644a17e76e9f),
-    ("chord at 96 kHz", 0xd091ef02f99a0749),
-    ("chord at 192 kHz", 0x6478378deb6bf030),
-    ("four seconds of everything", 0x787086ef871afab8),
+    ("chord at 44.1 kHz", 0xbd8936b1f5311c2d),
+    ("chord at 96 kHz", 0x6b3de87d237cae8a),
+    ("chord at 192 kHz", 0xb8ec1981f0b4cb89),
+    ("four seconds of everything", 0x3cbe39590ac92270),
     ("unanchored at 96 kHz", 0x118d86f53def9c11),
   ];
 
