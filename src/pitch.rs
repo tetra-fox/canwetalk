@@ -376,7 +376,9 @@ impl Detector {
       let middle = index + (times.len() - 2 - index) / 2;
       let splits_evenly = [middle, middle + 1].iter().any(|&at| {
         let (earlier, later) = (times[at] - start, second_last - times[at]);
-        earlier.abs_diff(later) * 100 < HALVES_PERCENT * later
+        let apart = earlier.abs_diff(later);
+        // the times are whole analysis samples, so equal halves can come out one apart
+        apart <= 1 || apart * 100 < HALVES_PERCENT * later
       });
       let lags = ((third_last - start) / 2) as usize..((last - start) / 2) as usize;
       if splits_evenly && self.in_range(&lags) {
@@ -411,21 +413,25 @@ mod tests {
 
   const RATE: f32 = 48_000.0;
 
-  fn estimates(signal: impl Iterator<Item = f32>, range: Range) -> Vec<f32> {
-    let mut detector = Detector::new(RATE, range);
+  fn estimates(signal: impl Iterator<Item = f32>, rate: f32, range: Range) -> Vec<f32> {
+    let mut detector = Detector::new(rate, range);
     signal.filter_map(|x| detector.push(x)).collect()
   }
 
   fn assert_detects(hz: f32, range: Range, wave: impl Fn(f32) -> f32) {
-    let signal = (0..RATE as usize / 2).map(|i| wave((i as f32 * hz / RATE).fract()));
-    let periods = estimates(signal, range);
+    assert_detects_at(RATE, hz, range, wave);
+  }
+
+  fn assert_detects_at(rate: f32, hz: f32, range: Range, wave: impl Fn(f32) -> f32) {
+    let signal = (0..rate as usize / 2).map(|i| wave((i as f32 * hz / rate).fract()));
+    let periods = estimates(signal, rate, range);
     let Some(&period) = periods.last() else {
-      panic!("{hz} Hz was not found")
+      panic!("{hz} Hz was not found at {rate} Hz")
     };
-    let detected = RATE / period;
+    let detected = rate / period;
     assert!(
       (detected / hz - 1.0).abs() < 0.005,
-      "{hz} Hz detected as {detected} Hz"
+      "{hz} Hz detected as {detected} Hz at {rate} Hz"
     );
   }
 
@@ -460,6 +466,24 @@ mod tests {
     }
   }
 
+  /// near the top of a range a period is few analysis samples, fewer the lower the sample
+  /// rate. a stretch of two periods still has to count as whole periods there, or only longer
+  /// stretches do and the pitch is found an octave low
+  #[test]
+  fn the_top_of_each_range_is_found_at_every_sample_rate() {
+    let sine = |phase: f32| 0.5 * (phase * std::f32::consts::TAU).sin();
+    for rate in [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0] {
+      for (range, hz) in [
+        (Range::Bass, 500.0),
+        (Range::Mid, 622.3),
+        (Range::Mid, 700.0),
+        (Range::High, 1400.0),
+      ] {
+        assert_detects_at(rate, hz, range, sine);
+      }
+    }
+  }
+
   #[test]
   fn noise_and_silence_have_no_pitch() {
     let mut state = 0x2545_f491_u32;
@@ -469,8 +493,9 @@ mod tests {
       state ^= state << 5;
       state as f32 / u32::MAX as f32 - 0.5
     });
-    assert!(estimates(noise, Range::Mid).is_empty());
-    assert!(estimates(std::iter::repeat_n(0.0, RATE as usize / 2), Range::Mid).is_empty());
+    assert!(estimates(noise, RATE, Range::Mid).is_empty());
+    let silence = std::iter::repeat_n(0.0, RATE as usize / 2);
+    assert!(estimates(silence, RATE, Range::Mid).is_empty());
   }
 
   /// a held pitch that glides is followed without losing it
