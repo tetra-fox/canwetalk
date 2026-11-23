@@ -25,8 +25,17 @@ impl Ring {
     self.next = (self.next + 1) & self.mask;
   }
 
-  /// the sample pushed `delay` pushes before the newest
+  /// how many samples are held
+  pub(crate) fn len(&self) -> usize {
+    self.samples.len()
+  }
+
+  /// the sample pushed `delay` pushes before the newest, which has to be one still held
   pub(crate) fn ago(&self, delay: usize) -> f32 {
+    debug_assert!(
+      delay < self.samples.len(),
+      "a delay of {delay} is past what the ring holds"
+    );
     self.samples[self.next.wrapping_sub(1 + delay) & self.mask]
   }
 

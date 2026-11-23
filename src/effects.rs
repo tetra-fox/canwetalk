@@ -104,14 +104,20 @@ impl Smear {
     let fast_wrapped = advance(&mut self.fast, periods_per_sample);
     let fast_rose = fast_before <= 0.0 && self.fast > 0.0;
     let slow_before = self.slow;
-    let slow_wrapped = advance(
-      &mut self.slow,
-      periods_per_sample / (SMEAR_SHORTEST + scaled.floor()),
-    );
+    // a loop reads back to its anchor, at most a slow cycle of two times this many periods
+    // ago. on a low pitch the longest holds are cut to what the line holds
+    let held = (self.lines[0].len() - 1) as f64;
+    let periods = (SMEAR_SHORTEST + scaled.floor()).min(0.5 * held * periods_per_sample);
+    let slow_wrapped = advance(&mut self.slow, periods_per_sample / periods);
     let slow_rose = slow_before <= 0.0 && self.slow > 0.0;
     // each loop's anchor moves while its gain is zero, one at the wrap and one at the rise
     for (since, moved) in self.since_anchor.iter_mut().zip([slow_wrapped, slow_rose]) {
-      *since = if moved { 0 } else { *since + 1 };
+      // the pitch can fall during a hold, which lengthens it past what was allowed for
+      *since = if moved {
+        0
+      } else {
+        (*since + 1).min(held as usize)
+      };
     }
     for (delays, &since) in self.delays.iter_mut().zip(&self.since_anchor) {
       if fast_wrapped {
@@ -263,6 +269,17 @@ mod tests {
         let ratio = wet / dry;
         assert!((0.95..1.45).contains(&ratio), "wet is {ratio} of dry");
       }
+    }
+  }
+
+  /// the lowest input pitch with the control at full holds a stretch for longer than anything
+  /// else does, and every delay still has to be inside what the line holds
+  #[test]
+  fn smear_at_its_longest_stays_inside_its_line() {
+    let rate = 44_100.0;
+    let mut smear = Smear::new(rate);
+    for index in 0..20 * rate as usize {
+      smear.process([index as f32; 2], 25.0 / f64::from(rate), 1.0);
     }
   }
 

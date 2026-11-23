@@ -16,7 +16,8 @@ use crate::pitch::{Detector, Range};
 use crate::ring::Ring;
 use crate::voice::Expression;
 
-const HISTORY_SAMPLES: usize = 200_000;
+/// seconds of input the voices can read back over. the longest grains are cut to fit
+const HISTORY_SECONDS: f32 = 4.5;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
 
@@ -66,7 +67,9 @@ pub(crate) struct Shifter {
 
 /// the pitch assumed until one is detected, the lowest of the detector's range
 fn lowest_pitch(detector: &Detector, sample_rate: f32) -> f64 {
-  2.0 / f64::from(detector.range().longest_period(sample_rate))
+  let lowest = 2.0 / f64::from(detector.range().longest_period(sample_rate));
+  // at the highest sample rates the bass range goes under what the input pitch is kept to
+  lowest.clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end())
 }
 
 impl Shifter {
@@ -78,7 +81,7 @@ impl Shifter {
       detector,
       input_pitch,
       smear: Smear::new(sample_rate),
-      input: [Ring::new(HISTORY_SAMPLES), Ring::new(HISTORY_SAMPLES)],
+      input: std::array::from_fn(|_| Ring::new((sample_rate * HISTORY_SECONDS) as usize)),
       marks: Marks::new(2.0 / INPUT_PITCH.start()),
       notes: Notes::new(f64::from(sample_rate), input_pitch),
       vibrato_phase: 0.0,
@@ -681,6 +684,45 @@ mod tests {
       .sum::<f32>()
       / readings.len() as f32;
     assert!(off < 15.0, "{off} cents off on average");
+  }
+
+  /// the lowest note bent down two octaves, with the formants all the way up and the grains
+  /// stretched to keep overlapping, makes the longest grains there are. every one still has
+  /// to read inside what the input lines hold
+  #[test]
+  fn the_longest_grains_stay_inside_the_input_lines() {
+    for anchor in [false, true] {
+      let settings = Settings {
+        shape: Shape {
+          pitch: -2.0,
+          formant: 4.0,
+          smooth: 1.0,
+          ..NEUTRAL.shape
+        },
+        anchor,
+        ..NEUTRAL
+      };
+      let mut shifter = shifter_in(&settings);
+      shifter.notes.on(key(0));
+      run(&mut shifter, &vowel_for(8), &settings);
+    }
+  }
+
+  /// at the highest sample rate the lowest pitch of the bass range has a longer period than
+  /// the input pitch is allowed
+  #[test]
+  fn the_pitch_assumed_before_any_is_found_is_one_the_input_can_have() {
+    let settings = Settings {
+      detect: Range::Bass,
+      ..NEUTRAL
+    };
+    let mut shifter = Shifter::new(192_000.0);
+    shifter.process([0.0; 2], &settings);
+    assert!(
+      INPUT_PITCH.contains(&shifter.input_pitch),
+      "{} is out of range",
+      shifter.input_pitch
+    );
   }
 
   fn key(key: u8) -> Note {

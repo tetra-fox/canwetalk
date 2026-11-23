@@ -17,6 +17,8 @@ const MAX_FORMANT: f64 = 4.0;
 const RISE_FOLLOW: f64 = 0.01;
 /// how far from the input period the rise may be, as a ratio, before it starts over from it
 const RISE_RANGE: std::ops::RangeInclusive<f64> = 0.77..=1.3;
+/// samples past a delay that reading between samples takes in
+const READ_AHEAD: f64 = 4.0;
 /// octaves a voice at the input pitch is raised by until its grains line up with the input
 pub(crate) const UNITY_DRIFT: f64 = 0.001;
 /// a grain starting within this many samples of an input period counts as lined up
@@ -150,6 +152,13 @@ impl Engine {
       } else {
         1.0
       };
+      // a grain reads from as far back as it starts, and at a read speed off one that
+      // distance grows or shrinks by the input it covers. all of it has to be input the lines
+      // still hold, which a grain stretched over a very low output pitch would run past
+      let period = 2.0 / input_pitch;
+      let held = input[0].len() as f64 - READ_AHEAD - period;
+      let covered = held / (1.0 + (rate - 1.0).abs() / rate);
+      let stretch = stretch.min(covered / ((1.0 + RISE_RANGE.end()) * period));
       let mut window_step = 0.25 * natural / stretch;
       let mut peak = 0.5;
       if cycle.phase.is_some() && !self.locked {
@@ -157,7 +166,6 @@ impl Engine {
         // set time after it begins, so as the input period changes the loud parts of the
         // grains stay evenly spaced. a grain that began at a cycle start would be loudest one
         // input period later, and its pitch would give with the input's
-        let period = 2.0 / input_pitch;
         let rise = self
           .rise
           .filter(|rise| RISE_RANGE.contains(&(rise / period)))
