@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
+use nice_plug::midi::{Channel, Key};
 use nice_plug::prelude::*;
 
 use crate::pitch::Range;
-use crate::shifter::{Mode, Settings, Shifter};
+use crate::shifter::{Mode, Note, Settings, Shifter};
 
 mod effects;
 mod grains;
@@ -16,6 +17,9 @@ mod shifter;
 /// how long the output can go on after the input stops, which is as long as smear holds on
 /// to a stretch of input
 const TAIL_SECONDS: f32 = 10.0;
+/// semitones the first channel's pitch bend reaches either way. it bends every note, as a
+/// plain keyboard's wheel does and as the MPE master channel does
+const MASTER_BEND_SEMITONES: f32 = 2.0;
 /// the pitch and formant controls reach this far either way
 const SHIFT_SEMITONES: f32 = 24.0;
 
@@ -62,6 +66,8 @@ struct CanWeTalkParams {
   glide_notes_only: BoolParam,
   #[id = "midi"]
   midi: EnumParam<MidiMode>,
+  #[id = "bend_range"]
+  bend_range: IntParam,
   #[id = "detect"]
   detect: EnumParam<DetectRange>,
   #[id = "mix"]
@@ -100,6 +106,9 @@ impl Default for CanWeTalkParams {
       glide: percent("Glide", 0.0),
       glide_notes_only: BoolParam::new("Glide Notes Only", false),
       midi: EnumParam::new("MIDI", MidiMode::Poly),
+      // 48 is what MPE controllers send over unless told otherwise
+      bend_range: IntParam::new("MPE Bend Range", 48, IntRange::Linear { min: 1, max: 96 })
+        .with_unit(" st"),
       detect: EnumParam::new("Detection Range", DetectRange::Mid),
       mix: percent("Mix", 1.0),
     }
@@ -138,7 +147,8 @@ impl Plugin for CanWeTalk {
     },
   ];
 
-  const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+  // pitch bend comes with the control changes
+  const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
 
   type Editor = ();
   type SysExMessage = ();
@@ -199,16 +209,43 @@ impl Plugin for CanWeTalk {
         if event.timing() > index as u32 {
           break;
         }
+        // a host that names no channel for a note is not sending MPE, so the note goes on the
+        // first channel with every other. one it names no key for is not a note to play
+        let note = |channel: Channel, key: Key| {
+          Some(Note {
+            channel: channel.number().unwrap_or(0),
+            key: key.number()?,
+          })
+        };
         match event {
-          NoteEvent::NoteOn { key, .. } => {
-            if let Some(note) = key.number() {
+          NoteEvent::NoteOn { channel, key, .. } => {
+            if let Some(note) = note(channel, key) {
               self.shifter.note_on(note);
             }
           }
-          NoteEvent::NoteOff { key, .. } => {
-            if let Some(note) = key.number() {
+          NoteEvent::NoteOff { channel, key, .. } => {
+            if let Some(note) = note(channel, key) {
               self.shifter.note_off(note);
             }
+          }
+          NoteEvent::PolyTuning {
+            channel,
+            key,
+            tuning,
+            ..
+          } => {
+            if let Some(note) = note(channel, key) {
+              self.shifter.tune(note, f64::from(tuning));
+            }
+          }
+          NoteEvent::MidiPitchBend { channel, value, .. } => {
+            let range = match channel {
+              0 => MASTER_BEND_SEMITONES,
+              _ => params.bend_range.value() as f32,
+            };
+            self
+              .shifter
+              .bend(channel, f64::from((2.0 * value - 1.0) * range));
           }
           _ => (),
         }

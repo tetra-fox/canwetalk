@@ -19,8 +19,18 @@ const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
 /// seconds a voice takes to fade when it starts or stops
 const FADE_SECONDS: f64 = 0.005;
 const SILENT: f64 = 0.001;
+/// channels a note can be on
+const CHANNELS: usize = 16;
 const A4_HZ: f64 = 440.0;
 const A4_NOTE: f64 = 69.0;
+
+/// a key on a channel. under MPE each sounding note has a channel to itself, so what is sent
+/// on the channel bends that note alone
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Note {
+  pub(crate) channel: u8,
+  pub(crate) key: u8,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -66,7 +76,9 @@ pub(crate) struct Shifter {
   /// the voice that follows the input pitch while no note is held
   follower: Option<usize>,
   /// held notes that lost their voice to a later one, the latest last
-  waiting: Vec<u8>,
+  waiting: Vec<Note>,
+  /// semitones each channel is bent by. the first bends every note, the rest their own
+  bends: [f64; CHANNELS],
   mode: Mode,
   /// counts notes, to tell which voice has had its note longest
   clock: u64,
@@ -76,7 +88,11 @@ pub(crate) struct Shifter {
 
 struct Voice {
   engine: Engine,
-  key: Option<u8>,
+  note: Option<Note>,
+  /// semitones the host has tuned this note by
+  tuning: f64,
+  /// semitones the note is off its key, following its channels' bends and its tuning
+  bend: f64,
   sounding: bool,
   started: u64,
   level: f64,
@@ -91,7 +107,9 @@ impl Voice {
   fn new(sample_rate: f64, input_pitch: f64) -> Self {
     Self {
       engine: Engine::new(),
-      key: None,
+      note: None,
+      tuning: 0.0,
+      bend: 0.0,
       sounding: false,
       started: 0,
       level: 0.0,
@@ -104,6 +122,7 @@ impl Voice {
   fn tick(
     &mut self,
     input_pitch: f64,
+    bend: f64,
     settings: &Settings,
     sample_rate: f64,
     input: &[Ring; 2],
@@ -111,13 +130,18 @@ impl Voice {
     if !self.sounding && self.level <= SILENT {
       return [0.0; 2];
     }
-    let goal = self
-      .key
-      .map_or(input_pitch, |key| note_pitch(key, sample_rate));
+    let goal = match self.note {
+      Some(note) => {
+        // bends arrive in steps, which would be heard
+        self.bend += self.fade_step * (bend + self.tuning - self.bend);
+        note_pitch(f64::from(note.key) + self.bend, sample_rate)
+      }
+      None => input_pitch,
+    };
     let step = 1.0 / (settings.glide.powi(3) * sample_rate + 1.0);
     self.pitch += step * (goal - self.pitch);
     let target = if settings.glide_notes_only {
-      let held = f64::from(u8::from(self.key.is_some()));
+      let held = f64::from(u8::from(self.note.is_some()));
       self.note_blend += step * (held - self.note_blend);
       if self.note_blend < 1e-8 {
         self.note_blend = 0.0;
@@ -142,8 +166,16 @@ impl Voice {
   }
 }
 
-fn note_pitch(key: u8, sample_rate: f64) -> f64 {
-  2.0 * A4_HZ * 2f64.powf((f64::from(key) - A4_NOTE) / 12.0) / sample_rate
+/// pitch of a key, which may lie between two
+fn note_pitch(key: f64, sample_rate: f64) -> f64 {
+  2.0 * A4_HZ * 2f64.powf((key - A4_NOTE) / 12.0) / sample_rate
+}
+
+/// semitones a note on `channel` is bent by. a channel the host should not have sent bends
+/// nothing
+fn channel_bend(bends: &[f64; CHANNELS], channel: u8) -> f64 {
+  let own = bends.get(usize::from(channel)).filter(|_| channel != 0);
+  bends[0] + own.copied().unwrap_or(0.0)
 }
 
 impl Shifter {
@@ -160,6 +192,7 @@ impl Shifter {
       voices: std::array::from_fn(|_| Voice::new(rate, input_pitch)),
       follower: None,
       waiting: Vec::with_capacity(MAX_WAITING),
+      bends: [0.0; CHANNELS],
       mode: Mode::Off,
       clock: 0,
       detune: Detune::new(sample_rate),
@@ -194,6 +227,7 @@ impl Shifter {
     }
     self.detune.reset();
     self.stereo.reset();
+    self.bends = [0.0; CHANNELS];
     self.release_all();
   }
 
@@ -201,24 +235,25 @@ impl Shifter {
   fn release_all(&mut self) {
     self.waiting.clear();
     for voice in &mut self.voices {
-      voice.key = None;
+      voice.note = None;
       voice.sounding = false;
     }
     self.voices[0].sounding = true;
     self.follower = Some(0);
   }
 
-  pub(crate) fn note_on(&mut self, key: u8) {
+  pub(crate) fn note_on(&mut self, note: Note) {
     let count = match self.mode {
       Mode::Off => return,
       Mode::Mono => 1,
       Mode::Poly => VOICES,
     };
     self.clock += 1;
+    let bend = channel_bend(&self.bends, note.channel);
     let voices = &mut self.voices[..count];
     // the follower first, then a voice with nothing to play, then the one longest on its note
     let index = (self.follower.take())
-      .or_else(|| voices.iter().position(|voice| voice.key == Some(key)))
+      .or_else(|| voices.iter().position(|voice| voice.note == Some(note)))
       .or_else(|| voices.iter().position(|voice| !voice.sounding))
       .unwrap_or_else(|| {
         (0..count)
@@ -226,37 +261,64 @@ impl Shifter {
           .expect("there is at least one voice")
       });
     let voice = &mut voices[index];
-    if let Some(displaced) = voice.key.filter(|&held| held != key) {
+    if let Some(displaced) = voice.note.filter(|&held| held != note) {
       if self.waiting.len() == MAX_WAITING {
         self.waiting.remove(0);
       }
       self.waiting.push(displaced);
     }
+    // a bend sent ahead of the note is where the note starts, not somewhere it slides to
+    voice.tuning = 0.0;
+    voice.bend = bend;
     if !voice.sounding && voice.level <= SILENT {
       // a voice coming from silence has no pitch to glide from
-      voice.pitch = note_pitch(key, self.sample_rate);
+      voice.pitch = note_pitch(f64::from(note.key) + bend, self.sample_rate);
       voice.engine.reset();
     }
-    voice.key = Some(key);
+    voice.note = Some(note);
     voice.sounding = true;
     voice.started = self.clock;
   }
 
-  pub(crate) fn note_off(&mut self, key: u8) {
-    self.waiting.retain(|&waiting| waiting != key);
-    let Some(index) = self.voices.iter().position(|voice| voice.key == Some(key)) else {
+  pub(crate) fn note_off(&mut self, note: Note) {
+    self.waiting.retain(|&waiting| waiting != note);
+    let Some(index) = self
+      .voices
+      .iter()
+      .position(|voice| voice.note == Some(note))
+    else {
       return;
     };
     if let Some(waiting) = self.waiting.pop() {
-      self.voices[index].key = Some(waiting);
+      self.voices[index].note = Some(waiting);
+      self.voices[index].tuning = 0.0;
       return;
     }
-    self.voices[index].key = None;
-    if self.voices.iter().all(|voice| voice.key.is_none()) {
+    self.voices[index].note = None;
+    if self.voices.iter().all(|voice| voice.note.is_none()) {
       // the last voice playing goes back to following the input
       self.follower = Some(index);
     } else {
       self.voices[index].sounding = false;
+    }
+  }
+
+  /// bends a channel's notes by `semitones`, or every note if it is the first channel
+  pub(crate) fn bend(&mut self, channel: u8, semitones: f64) {
+    // a channel past the sixteenth is not one a note can be on
+    if let Some(bend) = self.bends.get_mut(usize::from(channel)) {
+      *bend = semitones;
+    }
+  }
+
+  /// tunes one sounding note by `semitones`
+  pub(crate) fn tune(&mut self, note: Note, semitones: f64) {
+    if let Some(voice) = self
+      .voices
+      .iter_mut()
+      .find(|voice| voice.note == Some(note))
+    {
+      voice.tuning = semitones;
     }
   }
 
@@ -288,7 +350,16 @@ impl Shifter {
 
     let mut out = [0.0; 2];
     for voice in &mut self.voices {
-      let voiced = voice.tick(self.input_pitch, settings, self.sample_rate, &self.input);
+      let bend = voice
+        .note
+        .map_or(0.0, |note| channel_bend(&self.bends, note.channel));
+      let voiced = voice.tick(
+        self.input_pitch,
+        bend,
+        settings,
+        self.sample_rate,
+        &self.input,
+      );
       for (out, sample) in out.iter_mut().zip(voiced) {
         *out += sample;
       }
@@ -453,11 +524,53 @@ mod tests {
         ..NEUTRAL
       };
       let mut shifter = shifter_in(&settings);
-      shifter.note_on(57);
+      shifter.note_on(key(57));
       let output = run(&mut shifter, &vowel(), &settings);
       let formant = strongest_harmonic_hz(&output, A3);
       assert_near(formant, FORMANT_HZ * 2f32.powf(follow), A3, "formant");
     }
+  }
+
+  fn key(key: u8) -> Note {
+    Note { channel: 0, key }
+  }
+
+  /// a bend on a note's own channel moves that note, and no note on another channel
+  #[test]
+  fn a_channel_bends_its_own_note() {
+    let mut shifter = shifter_in(&NEUTRAL);
+    let note = Note {
+      channel: 3,
+      key: 57,
+    };
+    shifter.note_on(note);
+    shifter.bend(5, 7.0);
+    let output = run(&mut shifter, &vowel(), &NEUTRAL);
+    assert_near(
+      pitch_hz(&output),
+      A3,
+      0.005 * A3,
+      "fundamental with another channel bent",
+    );
+
+    shifter.bend(3, 2.0);
+    let output = run(&mut shifter, &vowel(), &NEUTRAL);
+    let bent = A3 * 2f32.powf(2.0 / 12.0);
+    assert_near(
+      pitch_hz(&output),
+      bent,
+      0.005 * bent,
+      "fundamental with its channel bent",
+    );
+
+    shifter.bend(0, -2.0);
+    let output = run(&mut shifter, &vowel(), &NEUTRAL);
+    assert_near(
+      pitch_hz(&output),
+      A3,
+      0.005 * A3,
+      "fundamental with the first channel bent back",
+    );
   }
 
   /// a shifter that has seen `settings`, so notes are taken in its mode
@@ -470,10 +583,10 @@ mod tests {
   #[test]
   fn held_note_sets_the_pitch_until_released() {
     let mut shifter = shifter_in(&NEUTRAL);
-    shifter.note_on(57);
+    shifter.note_on(key(57));
     let output = run(&mut shifter, &vowel(), &NEUTRAL);
     assert_near(pitch_hz(&output), 220.0, 1.1, "fundamental");
-    shifter.note_off(57);
+    shifter.note_off(key(57));
     let output = run(&mut shifter, &vowel(), &NEUTRAL);
     assert_near(
       pitch_hz(&output),
@@ -490,14 +603,14 @@ mod tests {
   #[test]
   fn poly_sounds_held_notes_together() {
     let mut shifter = shifter_in(&NEUTRAL);
-    shifter.note_on(57);
-    shifter.note_on(64);
+    shifter.note_on(key(57));
+    shifter.note_on(key(64));
     let output = run(&mut shifter, &vowel(), &NEUTRAL);
     let absent = power_at(&output, C4);
     assert!(power_at(&output, A3) > 100.0 * absent, "A3 is missing");
     assert!(power_at(&output, E4) > 100.0 * absent, "E4 is missing");
 
-    shifter.note_off(57);
+    shifter.note_off(key(57));
     let output = run(&mut shifter, &vowel(), &NEUTRAL);
     assert_near(
       pitch_hz(&output),
@@ -514,8 +627,8 @@ mod tests {
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&settings);
-    shifter.note_on(57);
-    shifter.note_on(64);
+    shifter.note_on(key(57));
+    shifter.note_on(key(64));
     let output = run(&mut shifter, &vowel(), &settings);
     assert_near(
       pitch_hz(&output),
@@ -523,7 +636,7 @@ mod tests {
       0.005 * E4,
       "fundamental with both held",
     );
-    shifter.note_off(64);
+    shifter.note_off(key(64));
     let output = run(&mut shifter, &vowel(), &settings);
     assert_near(
       pitch_hz(&output),
@@ -540,7 +653,7 @@ mod tests {
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&settings);
-    shifter.note_on(57);
+    shifter.note_on(key(57));
     let output = run(&mut shifter, &vowel(), &settings);
     assert_near(pitch_hz(&output), VOWEL_HZ, 0.55, "fundamental");
   }
