@@ -3,7 +3,7 @@
 _baby, can we taaaaalk?_
 
 [![ci](https://github.com/tetra-fox/canwetalk/actions/workflows/ci.yml/badge.svg)](https://github.com/tetra-fox/canwetalk/actions/workflows/ci.yml)
-[![license](https://img.shields.io/crates/l/canwetalk)](#license)
+[![license](https://img.shields.io/github/license/tetra-fox/canwetalk)](LICENSE)
 
 A pitch and formant shifter plugin for a monophonic input, played by MIDI notes. VST3 and CLAP.
 
