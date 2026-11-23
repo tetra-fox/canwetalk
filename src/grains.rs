@@ -10,6 +10,8 @@ use crate::ring::Ring;
 
 const MAX_GRAINS: usize = 128;
 const OUTPUT_PITCH: std::ops::RangeInclusive<f64> = 1e-11..=0.25;
+/// octaves the formants move at most, either way
+const MAX_FORMANT: f64 = 4.0;
 /// octaves a voice at the input pitch is raised by until its grains line up with the input
 pub(crate) const UNITY_DRIFT: f64 = 0.001;
 /// a grain starting within this many samples of an input period counts as lined up
@@ -23,6 +25,8 @@ pub(crate) struct Shape {
   pub(crate) pitch: f64,
   /// octaves the formants are moved by
   pub(crate) formant: f64,
+  /// octaves the formants move further for each octave the output pitch is from the input's
+  pub(crate) formant_follow: f64,
   /// 0 to 1, how far grains stretch to keep overlapping when the pitch is lowered
   pub(crate) smooth: f64,
 }
@@ -109,7 +113,8 @@ impl Engine {
     }
 
     if wrapped && self.grains.len() < MAX_GRAINS {
-      let rate = 2f64.powf(shape.formant);
+      let followed = shape.formant_follow * (pitch / input_pitch).log2();
+      let rate = 2f64.powf((shape.formant + followed).clamp(-MAX_FORMANT, MAX_FORMANT));
       // back to where the input period began, so grains start whole periods apart
       let mut delay = self.input_phase / (0.5 * input_pitch);
       if unity && delay < UNITY_REACH {
@@ -152,6 +157,7 @@ impl Engine {
       grain.window_phase <= 1.0
     });
 
+    // locked grains are at the input pitch, where the formants have nothing to follow
     let active = !(self.locked && shape.formant == 0.0);
     self.wet += WET_STEP * (f64::from(u8::from(active)) - self.wet);
     let wet = self.wet as f32;

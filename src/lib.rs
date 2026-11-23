@@ -46,6 +46,8 @@ struct CanWeTalkParams {
   pitch: FloatParam,
   #[id = "formant"]
   formant: FloatParam,
+  #[id = "formant_follow"]
+  formant_follow: FloatParam,
   #[id = "detune"]
   detune: FloatParam,
   #[id = "smear"]
@@ -90,6 +92,7 @@ impl Default for CanWeTalkParams {
     Self {
       pitch: semitones("Pitch"),
       formant: semitones("Formant"),
+      formant_follow: percent("Formant Follow", 0.0),
       detune: percent("Detune", 0.0),
       smear: percent("Smear", 0.0),
       stereo: percent("Stereo", 0.0),
@@ -171,6 +174,7 @@ impl Plugin for CanWeTalk {
     let mut settings = Settings {
       pitch: 0.0,
       formant: 0.0,
+      formant_follow: 0.0,
       detune: 0.0,
       smear: 0.0,
       stereo: 0.0,
@@ -213,6 +217,7 @@ impl Plugin for CanWeTalk {
 
       settings.pitch = f64::from(params.pitch.smoothed.next() / 12.0);
       settings.formant = f64::from(params.formant.smoothed.next() / 12.0);
+      settings.formant_follow = f64::from(params.formant_follow.smoothed.next());
       settings.detune = f64::from(params.detune.smoothed.next());
       settings.smear = f64::from(params.smear.smoothed.next());
       // one channel has no sides to widen, and the widener would only comb it

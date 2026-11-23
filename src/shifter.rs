@@ -38,6 +38,8 @@ pub(crate) struct Settings {
   pub(crate) pitch: f64,
   /// octaves
   pub(crate) formant: f64,
+  /// octaves the formants move further for each octave a voice is from the input's pitch
+  pub(crate) formant_follow: f64,
   /// 0 to 1, as are the rest unless they say otherwise
   pub(crate) detune: f64,
   pub(crate) smear: f64,
@@ -130,6 +132,7 @@ impl Voice {
     let shape = Shape {
       pitch: settings.pitch,
       formant: settings.formant,
+      formant_follow: settings.formant_follow,
       smooth: settings.smooth,
     };
     self
@@ -313,6 +316,7 @@ mod tests {
   const NEUTRAL: Settings = Settings {
     pitch: 0.0,
     formant: 0.0,
+    formant_follow: 0.0,
     detune: 0.0,
     smear: 0.0,
     stereo: 0.0,
@@ -437,6 +441,23 @@ mod tests {
     assert_near(fundamental, VOWEL_HZ, 0.005 * VOWEL_HZ, "fundamental");
     let formant = strongest_harmonic_hz(&output, fundamental);
     assert_near(formant, 2.0 * FORMANT_HZ, fundamental, "formant");
+  }
+
+  /// a note an octave above the input, with the formants following by a half and by all of
+  /// it, puts the resonance half an octave and an octave up
+  #[test]
+  fn formant_follows_the_note_by_the_set_share() {
+    for follow in [0.5, 1.0] {
+      let settings = Settings {
+        formant_follow: f64::from(follow),
+        ..NEUTRAL
+      };
+      let mut shifter = shifter_in(&settings);
+      shifter.note_on(57);
+      let output = run(&mut shifter, &vowel(), &settings);
+      let formant = strongest_harmonic_hz(&output, A3);
+      assert_near(formant, FORMANT_HZ * 2f32.powf(follow), A3, "formant");
+    }
   }
 
   /// a shifter that has seen `settings`, so notes are taken in its mode
