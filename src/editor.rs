@@ -174,7 +174,7 @@ fn scene(editor: &Editor) -> Scene {
   let mut objects = vec![Object {
     mesh: PLATE,
     transform: Mat4::IDENTITY,
-    material: Material::satin(Vec3::new(0.27, 0.29, 0.33)),
+    material: Material::brushed(Vec3::new(0.30, 0.32, 0.36)),
   }];
   for (index, control) in Control::ALL.into_iter().enumerate() {
     let turn = control.param(&editor.params).unmodulated_normalized_value();
