@@ -15,7 +15,7 @@ pub(crate) enum Range {
 }
 
 struct RangeSpec {
-  /// every this many input samples one goes to the analysis
+  /// every this many input samples one goes to the analysis, at `BASE_RATE`
   decimation: usize,
   lowest_hz: f32,
   highest_hz: f32,
@@ -47,6 +47,8 @@ impl Range {
   }
 }
 
+/// the sample rate the decimations of the ranges are for, which 44.1 kHz counts as too
+const BASE_RATE: f32 = 48_000.0;
 /// high-pass before the zero crossings, so an offset does not hide them
 const CROSSING_FLOOR_HZ: f32 = 20.0;
 const FILTER_Q: f32 = 0.733;
@@ -181,9 +183,13 @@ impl Detector {
   /// also forgets everything heard so far
   pub(crate) fn set_range(&mut self, range: Range) {
     let spec = range.spec();
-    let analysis_rate = self.sample_rate / spec.decimation as f32;
+    // at multiples of the base rate that many times as many samples are passed over, so the
+    // analysis sees the same rate and costs the same
+    let multiple = (self.sample_rate / BASE_RATE).round().max(1.0) as usize;
+    let decimation = spec.decimation * multiple;
+    let analysis_rate = self.sample_rate / decimation as f32;
     self.range = range;
-    self.decimation = spec.decimation;
+    self.decimation = decimation;
     self.shortest_lag = (analysis_rate / spec.highest_hz) as usize;
     // two periods of the longest lag and the neighbours tracking scores have to fit
     self.longest_lag =
