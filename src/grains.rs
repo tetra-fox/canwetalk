@@ -366,21 +366,21 @@ impl Grain {
       };
       *level = raised_cosine(quarters) as f32;
     }
-    if self.slope == 0.0 && sounded >= SHORTEST_RUN {
-      // at the input's own speed every read is as far behind as the first, and each of the
-      // samples they go by is a run of the input
-      let (whole, part) = split(scratch.delays[0]);
-      scratch.parts[..sounded].fill(part);
-      for (line, taps) in input.iter().zip(&mut scratch.taps) {
-        line.taps_along(newer, whole, taps.each_mut().map(|tap| &mut tap[..sounded]));
-      }
+    // at the input's own speed every read is as far behind as the first, and each of the
+    // samples they go by is a run of the input
+    let along = self.slope == 0.0 && sounded >= SHORTEST_RUN;
+    let (wholes, parts) = (
+      &mut scratch.wholes[..sounded],
+      &mut scratch.parts[..sounded],
+    );
+    if along {
+      (wholes[0], parts[0]) = split(scratch.delays[0]);
+      parts.fill(parts[0]);
     } else {
-      for ((whole, part), &delay) in
-        (scratch.wholes.iter_mut().zip(&mut scratch.parts)).zip(&scratch.delays[..sounded])
-      {
+      for ((whole, part), &delay) in wholes.iter_mut().zip(parts.iter_mut()).zip(&scratch.delays) {
         (*whole, *part) = split(delay);
       }
-      for (index, &whole) in scratch.wholes[..sounded].iter().enumerate() {
+      for (index, &whole) in wholes.iter().enumerate() {
         for (line, taps) in input.iter().zip(&mut scratch.taps) {
           for (tap, sample) in taps.iter_mut().zip(line.taps(newer - index, whole)) {
             tap[index] = sample;
@@ -388,11 +388,17 @@ impl Grain {
         }
       }
     }
-    for (sums, [a, b, c, d]) in scratch.sums.iter_mut().zip(&scratch.taps) {
+    for ((sums, line), taps) in (scratch.sums.iter_mut().zip(input)).zip(&mut scratch.taps) {
+      let taps = taps.each_mut().map(|tap| &mut tap[..sounded]);
+      let [a, b, c, d] = if along {
+        line.taps_along(newer, wholes[0], taps)
+      } else {
+        taps.map(|tap| &*tap)
+      };
       let sums = &mut sums[samples.start..][..sounded];
       let taps = a.iter().zip(b).zip(c).zip(d);
       for ((sum, (((&a, &b), &c), &d)), (part, level)) in
-        (sums.iter_mut().zip(taps)).zip(scratch.parts.iter().zip(&scratch.levels))
+        (sums.iter_mut().zip(taps)).zip(parts.iter().zip(&scratch.levels))
       {
         *sum += level * cubic([a, b, c, d], *part);
       }

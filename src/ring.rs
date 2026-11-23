@@ -64,34 +64,46 @@ impl Ring {
     [a, b, c, d]
   }
 
-  /// `taps` for reads at one delay a sample after another, each of the four in a slice of
-  /// its own. the first read is as it was before the newest `newer` samples were pushed
-  pub(crate) fn taps_along(&self, newer: usize, whole: usize, [a, b, c, d]: [&mut [f32]; 4]) {
-    self.run(newer + whole, b);
-    self.run(newer + whole + 1, c);
-    self.run(newer + whole + 2, d);
-    if whole == 0 {
-      for ((a, b), c) in a.iter_mut().zip(b).zip(c) {
-        *a = 2.0 * *b - *c;
-      }
-    } else {
-      self.run(newer + whole - 1, a);
+  /// `taps` for reads at one delay a sample after another, each of the four a run of its
+  /// own. the first read is as it was before the newest `newer` samples were pushed. a run
+  /// is of the ring itself where it lies in one piece there, and else is put in `room`
+  pub(crate) fn taps_along<'a>(
+    &'a self,
+    newer: usize,
+    whole: usize,
+    [a, b, c, d]: [&'a mut [f32]; 4],
+  ) -> [&'a [f32]; 4] {
+    let (b, c, d) = (
+      self.run(newer + whole, b),
+      self.run(newer + whole + 1, c),
+      self.run(newer + whole + 2, d),
+    );
+    if whole > 0 {
+      return [self.run(newer + whole - 1, a), b, c, d];
     }
+    for ((a, b), c) in a.iter_mut().zip(b).zip(c) {
+      *a = 2.0 * *b - *c;
+    }
+    [a, b, c, d]
   }
 
-  /// fills `run` with samples in the order they were pushed, from the one pushed `ago`
-  /// pushes before the newest
-  fn run(&self, ago: usize, run: &mut [f32]) {
+  /// as many samples as `room` has in the order they were pushed, from the one pushed
+  /// `ago` pushes before the newest. `room` is taken up only if the end of the ring comes
+  /// among them
+  fn run<'a>(&'a self, ago: usize, room: &'a mut [f32]) -> &'a [f32] {
     debug_assert!(
-      run.len() <= ago + 1 && ago < self.samples.len(),
+      room.len() <= ago + 1 && ago < self.samples.len(),
       "{} samples from {ago} ago are not all held",
-      run.len()
+      room.len()
     );
     let first = self.next.wrapping_sub(1 + ago) & self.mask;
-    // up to the end of the ring, and the rest from its start
-    let (straight, around) = run.split_at_mut(run.len().min(self.samples.len() - first));
-    straight.copy_from_slice(&self.samples[first..][..straight.len()]);
+    if let Some(run) = self.samples.get(first..first + room.len()) {
+      return run;
+    }
+    let (straight, around) = room.split_at_mut(self.samples.len() - first);
+    straight.copy_from_slice(&self.samples[first..]);
     around.copy_from_slice(&self.samples[..around.len()]);
+    room
   }
 }
 
@@ -139,8 +151,8 @@ mod tests {
       ring.push((i * i) as f32);
     }
     for (newer, whole) in [(4, 0), (4, 1), (9, 3), (7, 20)] {
-      let mut along = [[0.0; 5]; 4];
-      ring.taps_along(newer, whole, along.each_mut().map(|tap| &mut tap[..]));
+      let mut room = [[0.0; 5]; 4];
+      let along = ring.taps_along(newer, whole, room.each_mut().map(|tap| &mut tap[..]));
       for read in 0..5 {
         let each = ring.taps(newer - read, whole);
         assert_eq!(
