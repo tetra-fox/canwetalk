@@ -156,7 +156,7 @@ impl Engine {
     // how many grains are gone by each sample, having ended at the one before. the grains
     // there are at the start sound on to their ends whatever comes, so each is taken to its
     // end or the block's in turn, and so is each that starts from where it does
-    let mut gone = [0; BLOCK + 1];
+    let mut gone = [0u16; BLOCK + 1];
     let mut sounding = self.grains.len();
     self.grains.retain_mut(|grain| {
       let last = grain.sound(input, held - 1, 0..count, scratch);
@@ -167,7 +167,7 @@ impl Engine {
     });
     for (index, (out, wanted)) in out.iter_mut().zip(wanted).enumerate() {
       let newer = held - 1 - index;
-      sounding -= gone[index];
+      sounding -= usize::from(gone[index]);
       if let Some(mut grain) = self.advance(wanted, input[0].len(), sounding) {
         sounding += 1;
         match grain.sound(input, newer, index..count, scratch) {

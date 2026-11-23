@@ -66,6 +66,9 @@ pub(crate) struct Shifter {
   vibrato_phase: f64,
   detune: Detune,
   stereo: Stereo,
+  /// the cycle and the vibrato each frame of a block came with, kept only while the block
+  /// is worked out
+  heard: [(Cycle, f64); BLOCK],
 }
 
 /// the pitch assumed until one is detected, the lowest of the detector's range
@@ -92,6 +95,13 @@ impl Shifter {
       vibrato_phase: 0.0,
       detune: Detune::new(sample_rate),
       stereo: Stereo::new(sample_rate),
+      heard: [(
+        Cycle {
+          pitch: 0.0,
+          phase: None,
+        },
+        0.0,
+      ); BLOCK],
     }
   }
 
@@ -109,6 +119,7 @@ impl Shifter {
       vibrato_phase,
       detune,
       stereo,
+      heard: _,
     } = self;
     detector.reset();
     *input_pitch = lowest_pitch(detector, *sample_rate as f32);
@@ -137,19 +148,14 @@ impl Shifter {
   /// ahead of the notes of the first frame, and no note comes with a later one
   pub(crate) fn process(&mut self, frames: &mut [[f32; 2]], settings: &[Settings]) {
     let count = frames.len();
-    let unheard = Cycle {
-      pitch: 0.0,
-      phase: None,
-    };
-    let mut heard = [(unheard, 0.0); BLOCK];
-    for ((frame, settings), heard) in frames.iter().zip(settings).zip(&mut heard) {
-      *heard = self.hear(*frame, settings);
+    for (index, (frame, settings)) in frames.iter().zip(settings).enumerate() {
+      self.heard[index] = self.hear(*frame, settings);
     }
     let mut voiced = [[0.0; 2]; BLOCK];
     let voiced = &mut voiced[..count];
     self
       .notes
-      .tick(&heard[..count], settings, &self.input, voiced);
+      .tick(&self.heard[..count], settings, &self.input, voiced);
     for ((frame, voiced), settings) in frames.iter_mut().zip(voiced).zip(settings) {
       let Amounts { detune, stereo, .. } = settings.effects;
       let out = self
