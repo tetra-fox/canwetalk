@@ -18,9 +18,9 @@ const HALF_WINDOW: f64 = 0.5;
 /// correlation under which the waveform is taken not to repeat, and the mark runs on by the
 /// detected period
 const MATCH: f32 = 0.5;
-/// how much of the way a mark moves each period toward the middle of the period's energy, so
-/// that a grain's window has the bulk of a cycle under its own middle. the first mark of a
-/// run goes all the way, and the rest little enough that the pitch does not move with them
+/// how much of the way a mark moves each period away from the middle of the energy around
+/// it. the first mark of a run moves the whole distance. the marks settle on the quiet part
+/// of the cycle, half a period from the loud part
 const PULL: f64 = 0.02;
 
 pub(crate) struct Marks {
