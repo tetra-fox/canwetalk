@@ -15,7 +15,8 @@ use nice_plug_iced::{
   create_iced_editor,
 };
 use skeuo::glam::{Mat4, Vec2, Vec3};
-use skeuo::{Light, Look, Material, Mesh, Object, Scene, parts};
+use skeuo::parts;
+use skeuo::{Light, Look, Material, Mesh, Object, Scene};
 
 use crate::params::CanWeTalkParams;
 
@@ -42,6 +43,14 @@ impl Control {
       Self::Pitch => &params.shift.pitch,
       Self::Formant => &params.shift.formant,
       Self::Mix => &params.mix,
+    }
+  }
+
+  /// the kind of knob it is: the two shifts match, and the mix is set apart
+  fn knob(self) -> parts::Knob {
+    match self {
+      Self::Pitch | Self::Formant => parts::Knob::skirted(KNOB_RADIUS, KNOB_HEIGHT),
+      Self::Mix => parts::Knob::dished(KNOB_RADIUS * 0.8, KNOB_HEIGHT),
     }
   }
 
@@ -95,13 +104,30 @@ pub(crate) fn create(params: Arc<CanWeTalkParams>) -> Option<IcedEditor> {
   )
 }
 
+/// the meshes every panel is made of, ahead of two for each control: its knob and the mark
+/// on it
+const PLATE: usize = 0;
+const SCREW: usize = 1;
+const SCALE: usize = 2;
+const KNOBS: usize = 3;
+
 fn meshes() -> Arc<[Mesh]> {
-  Arc::from([
+  let mut meshes = vec![
     parts::plate(WIDTH, HEIGHT, 6.0),
-    parts::knob_body(KNOB_RADIUS, KNOB_HEIGHT, 48, true),
-    parts::knob_pointer(KNOB_RADIUS, KNOB_HEIGHT),
     parts::screw(6.0),
-  ])
+    parts::ticks(
+      11,
+      parts::KNOB_SWEEP,
+      KNOB_RADIUS + 4.0,
+      KNOB_RADIUS + 9.0,
+      5,
+    ),
+  ];
+  for control in Control::ALL {
+    let knob = control.knob();
+    meshes.extend([knob.body(), knob.dot()]);
+  }
+  Arc::from(meshes)
 }
 
 fn update(editor: &mut Editor, message: Message) -> Task<Message> {
@@ -142,7 +168,7 @@ fn view(editor: &Editor) -> Element<'_, Message, Theme> {
 
 fn scene(editor: &Editor) -> Scene {
   let mut objects = vec![Object {
-    mesh: 0,
+    mesh: PLATE,
     transform: Mat4::IDENTITY,
     material: Material {
       specular: 0.15,
@@ -150,16 +176,22 @@ fn scene(editor: &Editor) -> Scene {
       ..Material::matte(Vec3::new(0.30, 0.33, 0.38))
     },
   }];
-  for control in Control::ALL {
+  for (index, control) in Control::ALL.into_iter().enumerate() {
     let turn = control.param(&editor.params).unmodulated_normalized_value();
     let transform = parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
+    let body = KNOBS + index * 2;
     objects.push(Object {
-      mesh: 1,
+      mesh: SCALE,
+      transform: Mat4::from_translation(Vec3::new(control.x(), KNOB_Y, 0.0)),
+      material: Material::matte(Vec3::splat(0.85)),
+    });
+    objects.push(Object {
+      mesh: body,
       transform,
       material: Material::glossy(Vec3::new(0.08, 0.08, 0.09)),
     });
     objects.push(Object {
-      mesh: 2,
+      mesh: body + 1,
       transform,
       material: Material::matte(Vec3::splat(0.95)),
     });
@@ -171,7 +203,7 @@ fn scene(editor: &Editor) -> Scene {
     (WIDTH - 14.0, HEIGHT - 14.0),
   ] {
     objects.push(Object {
-      mesh: 3,
+      mesh: SCREW,
       transform: Mat4::from_translation(Vec3::new(x, y, 0.0)) * Mat4::from_rotation_z(x + y),
       material: Material::glossy(Vec3::splat(0.6)),
     });
