@@ -217,3 +217,142 @@ impl Vst3Plugin for CanWeTalk {
 
 nice_export_clap!(CanWeTalk);
 nice_export_vst3!(CanWeTalk);
+
+#[cfg(test)]
+mod tests {
+  use std::collections::VecDeque;
+
+  use nice_plug::context::process::SendEventError;
+
+  use super::*;
+
+  const RATE: f32 = 48_000.0;
+
+  /// stands in for the host over one buffer
+  struct Host {
+    transport: Transport,
+    events: VecDeque<PluginNoteEvent<CanWeTalk>>,
+  }
+
+  impl ProcessContext<CanWeTalk> for Host {
+    fn plugin_api(&self) -> PluginApi {
+      PluginApi::Clap
+    }
+
+    fn execute_background(&self, _task: ()) {}
+
+    fn execute_gui(&self, _task: ()) {}
+
+    fn transport(&self) -> &Transport {
+      &self.transport
+    }
+
+    fn next_event(&mut self) -> Option<PluginNoteEvent<CanWeTalk>> {
+      self.events.pop_front()
+    }
+
+    fn try_send_event(
+      &mut self,
+      event: PluginNoteEvent<CanWeTalk>,
+    ) -> Result<(), (PluginNoteEvent<CanWeTalk>, SendEventError)> {
+      Err((event, SendEventError::NoOutputBuffer))
+    }
+
+    fn set_latency_samples(&self, _samples: u32) {}
+
+    fn request_restart(&self) {}
+
+    fn set_current_voice_capacity(&self, _capacity: u32) {}
+  }
+
+  /// a MIDI message and the sample it comes at
+  type Message = (usize, [u8; 3]);
+
+  /// what a new plugin with its controls at their defaults makes of `input`, handed over in
+  /// buffers of the sizes `sizes` gives, over and over
+  fn render(input: &[[f32; 2]], messages: &[Message], sizes: &[usize]) -> Vec<[f32; 2]> {
+    let mut plugin = CanWeTalk::default();
+    plugin.sample_rate = RATE;
+    plugin.shifter = Shifter::new(RATE, plugin.params.detect.value());
+    let mut output = Vec::with_capacity(input.len());
+    let mut sizes = sizes.iter().cycle();
+    while output.len() < input.len() {
+      let start = output.len();
+      let frames = &input[start
+        ..input
+          .len()
+          .min(start + sizes.next().expect("at least one size"))];
+      let events = messages
+        .iter()
+        .filter(|(at, _)| (start..start + frames.len()).contains(at))
+        .map(|(at, bytes)| {
+          NoteEvent::from_midi((at - start) as u32, bytes).expect("a note, bend or pressure")
+        });
+      let mut host = Host {
+        transport: Transport::new(RATE),
+        events: events.collect(),
+      };
+      let mut channels = [0, 1].map(|side| frames.iter().map(|frame| frame[side]).collect());
+      let [left, right]: &mut [Vec<f32>; 2] = &mut channels;
+      let mut buffer = Buffer::default();
+      // SAFETY: the slices are of `channels`, which outlives `buffer`, and are as long as each
+      // other
+      unsafe {
+        buffer.set_slices(frames.len(), |slices| {
+          *slices = vec![left.as_mut_slice(), right.as_mut_slice()];
+        });
+      }
+      let mut aux = AuxiliaryBuffers {
+        inputs: &mut [],
+        outputs: &mut [],
+      };
+      plugin.process(&mut buffer, &mut aux, &mut host);
+      let [left, right] = &channels;
+      output.extend(left.iter().zip(right).map(|(&left, &right)| [left, right]));
+    }
+    output
+  }
+
+  /// a few harmonics of a low note, not the same on the two sides
+  fn tone(samples: usize) -> Vec<[f32; 2]> {
+    let harmonic = |index: usize, number: f32| {
+      (std::f32::consts::TAU * (index as f32 * number * 110.0 / RATE).fract()).sin() / number
+    };
+    (0..samples)
+      .map(|index| {
+        let low = harmonic(index, 1.0) + harmonic(index, 2.0);
+        [low + harmonic(index, 3.0), low + harmonic(index, 5.0)]
+      })
+      .collect()
+  }
+
+  /// notes, a bend and pressure that come at samples no buffer size here divides
+  const PLAYED: [Message; 7] = [
+    (3001, [0x90, 57, 100]),
+    (7777, [0xe0, 0, 0x50]),
+    (9001, [0xd0, 90, 0]),
+    (12_345, [0x90, 64, 100]),
+    (20_011, [0x80, 57, 0]),
+    (30_003, [0xe0, 0, 0x40]),
+    (40_001, [0x80, 64, 0]),
+  ];
+
+  #[test]
+  fn output_does_not_depend_on_how_the_host_splits_buffers() {
+    let input = tone(RATE as usize);
+    let whole = render(&input, &PLAYED, &[input.len()]);
+    for sizes in [
+      &[1][..],
+      &[32],
+      &[64],
+      &[512],
+      &[4096],
+      &[1, 7, 480, 33, 2048, 129],
+    ] {
+      assert!(
+        render(&input, &PLAYED, sizes) == whole,
+        "buffers of {sizes:?} samples sound different"
+      );
+    }
+  }
+}
