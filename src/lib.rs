@@ -20,9 +20,6 @@ mod ring;
 mod shifter;
 mod voice;
 
-/// how long the output can go on after the input stops, which is as long as smear holds on
-/// to a stretch of input
-const TAIL_SECONDS: f32 = 10.0;
 /// semitones the first channel's pitch bend reaches either way. it bends every note, as a
 /// plain keyboard's wheel does and as the MPE master channel does
 const MASTER_BEND_SEMITONES: f32 = 2.0;
@@ -129,7 +126,7 @@ impl Plugin for CanWeTalk {
       }
     }
 
-    ProcessStatus::Tail((TAIL_SECONDS * self.sample_rate) as u32)
+    ProcessStatus::Tail(self.shifter.tail() as u32)
   }
 }
 

@@ -120,6 +120,15 @@ impl Shifter {
     stereo.reset();
   }
 
+  /// the most samples the output can go on for after the input stops: what smear holds,
+  /// then what the voices read back over, then the delays of detune and stereo
+  pub(crate) fn tail(&self) -> usize {
+    self.smear.longest_delay()
+      + self.input[0].len()
+      + self.detune.longest_delay()
+      + self.stereo.longest_delay()
+  }
+
   /// the effect alone, with no latency against the input. the mode and latch of `settings`
   /// are given to `notes` beforehand, ahead of the sample's notes
   pub(crate) fn process(&mut self, frame: [f32; 2], settings: &Settings) -> [f32; 2] {
@@ -731,6 +740,36 @@ mod tests {
       let loudest = output.iter().fold(0f32, |peak, x| peak.max(x.abs()));
       assert!(loudest < 1e-6, "a peak of {loudest} with {effects:?}");
     }
+  }
+
+  /// smear at full on an input with no pitch holds a stretch for the longest it can, here
+  /// one taken up a quarter second before the input stops. once the tail has passed there
+  /// is nothing left of it
+  #[test]
+  fn nothing_sounds_once_the_tail_has_passed() {
+    let rate = 44_100.0;
+    let settings = Settings {
+      effects: Amounts {
+        smear: 1.0,
+        ..NEUTRAL.effects
+      },
+      detect: Range::Bass,
+      ..NEUTRAL
+    };
+    let mut state = 0x2545_f491_u32;
+    let noise = (0..(6.2 * rate) as usize).map(|_| {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      state as f32 / u32::MAX as f32 - 0.5
+    });
+    let mut shifter = Shifter::new(rate, settings.detect);
+    run(&mut shifter, &noise.collect::<Vec<_>>(), &settings);
+    let tail = vec![0.0; shifter.tail()];
+    run(&mut shifter, &tail, &settings);
+    let after = run(&mut shifter, &vec![0.0; rate as usize], &settings);
+    let loudest = after.iter().fold(0f32, |peak, x| peak.max(x.abs()));
+    assert!(loudest < 1e-6, "a peak of {loudest} after the tail");
   }
 
   fn note(channel: u8, key: u8) -> Note {

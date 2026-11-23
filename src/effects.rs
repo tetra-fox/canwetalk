@@ -68,6 +68,11 @@ impl Smear {
     self.rest();
   }
 
+  /// the most samples ago that what comes out can have gone in
+  pub(crate) fn longest_delay(&self) -> usize {
+    self.lines[0].len()
+  }
+
   /// lets go of the stretches held, for while there is no smear and nothing goes into the
   /// lines. the loops then start from the input as it next comes, not from what the lines
   /// were left with
@@ -168,6 +173,11 @@ impl Detune {
     self.phase = 0.0;
   }
 
+  /// the most samples ago that what comes out can have gone in
+  pub(crate) fn longest_delay(&self) -> usize {
+    self.line.len()
+  }
+
   /// `amount` is the control squared. at zero the frame comes back as it is, and still goes
   /// into the line for the copies to start from
   pub(crate) fn process(&mut self, frame: [f32; 2], amount: f64, sample_rate: f64) -> [f32; 2] {
@@ -198,6 +208,8 @@ impl Detune {
 /// gains of the four all-pass sections each channel goes through
 const ALLPASS_GAINS: [f32; 4] = [0.692_387_8, 0.936_065_43, 0.988_229_5, 0.998_748_84];
 const STEREO_DELAY_SECONDS: f64 = 0.006;
+/// samples the sections take to ring down by 60 dB, which the gain nearest one sets
+const ALLPASS_RING: usize = 12_000;
 
 /// widens by adding a phase-shifted, delayed copy of each side to itself, with opposite signs
 pub(crate) struct Stereo {
@@ -226,6 +238,11 @@ impl Stereo {
       channel.sections = [[0.0; 4]; 4];
       channel.line.clear();
     }
+  }
+
+  /// the most samples ago that what comes out can have gone in, to within 60 dB
+  pub(crate) fn longest_delay(&self) -> usize {
+    self.channels[0].line.len() + ALLPASS_RING
   }
 
   /// at an `amount` of zero the frame comes back as it is, and still goes through the
