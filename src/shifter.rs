@@ -185,7 +185,12 @@ impl Shifter {
       Some(phase) => phase.rem_euclid(1.0),
       None => (self.vibrato_phase + settings.vibrato.step).fract(),
     };
-    let vibrato = 2f64.powf(settings.vibrato.depth * (TAU * self.vibrato_phase).sin() / 12.0);
+    // with no depth the ratio comes to exactly one, and needs no sine or power for it
+    let vibrato = if settings.vibrato.depth == 0.0 {
+      1.0
+    } else {
+      2f64.powf(settings.vibrato.depth * (TAU * self.vibrato_phase).sin() / 12.0)
+    };
 
     // where the waveform does not repeat there are no cycles to mark, at the start of a word
     // or in a consonant, and the grains count the period off as they do unanchored
