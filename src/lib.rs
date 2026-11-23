@@ -43,6 +43,46 @@ enum MidiMode {
   PolyGate,
 }
 
+/// the length of a vibrato cycle against the host's tempo
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+enum Division {
+  #[name = "1/1"]
+  Whole,
+  #[name = "1/2"]
+  Half,
+  #[name = "1/4"]
+  Quarter,
+  #[name = "1/4T"]
+  QuarterTriplet,
+  #[name = "1/8"]
+  Eighth,
+  #[name = "1/8T"]
+  EighthTriplet,
+  #[name = "1/16"]
+  Sixteenth,
+  #[name = "1/16T"]
+  SixteenthTriplet,
+  #[name = "1/32"]
+  ThirtySecond,
+}
+
+impl Division {
+  /// in quarter notes, which is what hosts count beats in
+  fn beats(self) -> f64 {
+    match self {
+      Self::Whole => 4.0,
+      Self::Half => 2.0,
+      Self::Quarter => 1.0,
+      Self::QuarterTriplet => 2.0 / 3.0,
+      Self::Eighth => 0.5,
+      Self::EighthTriplet => 1.0 / 3.0,
+      Self::Sixteenth => 0.25,
+      Self::SixteenthTriplet => 1.0 / 6.0,
+      Self::ThirtySecond => 0.125,
+    }
+  }
+}
+
 /// the span of pitches the detector looks for
 #[derive(Enum, Clone, Copy, PartialEq, Eq)]
 enum DetectRange {
@@ -71,6 +111,14 @@ struct CanWeTalkParams {
   glide: FloatParam,
   #[id = "glide_notes"]
   glide_notes_only: BoolParam,
+  #[id = "vibrato"]
+  vibrato: FloatParam,
+  #[id = "vibrato_rate"]
+  vibrato_rate: FloatParam,
+  #[id = "vibrato_sync"]
+  vibrato_sync: BoolParam,
+  #[id = "vibrato_division"]
+  vibrato_division: EnumParam<Division>,
   #[id = "midi"]
   midi: EnumParam<MidiMode>,
   #[id = "attack"]
@@ -132,6 +180,29 @@ impl Default for CanWeTalkParams {
       smooth: percent("Smooth", 0.0),
       glide: percent("Glide", 0.0),
       glide_notes_only: BoolParam::new("Glide Notes Only", false),
+      vibrato: FloatParam::new(
+        "Vibrato",
+        0.0,
+        FloatRange::Linear {
+          min: 0.0,
+          max: 200.0,
+        },
+      )
+      .with_smoother(ramp.clone())
+      .with_unit(" ct")
+      .with_value_to_string(formatters::v2s_f32_rounded(0)),
+      vibrato_rate: FloatParam::new(
+        "Vibrato Rate",
+        5.0,
+        FloatRange::Linear {
+          min: 2.0,
+          max: 15.0,
+        },
+      )
+      .with_unit(" Hz")
+      .with_value_to_string(formatters::v2s_f32_rounded(2)),
+      vibrato_sync: BoolParam::new("Vibrato Sync", false),
+      vibrato_division: EnumParam::new("Vibrato Division", Division::Sixteenth),
       midi: EnumParam::new("MIDI", MidiMode::Poly),
       attack: milliseconds("Attack", 5.0),
       decay: milliseconds("Decay", 200.0),
@@ -213,6 +284,21 @@ impl Plugin for CanWeTalk {
   ) -> ProcessStatus {
     let params = &self.params;
     let mono = buffer.channels() == 1;
+    // synced, the vibrato takes its rate from the tempo, and while the host plays its phase
+    // from the position too, so a cycle starts on each division of the bar
+    let transport = context.transport();
+    let cycle_beats = params.vibrato_division.value().beats();
+    let beats_per_sample = (transport.tempo)
+      .filter(|_| params.vibrato_sync.value())
+      .map(|tempo| tempo / 60.0 / f64::from(self.sample_rate));
+    let vibrato_step = match beats_per_sample {
+      Some(beats) => beats / cycle_beats,
+      None => f64::from(params.vibrato_rate.value() / self.sample_rate),
+    };
+    let start_beats = transport
+      .pos_beats()
+      .filter(|_| transport.playing)
+      .zip(beats_per_sample);
     let mut settings = Settings {
       pitch: 0.0,
       formant: 0.0,
@@ -223,6 +309,9 @@ impl Plugin for CanWeTalk {
       smooth: 0.0,
       glide: f64::from(params.glide.value()),
       glide_notes_only: params.glide_notes_only.value(),
+      vibrato: 0.0,
+      vibrato_step,
+      vibrato_phase: None,
       mode: match params.midi.value() {
         MidiMode::Off => Mode::Off,
         MidiMode::Mono | MidiMode::MonoGate => Mode::Mono,
@@ -295,6 +384,9 @@ impl Plugin for CanWeTalk {
       settings.pitch = f64::from(params.pitch.smoothed.next() / 12.0);
       settings.formant = f64::from(params.formant.smoothed.next() / 12.0);
       settings.formant_follow = f64::from(params.formant_follow.smoothed.next());
+      settings.vibrato = f64::from(params.vibrato.smoothed.next() / 100.0);
+      settings.vibrato_phase =
+        start_beats.map(|(start, per_sample)| (start + index as f64 * per_sample) / cycle_beats);
       settings.detune = f64::from(params.detune.smoothed.next());
       settings.smear = f64::from(params.smear.smoothed.next());
       // one channel has no sides to widen, and the widener would only comb it

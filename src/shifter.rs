@@ -5,6 +5,8 @@
 //! frequencies are in cycles per two samples, so 1 is the Nyquist frequency and a period of
 //! P samples is 2 / P
 
+use std::f64::consts::TAU;
+
 use crate::effects::{Detune, Smear, Stereo};
 use crate::envelope::{Adsr, Envelope};
 use crate::grains::{Engine, Shape};
@@ -69,6 +71,13 @@ pub(crate) struct Settings {
   pub(crate) glide: f64,
   /// glide between notes only, and follow the input pitch as it is
   pub(crate) glide_notes_only: bool,
+  /// semitones the vibrato moves every voice's pitch, either way
+  pub(crate) vibrato: f64,
+  /// cycles the vibrato moves on each sample
+  pub(crate) vibrato_step: f64,
+  /// where in its cycle the vibrato is, when something outside sets that. otherwise it runs
+  /// on by `vibrato_step`
+  pub(crate) vibrato_phase: Option<f64>,
   pub(crate) mode: Mode,
   /// nothing sounds without a note, and notes rise and fall by `envelope`. otherwise a voice
   /// follows the input while no note is held
@@ -97,6 +106,8 @@ pub(crate) struct Shifter {
   down: Vec<Note>,
   /// semitones each channel is bent by. the first bends every note, the rest their own
   bends: [f64; CHANNELS],
+  /// where in its cycle the vibrato is, 0 to 1
+  vibrato_phase: f64,
   mode: Mode,
   gate: bool,
   /// counts notes, to tell which voice has had its note longest
@@ -143,6 +154,7 @@ impl Voice {
     &mut self,
     input_pitch: f64,
     bend: f64,
+    vibrato: f64,
     settings: &Settings,
     sample_rate: f64,
     input: &[Ring; 2],
@@ -170,6 +182,8 @@ impl Voice {
     } else {
       self.pitch
     };
+    // times one with no vibrato, which leaves a voice at the input pitch exactly there
+    let target = target * vibrato;
     let adsr = if settings.gate {
       &settings.envelope
     } else {
@@ -218,6 +232,7 @@ impl Shifter {
       latch: false,
       down: Vec::with_capacity(MAX_DOWN),
       bends: [0.0; CHANNELS],
+      vibrato_phase: 0.0,
       mode: Mode::Off,
       gate: false,
       clock: 0,
@@ -418,6 +433,12 @@ impl Shifter {
       line.push(sample);
     }
 
+    self.vibrato_phase = match settings.vibrato_phase {
+      Some(phase) => phase.rem_euclid(1.0),
+      None => (self.vibrato_phase + settings.vibrato_step).fract(),
+    };
+    let vibrato = 2f64.powf(settings.vibrato * (TAU * self.vibrato_phase).sin() / 12.0);
+
     let mut out = [0.0; 2];
     for voice in &mut self.voices {
       let bend = voice
@@ -426,6 +447,7 @@ impl Shifter {
       let voiced = voice.tick(
         self.input_pitch,
         bend,
+        vibrato,
         settings,
         self.sample_rate,
         &self.input,
@@ -464,6 +486,9 @@ mod tests {
     smooth: 0.0,
     glide: 0.0,
     glide_notes_only: false,
+    vibrato: 0.0,
+    vibrato_step: 0.0,
+    vibrato_phase: None,
     mode: Mode::Poly,
     gate: false,
     envelope: Adsr {
@@ -694,6 +719,42 @@ mod tests {
       "the release was cut short"
     );
     assert_eq!(loudest(&output[released + 1..]), 0.0);
+  }
+
+  /// held at the top and at the bottom of its cycle, the vibrato moves a note by its depth
+  #[test]
+  fn vibrato_moves_the_pitch_by_its_depth() {
+    for (phase, semitones) in [(0.25, 2.0), (0.75, -2.0)] {
+      let settings = Settings {
+        vibrato: 2.0,
+        vibrato_phase: Some(phase),
+        ..NEUTRAL
+      };
+      let mut shifter = shifter_in(&settings);
+      shifter.note_on(key(57));
+      let output = run(&mut shifter, &vowel(), &settings);
+      let expected = A3 * 2f32.powf(semitones / 12.0);
+      assert_near(pitch_hz(&output), expected, 0.005 * expected, "fundamental");
+    }
+  }
+
+  /// left to run, the vibrato goes through its cycle at the step it is given
+  #[test]
+  fn vibrato_runs_at_its_rate() {
+    let settings = Settings {
+      vibrato: 1.0,
+      vibrato_step: 4.0 / f64::from(RATE),
+      ..NEUTRAL
+    };
+    let mut shifter = shifter_in(&settings);
+    shifter.note_on(key(57));
+    run(&mut shifter, &vowel(), &settings);
+    assert_near(
+      shifter.vibrato_phase as f32,
+      0.0,
+      1e-3,
+      "phase after four whole cycles",
+    );
   }
 
   fn key(key: u8) -> Note {
