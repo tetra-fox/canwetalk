@@ -31,7 +31,7 @@ pub(crate) struct CanWeTalkParams {
   #[nested(group = "Expression")]
   pub(crate) expression: ExpressionParams,
   #[id = "detect"]
-  detect: EnumParam<Range>,
+  pub(crate) detect: EnumParam<Range>,
   #[id = "anchor"]
   anchor: BoolParam,
   #[id = "mix"]

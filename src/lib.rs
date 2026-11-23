@@ -39,9 +39,10 @@ impl Default for CanWeTalk {
   fn default() -> Self {
     // the host's rate arrives in `activate`, which builds the shifter again
     let sample_rate = 48_000.0;
+    let params = Arc::<CanWeTalkParams>::default();
     Self {
-      params: Arc::default(),
-      shifter: Shifter::new(sample_rate),
+      shifter: Shifter::new(sample_rate, params.detect.value()),
+      params,
       sample_rate,
     }
   }
@@ -85,7 +86,7 @@ impl Plugin for CanWeTalk {
     _context: &mut impl ActivateContext<Self>,
   ) -> bool {
     self.sample_rate = buffer_config.sample_rate;
-    self.shifter = Shifter::new(self.sample_rate);
+    self.shifter = Shifter::new(self.sample_rate, self.params.detect.value());
     true
   }
 

@@ -73,8 +73,10 @@ fn lowest_pitch(detector: &Detector, sample_rate: f32) -> f64 {
 }
 
 impl Shifter {
-  pub(crate) fn new(sample_rate: f32) -> Self {
-    let detector = Detector::new(sample_rate, Range::Mid);
+  /// `range` is the detection range the host has set, which the pitch assumed until one is
+  /// detected goes by
+  pub(crate) fn new(sample_rate: f32, range: Range) -> Self {
+    let detector = Detector::new(sample_rate, range);
     let input_pitch = lowest_pitch(&detector, sample_rate);
     Self {
       sample_rate: f64::from(sample_rate),
@@ -90,8 +92,7 @@ impl Shifter {
     }
   }
 
-  /// back to how `new` makes it but for the detector's range, which is the host's setting.
-  /// does not allocate
+  /// back to how `new` makes it with the range the detector has. does not allocate
   pub(crate) fn reset(&mut self) {
     // every field is named so that one added later cannot be left out
     let Self {
@@ -329,7 +330,7 @@ mod tests {
     let input = vowel_for((periods / VOWEL_HZ).ceil() as usize + 2);
     for anchor in [false, true] {
       let settings = Settings { anchor, ..NEUTRAL };
-      let output = run(&mut Shifter::new(RATE), &input, &settings);
+      let output = run(&mut Shifter::new(RATE, NEUTRAL.detect), &input, &settings);
       let settled = input.len() - RATE as usize;
       let error = output[settled..]
         .iter()
@@ -350,7 +351,7 @@ mod tests {
     };
     for anchor in [false, true] {
       let settings = Settings { anchor, ..settings };
-      let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
+      let output = run(&mut Shifter::new(RATE, NEUTRAL.detect), &vowel(), &settings);
       let expected = VOWEL_HZ * 2f32.powf(7.0 / 12.0);
       let fundamental = pitch_hz(&output);
       assert_near(fundamental, expected, 0.005 * expected, "fundamental");
@@ -370,7 +371,7 @@ mod tests {
     };
     for anchor in [false, true] {
       let settings = Settings { anchor, ..settings };
-      let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
+      let output = run(&mut Shifter::new(RATE, NEUTRAL.detect), &vowel(), &settings);
       let fundamental = pitch_hz(&output);
       assert_near(fundamental, VOWEL_HZ, 0.005 * VOWEL_HZ, "fundamental");
       let formant = strongest_harmonic_hz(&output, fundamental);
@@ -632,6 +633,8 @@ mod tests {
         smear: 0.2,
         stereo: 0.5,
       },
+      // the pitch the voices glide from at the start goes by the range
+      detect: Range::Bass,
       ..NEUTRAL
     };
     let play = |shifter: &mut Shifter| {
@@ -649,7 +652,7 @@ mod tests {
     used.reset();
 
     assert!(
-      play(&mut used) == play(&mut Shifter::new(RATE)),
+      play(&mut used) == play(&mut Shifter::new(RATE, settings.detect)),
       "a reset shifter differs from a new one"
     );
   }
@@ -716,7 +719,7 @@ mod tests {
       detect: Range::Bass,
       ..NEUTRAL
     };
-    let mut shifter = Shifter::new(192_000.0);
+    let mut shifter = Shifter::new(192_000.0, Range::Mid);
     shifter.process([0.0; 2], &settings);
     assert!(
       INPUT_PITCH.contains(&shifter.input_pitch),
@@ -766,7 +769,7 @@ mod tests {
 
   /// a shifter that takes notes in the mode of `settings`
   fn shifter_in(settings: &Settings) -> Shifter {
-    let mut shifter = Shifter::new(RATE);
+    let mut shifter = Shifter::new(RATE, settings.detect);
     shifter.notes.set_play(&settings.play);
     shifter.process([0.0; 2], settings);
     shifter
