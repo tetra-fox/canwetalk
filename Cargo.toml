@@ -1,0 +1,25 @@
+[package]
+name = "canwetalk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+description = "monophonic pitch and formant shifter plugin"
+publish = false
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nice-plug = "0.4.2"
+
+# the audio code is too slow to try out unoptimized
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

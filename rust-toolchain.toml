@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
+# the VST3 for Windows hosts, see `just bundle-windows`
+targets = ["x86_64-pc-windows-gnu"]
