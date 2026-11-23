@@ -47,10 +47,12 @@ pub(crate) struct Engine {
   output_phase: f64,
   /// the output pitch as of the last grain
   output_step: f64,
-  /// whether the grains line up with the input periods and read it undelayed
+  /// whether the grains line up with the input periods and read it undelayed. a new engine
+  /// counts both periods off from the same sample, so it starts out lined up
   locked: bool,
-  /// how much of the output is grains, the rest is the plain input
-  wet: f64,
+  /// how much of the output is grains, the rest is the plain input. none before the first
+  /// sample, which has nothing to fade from
+  wet: Option<f64>,
   /// input samples a grain centred on a cycle start takes to rise, which follows the input
   /// period slowly
   rise: Option<f64>,
@@ -76,8 +78,8 @@ impl Engine {
       input_phase: 0.0,
       output_phase: -1.0,
       output_step: 0.0,
-      locked: false,
-      wet: 0.0,
+      locked: true,
+      wet: None,
       rise: None,
       grains: Vec::with_capacity(MAX_GRAINS),
     }
@@ -219,8 +221,10 @@ impl Engine {
 
     // locked grains are at the input pitch, where the formants have nothing to follow
     let active = !(self.locked && shape.formant == 0.0);
-    self.wet += WET_STEP * (f64::from(u8::from(active)) - self.wet);
-    let wet = self.wet as f32;
+    let goal = f64::from(u8::from(active));
+    let wet = self.wet.map_or(goal, |wet| wet + WET_STEP * (goal - wet));
+    self.wet = Some(wet);
+    let wet = wet as f32;
     let mut out = [0.0; 2];
     for ((out, grains), line) in out.iter_mut().zip(grains).zip(input) {
       *out = wet * grains + (1.0 - wet) * line.ago(0);

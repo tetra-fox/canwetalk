@@ -231,13 +231,18 @@ mod tests {
 
   /// the same with the pitch `hz` gives for each sample
   fn vowel_at(samples: usize, hz: impl Fn(usize) -> f32) -> Vec<f32> {
-    let radius = (-std::f32::consts::PI * 80.0 / RATE).exp();
-    let feedback = 2.0 * radius * (std::f32::consts::TAU * FORMANT_HZ / RATE).cos();
-    let tilt = (-std::f32::consts::TAU * VOWEL_HZ / RATE).exp();
+    vowel_sampled_at(RATE, samples, hz)
+  }
+
+  /// the same at a sample rate of `rate`
+  fn vowel_sampled_at(rate: f32, samples: usize, hz: impl Fn(usize) -> f32) -> Vec<f32> {
+    let radius = (-std::f32::consts::PI * 80.0 / rate).exp();
+    let feedback = 2.0 * radius * (std::f32::consts::TAU * FORMANT_HZ / rate).cos();
+    let tilt = (-std::f32::consts::TAU * VOWEL_HZ / rate).exp();
     let (mut y1, mut y2, mut phase, mut source) = (0.0, 0.0, 0.0, 0.0);
     (0..samples)
       .map(|index| {
-        phase += hz(index) / RATE;
+        phase += hz(index) / rate;
         let pulse = if phase >= 1.0 {
           phase -= 1.0;
           3.0
@@ -337,6 +342,28 @@ mod tests {
         .zip(&input[settled..])
         .fold(0f32, |worst, (a, b)| worst.max((a - b).abs()));
       assert!(error < 1e-3, "error {error} with anchor {anchor}");
+    }
+  }
+
+  /// a new shifter counts the input's period and its own off from the same sample, so its
+  /// first grain is lined up and there is only the input to hear once the voice has faded in
+  #[test]
+  fn a_new_shifter_passes_the_input_on_at_every_sample_rate() {
+    for rate in [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0] {
+      let input = vowel_sampled_at(rate, rate as usize / 2, |_| VOWEL_HZ);
+      for anchor in [false, true] {
+        let settings = Settings { anchor, ..NEUTRAL };
+        let output = run(&mut Shifter::new(rate, settings.detect), &input, &settings);
+        let settled = rate as usize / 100;
+        let error = output[settled..]
+          .iter()
+          .zip(&input[settled..])
+          .fold(0f32, |worst, (a, b)| worst.max((a - b).abs()));
+        assert!(
+          error < 1e-3,
+          "error {error} at {rate} Hz with anchor {anchor}"
+        );
+      }
     }
   }
 
@@ -493,6 +520,38 @@ mod tests {
       "the release was cut short"
     );
     assert_eq!(loudest(&output[released + 1..]), 0.0);
+  }
+
+  /// a note that starts from silence starts with its first grain, and none of the input as it
+  /// is comes through ahead of that
+  #[test]
+  fn a_note_from_silence_starts_without_the_plain_input() {
+    let gated = Settings {
+      play: Play {
+        mode: Mode::PolyGate,
+        ..NEUTRAL.play
+      },
+      envelope: Adsr {
+        attack: 0.0,
+        ..NEUTRAL.envelope
+      },
+      ..NEUTRAL
+    };
+    let level =
+      |signal: &[f32]| (signal.iter().map(|x| x * x).sum::<f32>() / signal.len() as f32).sqrt();
+    let input = vowel();
+    let (before, after) = input.split_at(input.len() / 2);
+    let mut shifter = shifter_in(&gated);
+    run(&mut shifter, before, &gated);
+    shifter.notes.on(key(69));
+    let output = run(&mut shifter, after, &gated);
+    // a grain takes an input period to rise, and a millisecond is a ninth of that
+    let start = RATE as usize / 1000;
+    let (heard, plain) = (level(&output[..start]), level(after));
+    assert!(
+      heard < 0.1 * plain,
+      "the first millisecond is at {heard}, the input at {plain}"
+    );
   }
 
   /// a note let go fades at its own pitch, not the input's
