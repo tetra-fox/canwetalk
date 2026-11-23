@@ -19,7 +19,7 @@ const RAMP: SmoothingStyle = SmoothingStyle::Linear(100.0);
 #[derive(Params)]
 pub(crate) struct CanWeTalkParams {
   #[nested(group = "Shift")]
-  shift: ShiftParams,
+  pub(crate) shift: ShiftParams,
   #[nested(group = "Effects")]
   effects: EffectParams,
   #[nested(group = "Vibrato")]
@@ -59,11 +59,11 @@ struct VibratoClock {
 }
 
 #[derive(Params)]
-struct ShiftParams {
+pub(crate) struct ShiftParams {
   #[id = "pitch"]
-  pitch: FloatParam,
+  pub(crate) pitch: FloatParam,
   #[id = "formant"]
-  formant: FloatParam,
+  pub(crate) formant: FloatParam,
   #[id = "formant_follow"]
   formant_follow: FloatParam,
   #[id = "smooth"]

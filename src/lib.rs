@@ -9,6 +9,7 @@ use crate::notes::Note;
 use crate::params::CanWeTalkParams;
 use crate::shifter::{BLOCK, Settings, Shifter};
 
+mod editor;
 mod effects;
 mod envelope;
 mod grains;
@@ -78,12 +79,16 @@ impl Plugin for CanWeTalk {
   // pitch bend comes with the control changes
   const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
 
-  type Editor = ();
+  type Editor = nice_plug_iced::IcedEditor;
   type SysExMessage = ();
   type BackgroundTask = ();
 
   fn params(&self) -> Arc<dyn Params> {
     self.params.clone()
+  }
+
+  fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
+    editor::create(self.params.clone())
   }
 
   fn activate(
