@@ -6,15 +6,18 @@ use nice_plug::midi::{Channel, Key};
 use nice_plug::prelude::*;
 
 use crate::envelope::Adsr;
+use crate::notes::{Mode, Note};
 use crate::pitch::Range;
-use crate::shifter::{Mode, Note, Settings, Shifter};
+use crate::shifter::{Settings, Shifter};
 
 mod effects;
 mod envelope;
 mod grains;
+mod notes;
 mod pitch;
 mod ring;
 mod shifter;
+mod voice;
 
 /// how long the output can go on after the input stops, which is as long as smear holds on
 /// to a stretch of input
@@ -359,12 +362,12 @@ impl Plugin for CanWeTalk {
         match event {
           NoteEvent::NoteOn { channel, key, .. } => {
             if let Some(note) = note(channel, key) {
-              self.shifter.note_on(note);
+              self.shifter.notes.on(note);
             }
           }
           NoteEvent::NoteOff { channel, key, .. } => {
             if let Some(note) = note(channel, key) {
-              self.shifter.note_off(note);
+              self.shifter.notes.off(note);
             }
           }
           NoteEvent::PolyTuning {
@@ -374,7 +377,7 @@ impl Plugin for CanWeTalk {
             ..
           } => {
             if let Some(note) = note(channel, key) {
-              self.shifter.tune(note, f64::from(tuning));
+              self.shifter.notes.tune(note, f64::from(tuning));
             }
           }
           NoteEvent::PolyPressure {
@@ -384,7 +387,7 @@ impl Plugin for CanWeTalk {
             ..
           } => {
             if let Some(note) = note(channel, key) {
-              self.shifter.note_pressure(note, f64::from(pressure));
+              self.shifter.notes.note_pressure(note, f64::from(pressure));
             }
           }
           NoteEvent::PolyBrightness {
@@ -394,13 +397,16 @@ impl Plugin for CanWeTalk {
             ..
           } => {
             if let Some(note) = note(channel, key) {
-              self.shifter.note_slide(note, f64::from(brightness));
+              self.shifter.notes.note_slide(note, f64::from(brightness));
             }
           }
           NoteEvent::MidiChannelPressure {
             channel, pressure, ..
           } => {
-            self.shifter.channel_pressure(channel, f64::from(pressure));
+            self
+              .shifter
+              .notes
+              .channel_pressure(channel, f64::from(pressure));
           }
           NoteEvent::MidiCC {
             channel,
@@ -408,7 +414,7 @@ impl Plugin for CanWeTalk {
             value,
             ..
           } => {
-            self.shifter.channel_slide(channel, f64::from(value));
+            self.shifter.notes.channel_slide(channel, f64::from(value));
           }
           NoteEvent::MidiPitchBend { channel, value, .. } => {
             let range = match channel {
@@ -417,6 +423,7 @@ impl Plugin for CanWeTalk {
             };
             self
               .shifter
+              .notes
               .bend(channel, f64::from((2.0 * value - 1.0) * range));
           }
           _ => (),
