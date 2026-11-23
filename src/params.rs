@@ -8,6 +8,7 @@ use crate::envelope::Adsr;
 use crate::grains::Shape;
 use crate::notes::{Mode, Play};
 use crate::pitch::Range;
+use crate::shifter::{Settings, Vibrato};
 use crate::voice::Expression;
 
 /// the pitch and formant controls reach this far either way
@@ -18,25 +19,46 @@ const RAMP: SmoothingStyle = SmoothingStyle::Linear(100.0);
 #[derive(Params)]
 pub(crate) struct CanWeTalkParams {
   #[nested(group = "Shift")]
-  pub(crate) shift: ShiftParams,
+  shift: ShiftParams,
   #[nested(group = "Effects")]
-  pub(crate) effects: EffectParams,
+  effects: EffectParams,
   #[nested(group = "Vibrato")]
-  pub(crate) vibrato: VibratoParams,
+  vibrato: VibratoParams,
   #[nested(group = "Notes")]
-  pub(crate) notes: NoteParams,
+  notes: NoteParams,
   #[nested(group = "Envelope")]
-  pub(crate) envelope: EnvelopeParams,
+  envelope: EnvelopeParams,
   #[nested(group = "Expression")]
   pub(crate) expression: ExpressionParams,
   #[id = "detect"]
-  pub(crate) detect: EnumParam<Range>,
+  detect: EnumParam<Range>,
   #[id = "mix"]
   pub(crate) mix: FloatParam,
 }
 
+/// what stands for a whole block of samples
+pub(crate) struct Block {
+  /// whether there is one channel
+  mono: bool,
+  play: Play,
+  envelope: Adsr,
+  detect: Range,
+  vibrato: VibratoClock,
+}
+
+/// what a block's vibrato runs by
+struct VibratoClock {
+  /// cycles per sample
+  step: f64,
+  /// beats in a cycle
+  cycle_beats: f64,
+  /// the host's position in beats at the block's first sample, and the beats it moves on
+  /// each sample. only while the vibrato is synced and the host plays
+  position: Option<(f64, f64)>,
+}
+
 #[derive(Params)]
-pub(crate) struct ShiftParams {
+struct ShiftParams {
   #[id = "pitch"]
   pitch: FloatParam,
   #[id = "formant"]
@@ -48,7 +70,7 @@ pub(crate) struct ShiftParams {
 }
 
 #[derive(Params)]
-pub(crate) struct EffectParams {
+struct EffectParams {
   #[id = "detune"]
   detune: FloatParam,
   #[id = "smear"]
@@ -58,19 +80,19 @@ pub(crate) struct EffectParams {
 }
 
 #[derive(Params)]
-pub(crate) struct VibratoParams {
+struct VibratoParams {
   #[id = "vibrato"]
-  pub(crate) depth: FloatParam,
+  depth: FloatParam,
   #[id = "vibrato_rate"]
-  pub(crate) rate: FloatParam,
+  rate: FloatParam,
   #[id = "vibrato_sync"]
-  pub(crate) sync: BoolParam,
+  sync: BoolParam,
   #[id = "vibrato_division"]
-  pub(crate) division: EnumParam<Division>,
+  division: EnumParam<Division>,
 }
 
 #[derive(Params)]
-pub(crate) struct NoteParams {
+struct NoteParams {
   #[id = "midi"]
   mode: EnumParam<Mode>,
   #[id = "latch"]
@@ -82,7 +104,7 @@ pub(crate) struct NoteParams {
 }
 
 #[derive(Params)]
-pub(crate) struct EnvelopeParams {
+struct EnvelopeParams {
   #[id = "attack"]
   attack: FloatParam,
   #[id = "decay"]
@@ -106,7 +128,7 @@ pub(crate) struct ExpressionParams {
 
 /// the length of a vibrato cycle against the host's tempo
 #[derive(Enum, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Division {
+enum Division {
   #[name = "1/1"]
   Whole,
   #[name = "1/2"]
@@ -129,7 +151,7 @@ pub(crate) enum Division {
 
 impl Division {
   /// in quarter notes, which is what hosts count beats in
-  pub(crate) fn beats(self) -> f64 {
+  fn beats(self) -> f64 {
     match self {
       Self::Whole => 4.0,
       Self::Half => 2.0,
@@ -189,6 +211,33 @@ impl Default for CanWeTalkParams {
   }
 }
 
+impl CanWeTalkParams {
+  /// reads the controls that are not smoothed, once for a block
+  pub(crate) fn block(&self, transport: &Transport, sample_rate: f32, mono: bool) -> Block {
+    Block {
+      mono,
+      play: self.notes.play(),
+      envelope: self.envelope.adsr(),
+      detect: self.detect.value(),
+      vibrato: self.vibrato.clock(transport, sample_rate),
+    }
+  }
+
+  /// the settings for the sample `index` into `block`. moves the smoothed controls on by one
+  /// sample, so this is called once for each sample in turn
+  pub(crate) fn settings(&self, block: &Block, index: usize) -> Settings {
+    Settings {
+      shape: self.shift.next(),
+      vibrato: self.vibrato.next(&block.vibrato, index),
+      play: block.play,
+      envelope: block.envelope,
+      expression: self.expression.next(),
+      effects: self.effects.next(block.mono),
+      detect: block.detect,
+    }
+  }
+}
+
 impl Default for ShiftParams {
   fn default() -> Self {
     Self {
@@ -202,7 +251,7 @@ impl Default for ShiftParams {
 
 impl ShiftParams {
   /// the shape for the next sample. the semitone controls become octaves
-  pub(crate) fn next(&self) -> Shape {
+  fn next(&self) -> Shape {
     Shape {
       pitch: f64::from(self.pitch.smoothed.next() / 12.0),
       formant: f64::from(self.formant.smoothed.next() / 12.0),
@@ -224,7 +273,7 @@ impl Default for EffectParams {
 
 impl EffectParams {
   /// the amounts for the next sample, for one channel if `mono`
-  pub(crate) fn next(&self, mono: bool) -> Amounts {
+  fn next(&self, mono: bool) -> Amounts {
     let stereo = self.stereo.smoothed.next();
     Amounts {
       detune: f64::from(self.detune.smoothed.next()),
@@ -265,6 +314,40 @@ impl Default for VibratoParams {
   }
 }
 
+impl VibratoParams {
+  /// synced, the vibrato takes its rate from the tempo, and while the host plays its phase
+  /// from the position too, so a cycle starts on each division of the bar
+  fn clock(&self, transport: &Transport, sample_rate: f32) -> VibratoClock {
+    let cycle_beats = self.division.value().beats();
+    let beats_per_sample = (transport.tempo)
+      .filter(|_| self.sync.value())
+      .map(|tempo| tempo / 60.0 / f64::from(sample_rate));
+    VibratoClock {
+      step: match beats_per_sample {
+        Some(beats) => beats / cycle_beats,
+        None => f64::from(self.rate.value() / sample_rate),
+      },
+      cycle_beats,
+      position: transport
+        .pos_beats()
+        .filter(|_| transport.playing)
+        .zip(beats_per_sample),
+    }
+  }
+
+  /// the vibrato for the sample `index` into the block of `clock`. the depth's cents become
+  /// semitones
+  fn next(&self, clock: &VibratoClock, index: usize) -> Vibrato {
+    Vibrato {
+      depth: f64::from(self.depth.smoothed.next() / 100.0),
+      step: clock.step,
+      phase: clock
+        .position
+        .map(|(start, per_sample)| (start + index as f64 * per_sample) / clock.cycle_beats),
+    }
+  }
+}
+
 impl Default for NoteParams {
   fn default() -> Self {
     Self {
@@ -277,7 +360,7 @@ impl Default for NoteParams {
 }
 
 impl NoteParams {
-  pub(crate) fn play(&self) -> Play {
+  fn play(&self) -> Play {
     Play {
       mode: self.mode.value(),
       latch: self.latch.value(),
@@ -300,7 +383,7 @@ impl Default for EnvelopeParams {
 
 impl EnvelopeParams {
   /// the times in seconds
-  pub(crate) fn adsr(&self) -> Adsr {
+  fn adsr(&self) -> Adsr {
     Adsr {
       attack: f64::from(self.attack.value() / 1000.0),
       decay: f64::from(self.decay.value() / 1000.0),
@@ -324,7 +407,7 @@ impl Default for ExpressionParams {
 
 impl ExpressionParams {
   /// the settings for the next sample. the slide's semitones become octaves
-  pub(crate) fn next(&self) -> Expression {
+  fn next(&self) -> Expression {
     Expression {
       pressure_level: f64::from(self.pressure_level.smoothed.next()),
       slide_formant: f64::from(self.slide_formant.smoothed.next() / 12.0),

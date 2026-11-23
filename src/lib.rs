@@ -7,7 +7,7 @@ use nice_plug::prelude::*;
 
 use crate::notes::Note;
 use crate::params::CanWeTalkParams;
-use crate::shifter::{Settings, Shifter, Vibrato};
+use crate::shifter::Shifter;
 
 mod effects;
 mod envelope;
@@ -98,128 +98,19 @@ impl Plugin for CanWeTalk {
     _aux: &mut AuxiliaryBuffers,
     context: &mut impl ProcessContext<Self>,
   ) -> ProcessStatus {
-    let params = &self.params;
     let mono = buffer.channels() == 1;
-    // synced, the vibrato takes its rate from the tempo, and while the host plays its phase
-    // from the position too, so a cycle starts on each division of the bar
-    let transport = context.transport();
-    let cycle_beats = params.vibrato.division.value().beats();
-    let beats_per_sample = (transport.tempo)
-      .filter(|_| params.vibrato.sync.value())
-      .map(|tempo| tempo / 60.0 / f64::from(self.sample_rate));
-    let vibrato_step = match beats_per_sample {
-      Some(beats) => beats / cycle_beats,
-      None => f64::from(params.vibrato.rate.value() / self.sample_rate),
-    };
-    let start_beats = transport
-      .pos_beats()
-      .filter(|_| transport.playing)
-      .zip(beats_per_sample);
-    let play = params.notes.play();
-    let envelope = params.envelope.adsr();
-    let detect = params.detect.value();
+    let block = self
+      .params
+      .block(context.transport(), self.sample_rate, mono);
 
     let mut next_event = context.next_event();
     for (index, mut samples) in buffer.iter_samples().enumerate() {
-      while let Some(event) = next_event {
-        if event.timing() > index as u32 {
-          break;
-        }
-        // a host that names no channel for a note is not sending MPE, so the note goes on the
-        // first channel with every other. one it names no key for is not a note to play
-        let note = |channel: Channel, key: Key| {
-          Some(Note {
-            channel: channel.number().unwrap_or(0),
-            key: key.number()?,
-          })
-        };
-        match event {
-          NoteEvent::NoteOn { channel, key, .. } => {
-            if let Some(note) = note(channel, key) {
-              self.shifter.notes.on(note);
-            }
-          }
-          NoteEvent::NoteOff { channel, key, .. } => {
-            if let Some(note) = note(channel, key) {
-              self.shifter.notes.off(note);
-            }
-          }
-          NoteEvent::PolyTuning {
-            channel,
-            key,
-            tuning,
-            ..
-          } => {
-            if let Some(note) = note(channel, key) {
-              self.shifter.notes.tune(note, f64::from(tuning));
-            }
-          }
-          NoteEvent::PolyPressure {
-            channel,
-            key,
-            pressure,
-            ..
-          } => {
-            if let Some(note) = note(channel, key) {
-              self.shifter.notes.note_pressure(note, f64::from(pressure));
-            }
-          }
-          NoteEvent::PolyBrightness {
-            channel,
-            key,
-            brightness,
-            ..
-          } => {
-            if let Some(note) = note(channel, key) {
-              self.shifter.notes.note_slide(note, f64::from(brightness));
-            }
-          }
-          NoteEvent::MidiChannelPressure {
-            channel, pressure, ..
-          } => {
-            self
-              .shifter
-              .notes
-              .channel_pressure(channel, f64::from(pressure));
-          }
-          NoteEvent::MidiCC {
-            channel,
-            cc: SLIDE_CC,
-            value,
-            ..
-          } => {
-            self.shifter.notes.channel_slide(channel, f64::from(value));
-          }
-          NoteEvent::MidiPitchBend { channel, value, .. } => {
-            let range = match channel {
-              0 => MASTER_BEND_SEMITONES,
-              _ => params.expression.bend_range.value() as f32,
-            };
-            self
-              .shifter
-              .notes
-              .bend(channel, f64::from((2.0 * value - 1.0) * range));
-          }
-          _ => (),
-        }
+      while let Some(event) = next_event.filter(|event| event.timing() <= index as u32) {
+        self.handle(event);
         next_event = context.next_event();
       }
-
-      let settings = Settings {
-        shape: params.shift.next(),
-        vibrato: Vibrato {
-          depth: f64::from(params.vibrato.depth.smoothed.next() / 100.0),
-          step: vibrato_step,
-          phase: start_beats
-            .map(|(start, per_sample)| (start + index as f64 * per_sample) / cycle_beats),
-        },
-        play,
-        envelope,
-        expression: params.expression.next(),
-        effects: params.effects.next(mono),
-        detect,
-      };
-      let mix = params.mix.smoothed.next();
+      let settings = self.params.settings(&block, index);
+      let mix = self.params.mix.smoothed.next();
 
       let mut dry = [0.0; 2];
       for (dry, sample) in dry.iter_mut().zip(samples.iter_mut()) {
@@ -235,6 +126,75 @@ impl Plugin for CanWeTalk {
     }
 
     ProcessStatus::Tail((TAIL_SECONDS * self.sample_rate) as u32)
+  }
+}
+
+/// a host that names no channel for a note is not sending MPE, so the note goes on the first
+/// channel with every other. one it names no key for is not a note to play
+fn note(channel: Channel, key: Key) -> Option<Note> {
+  Some(Note {
+    channel: channel.number().unwrap_or(0),
+    key: key.number()?,
+  })
+}
+
+impl CanWeTalk {
+  /// passes on what the host sent about notes and their channels. the rest is ignored
+  fn handle(&mut self, event: PluginNoteEvent<Self>) {
+    let notes = &mut self.shifter.notes;
+    match event {
+      NoteEvent::NoteOn { channel, key, .. } if let Some(note) = note(channel, key) => {
+        notes.on(note);
+      }
+      NoteEvent::NoteOff { channel, key, .. } if let Some(note) = note(channel, key) => {
+        notes.off(note);
+      }
+      NoteEvent::PolyTuning {
+        channel,
+        key,
+        tuning,
+        ..
+      } if let Some(note) = note(channel, key) => {
+        notes.tune(note, f64::from(tuning));
+      }
+      NoteEvent::PolyPressure {
+        channel,
+        key,
+        pressure,
+        ..
+      } if let Some(note) = note(channel, key) => {
+        notes.note_pressure(note, f64::from(pressure));
+      }
+      NoteEvent::PolyBrightness {
+        channel,
+        key,
+        brightness,
+        ..
+      } if let Some(note) = note(channel, key) => {
+        notes.note_slide(note, f64::from(brightness));
+      }
+      NoteEvent::MidiChannelPressure {
+        channel, pressure, ..
+      } => {
+        notes.channel_pressure(channel, f64::from(pressure));
+      }
+      NoteEvent::MidiCC {
+        channel,
+        cc: SLIDE_CC,
+        value,
+        ..
+      } => {
+        notes.channel_slide(channel, f64::from(value));
+      }
+      NoteEvent::MidiPitchBend { channel, value, .. } => {
+        let range = match channel {
+          0 => MASTER_BEND_SEMITONES,
+          _ => self.params.expression.bend_range.value() as f32,
+        };
+        notes.bend(channel, f64::from((2.0 * value - 1.0) * range));
+      }
+      _ => (),
+    }
   }
 }
 
