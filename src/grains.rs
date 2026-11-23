@@ -7,7 +7,7 @@
 use std::f64::consts::TAU;
 
 use crate::marks::Cycle;
-use crate::ring::Ring;
+use crate::ring::{Ring, cubic, split};
 use crate::shifter::BLOCK;
 
 const MAX_GRAINS: usize = 128;
@@ -40,6 +40,16 @@ pub(crate) struct Shape {
   pub(crate) smooth: f64,
 }
 
+/// what a voice wants of its grains at one sample
+#[derive(Clone, Copy)]
+pub(crate) struct Wanted {
+  /// the cycle the input is in
+  pub(crate) cycle: Cycle,
+  /// the pitch to sound at
+  pub(crate) target: f64,
+  pub(crate) shape: Shape,
+}
+
 /// the grains of one voice
 pub(crate) struct Engine {
   /// position in the input period, 0 to 1
@@ -58,6 +68,33 @@ pub(crate) struct Engine {
   /// period slowly
   rise: Option<f64>,
   grains: Vec<Grain>,
+}
+
+/// what the grains of a voice work a block out in. nothing in it is kept for the next
+pub(crate) struct Scratch {
+  /// what the grains come to at each sample, for each channel
+  sums: [[f32; BLOCK]; 2],
+  /// for one grain at each sample it sounds: how far through its window it is and how
+  /// loud that makes it, how far behind it reads, as a part of a sample past the whole
+  /// ones, and the samples of each channel that it reads between
+  phases: [f64; BLOCK],
+  levels: [f32; BLOCK],
+  delays: [f64; BLOCK],
+  parts: [f32; BLOCK],
+  taps: [[[f32; 4]; BLOCK]; 2],
+}
+
+impl Scratch {
+  pub(crate) fn new() -> Self {
+    Self {
+      sums: [[0.0; BLOCK]; 2],
+      phases: [0.0; BLOCK],
+      levels: [0.0; BLOCK],
+      delays: [0.0; BLOCK],
+      parts: [0.0; BLOCK],
+      taps: [[[0.0; 4]; BLOCK]; 2],
+    }
+  }
 }
 
 struct Grain {
@@ -94,68 +131,64 @@ impl Engine {
     };
   }
 
-  /// the voice over the samples of `out`, sounding at each of `targets` an input whose cycle
-  /// is each of `cycles`. `input` holds `after` samples that came after the last of them
+  /// the voice over the samples of `out`, of each of which `wanted` says how it is to
+  /// sound. `input` holds `after` samples that came after the last of them
   pub(crate) fn tick(
     &mut self,
-    cycles: &[Cycle],
-    targets: &[f64],
-    shapes: &[Shape],
+    wanted: &[Wanted],
     input: &[Ring; 2],
     after: usize,
+    scratch: &mut Scratch,
     out: &mut [[f32; 2]],
   ) {
-    let held = after + out.len();
-    let mut sums = [[0.0; 2]; BLOCK];
-    let sums = &mut sums[..out.len()];
+    let (held, count) = (after + out.len(), out.len());
+    for sums in &mut scratch.sums {
+      sums[..count].fill(0.0);
+    }
     // how many grains are gone by each sample, having ended at the one before. the grains
     // there are at the start sound on to their ends whatever comes, so each is taken to its
     // end or the block's in turn, and so is each that starts from where it does
     let mut gone = [0; BLOCK + 1];
     let mut sounding = self.grains.len();
     self.grains.retain_mut(|grain| {
-      let last = grain.sound(input, held - 1, sums);
+      let last = grain.sound(input, held - 1, 0..count, scratch);
       if let Some(last) = last {
         gone[last + 1] += 1;
       }
       last.is_none()
     });
-    for (index, (((out, cycle), target), shape)) in
-      (out.iter_mut().zip(cycles).zip(targets).zip(shapes)).enumerate()
-    {
+    for (index, (out, wanted)) in out.iter_mut().zip(wanted).enumerate() {
       let newer = held - 1 - index;
       sounding -= gone[index];
-      if let Some(mut grain) = self.advance(*cycle, *target, shape, input[0].len(), sounding) {
+      if let Some(mut grain) = self.advance(wanted, input[0].len(), sounding) {
         sounding += 1;
-        match grain.sound(input, newer, &mut sums[index..]) {
+        match grain.sound(input, newer, index..count, scratch) {
           Some(last) => gone[index + last + 1] += 1,
           None => self.grains.push(grain),
         }
       }
 
       // locked grains are at the input pitch, where the formants have nothing to follow
-      let active = !(self.locked && shape.formant == 0.0);
+      let active = !(self.locked && wanted.shape.formant == 0.0);
       let goal = f64::from(u8::from(active));
       let wet = self.wet.map_or(goal, |wet| wet + WET_STEP * (goal - wet));
       self.wet = Some(wet);
       let wet = wet as f32;
-      for ((out, grains), line) in out.iter_mut().zip(sums[index]).zip(input) {
-        *out = wet * grains + (1.0 - wet) * line.ago(newer);
+      for ((out, sums), line) in out.iter_mut().zip(&scratch.sums).zip(input) {
+        *out = wet * sums[index] + (1.0 - wet) * line.ago(newer);
       }
     }
   }
 
-  /// moves the voice on by one sample, to sound at `target` an input whose cycle is `cycle`,
-  /// and gives the grain that starts there if one does. `sounding` is how many grains there
-  /// are and `held` how many samples the input lines hold
-  fn advance(
-    &mut self,
-    cycle: Cycle,
-    target: f64,
-    shape: &Shape,
-    held: usize,
-    sounding: usize,
-  ) -> Option<Grain> {
+  /// moves the voice on by one sample, to sound as `wanted`, and gives the grain that
+  /// starts there if one does. `sounding` is how many grains there are and `held` how many
+  /// samples the input lines hold
+  fn advance(&mut self, wanted: &Wanted, held: usize, sounding: usize) -> Option<Grain> {
+    let Wanted {
+      cycle,
+      target,
+      ref shape,
+    } = *wanted;
     // at the input pitch the grains only rebuild the input, so they are moved onto the input
     // periods and then faded out for the input itself
     let input_pitch = cycle.pitch;
@@ -261,27 +294,51 @@ impl Engine {
 }
 
 impl Grain {
-  /// adds the grain to each of `sums` in turn until it ends, and gives the one it ended at
-  /// if it did. `input` holds `newer` samples that came after the first
-  fn sound(&mut self, input: &[Ring; 2], newer: usize, sums: &mut [[f32; 2]]) -> Option<usize> {
-    for (index, sum) in sums.iter_mut().enumerate() {
-      // half a raised cosine up to the peak and half one down from it
-      let turn = if self.window_phase < self.peak {
-        0.5 * self.window_phase / self.peak
-      } else {
-        0.5 + 0.5 * (self.window_phase - self.peak) / (1.0 - self.peak)
-      };
-      let hann = (0.5 - 0.5 * (TAU * turn).cos()) as f32;
-      for (sum, line) in sum.iter_mut().zip(input) {
-        *sum += hann * line.read_before(newer - index, self.delay + self.extra);
-      }
+  /// adds the grain to the sums of `scratch` over `samples`, a sample at a time until it
+  /// ends, and gives how far into them it ended if it did. `input` holds `newer` samples
+  /// that came after the first of them
+  fn sound(
+    &mut self,
+    input: &[Ring; 2],
+    newer: usize,
+    samples: std::ops::Range<usize>,
+    scratch: &mut Scratch,
+  ) -> Option<usize> {
+    // one thing at a time for all the samples, in loops short enough to run several
+    // samples at once
+    let (mut sounded, mut going) = (0, true);
+    while going && sounded < samples.len() {
+      scratch.phases[sounded] = self.window_phase;
+      scratch.delays[sounded] = self.delay + self.extra;
       self.extra -= self.slope;
       self.window_phase += self.window_step;
-      if self.window_phase <= 1.0 {
-        continue;
-      }
-      return Some(index);
+      going = self.window_phase <= 1.0;
+      sounded += 1;
     }
-    None
+    for (level, &phase) in scratch.levels[..sounded].iter_mut().zip(&scratch.phases) {
+      // half a raised cosine up to the peak and half one down from it
+      let turn = if phase < self.peak {
+        0.5 * phase / self.peak
+      } else {
+        0.5 + 0.5 * (phase - self.peak) / (1.0 - self.peak)
+      };
+      *level = (0.5 - 0.5 * (TAU * turn).cos()) as f32;
+    }
+    for (index, &delay) in scratch.delays[..sounded].iter().enumerate() {
+      let (whole, part) = split(delay);
+      scratch.parts[index] = part;
+      for (line, taps) in input.iter().zip(&mut scratch.taps) {
+        taps[index] = line.taps(newer - index, whole);
+      }
+    }
+    for (sums, taps) in scratch.sums.iter_mut().zip(&scratch.taps) {
+      let sums = &mut sums[samples.start..][..sounded];
+      for (((sum, &taps), &part), level) in
+        (sums.iter_mut().zip(taps).zip(&scratch.parts)).zip(&scratch.levels)
+      {
+        *sum += level * cubic(taps, part);
+      }
+    }
+    (!going).then(|| sounded - 1)
   }
 }

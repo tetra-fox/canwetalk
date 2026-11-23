@@ -1045,13 +1045,14 @@ mod tests {
             set: vec![(0, "detect", detect)],
             ..Take::new(rate, input.iter().map(|x| [0.1 * x; 2]).collect())
           };
+          let size = std::env::var("PROBE_SIZE").map_or(512, |size| size.parse().expect("a size"));
           let mut spans = Vec::new();
           let skip = |spans: &[f64], size: usize| spans.len().min(rate as usize / size);
           let mut shares: Vec<f64> = (0..5)
             .map(|_| {
               spans.clear();
-              render_timed(&take, &[512], &mut spans);
-              let from = skip(&spans, 512);
+              render_timed(&take, &[size], &mut spans);
+              let from = skip(&spans, size);
               spans[from..].iter().sum::<f64>() / (seconds - 1) as f64 * 100.0
             })
             .collect();

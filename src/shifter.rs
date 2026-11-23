@@ -137,22 +137,19 @@ impl Shifter {
   /// ahead of the notes of the first frame, and no note comes with a later one
   pub(crate) fn process(&mut self, frames: &mut [[f32; 2]], settings: &[Settings]) {
     let count = frames.len();
-    let mut cycles = [Cycle {
+    let unheard = Cycle {
       pitch: 0.0,
       phase: None,
-    }; BLOCK];
-    let mut vibratos = [0.0; BLOCK];
-    for (((frame, settings), cycle), vibrato) in
-      (frames.iter().zip(settings).zip(&mut cycles)).zip(&mut vibratos)
-    {
-      (*cycle, *vibrato) = self.hear(*frame, settings);
+    };
+    let mut heard = [(unheard, 0.0); BLOCK];
+    for ((frame, settings), heard) in frames.iter().zip(settings).zip(&mut heard) {
+      *heard = self.hear(*frame, settings);
     }
-    let (cycles, vibratos) = (&cycles[..count], &vibratos[..count]);
     let mut voiced = [[0.0; 2]; BLOCK];
     let voiced = &mut voiced[..count];
     self
       .notes
-      .tick(cycles, vibratos, settings, &self.input, voiced);
+      .tick(&heard[..count], settings, &self.input, voiced);
     for ((frame, voiced), settings) in frames.iter_mut().zip(voiced).zip(settings) {
       let Amounts { detune, stereo, .. } = settings.effects;
       let out = self

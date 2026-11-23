@@ -4,7 +4,7 @@
 //! frequencies are in cycles per two samples, as in `shifter`
 
 use crate::envelope::{Adsr, Envelope};
-use crate::grains::{Engine, Shape};
+use crate::grains::{self, Engine, Shape, Wanted};
 use crate::marks::Cycle;
 use crate::notes::Note;
 use crate::ring::Ring;
@@ -31,6 +31,34 @@ pub(crate) struct Expression {
   pub(crate) pressure_level: f64,
   /// octaves a note's slide moves its formants at either end of its travel
   pub(crate) slide_formant: f64,
+}
+
+/// what a voice works a block out in. nothing in it is kept for the next
+pub(crate) struct Scratch {
+  /// at each sample what the voice wants of its grains, its level and its sound
+  wanted: [Wanted; BLOCK],
+  gains: [f32; BLOCK],
+  voiced: [[f32; 2]; BLOCK],
+  grains: grains::Scratch,
+}
+
+impl Scratch {
+  pub(crate) fn new() -> Self {
+    let nothing = Wanted {
+      cycle: Cycle {
+        pitch: 0.0,
+        phase: None,
+      },
+      target: 0.0,
+      shape: Shape::default(),
+    };
+    Self {
+      wanted: [nothing; BLOCK],
+      gains: [0.0; BLOCK],
+      voiced: [[0.0; 2]; BLOCK],
+      grains: grains::Scratch::new(),
+    }
+  }
 }
 
 pub(crate) struct Voice {
@@ -147,40 +175,43 @@ impl Voice {
   }
 
   /// adds the voice to the samples of `out`, of which `input` already holds every one's
-  /// input. each has its own input cycle, settings and ratio the vibrato moves the pitch by.
-  /// `bend` is the semitones the note's channels are bent by
+  /// input. each has its own settings, and in `heard` its input cycle and the ratio the
+  /// vibrato moves the pitch by. `bend` is the semitones the note's channels are bent by
   pub(crate) fn tick(
     &mut self,
-    cycles: &[Cycle],
+    heard: &[(Cycle, f64)],
     bend: f64,
-    vibratos: &[f64],
     settings: &[Settings],
     input: &[Ring; 2],
+    scratch: &mut Scratch,
     out: &mut [[f32; 2]],
   ) {
-    let (mut targets, mut gains) = ([0.0; BLOCK], [0.0; BLOCK]);
-    let mut shapes = [Shape::default(); BLOCK];
+    let Scratch {
+      wanted,
+      gains,
+      voiced,
+      grains,
+    } = scratch;
     // a voice that fades to silence is left where it is from that sample on
     let mut sounded = 0;
-    for ((cycle, vibrato), settings) in cycles.iter().zip(vibratos).zip(settings) {
-      let Some(moved) = self.moved(*cycle, bend, *vibrato, settings) else {
+    for (&(cycle, vibrato), settings) in heard.iter().zip(settings) {
+      let Some((target, shape, gain)) = self.moved(cycle, bend, vibrato, settings) else {
         break;
       };
-      (targets[sounded], shapes[sounded], gains[sounded]) = moved;
+      wanted[sounded] = Wanted {
+        cycle,
+        target,
+        shape,
+      };
+      gains[sounded] = gain;
       sounded += 1;
     }
-    let mut voiced = [[0.0; 2]; BLOCK];
-    self.engine.tick(
-      &cycles[..sounded],
-      &targets[..sounded],
-      &shapes[..sounded],
-      input,
-      out.len() - sounded,
-      &mut voiced[..sounded],
-    );
-    for ((out, voiced), gain) in out.iter_mut().zip(voiced).zip(gains).take(sounded) {
+    let (wanted, voiced) = (&wanted[..sounded], &mut voiced[..sounded]);
+    let after = out.len() - sounded;
+    self.engine.tick(wanted, input, after, grains, voiced);
+    for ((out, voiced), gain) in out.iter_mut().zip(voiced).zip(gains) {
       for (out, sample) in out.iter_mut().zip(voiced) {
-        *out += gain * sample;
+        *out += *gain * *sample;
       }
     }
   }

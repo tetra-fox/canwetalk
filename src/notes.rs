@@ -6,7 +6,7 @@ use nice_plug::prelude::Enum;
 use crate::marks::Cycle;
 use crate::ring::Ring;
 use crate::shifter::Settings;
-use crate::voice::{SLIDE_REST, Voice};
+use crate::voice::{SLIDE_REST, Scratch, Voice};
 
 const VOICES: usize = 16;
 /// notes that wait for a voice while more are held than there are voices
@@ -132,6 +132,8 @@ pub(crate) struct Notes {
   mode: Mode,
   /// counts notes, to tell which voice has had its note longest
   clock: u64,
+  /// what the voices work a block out in, one after another
+  scratch: Scratch,
 }
 
 /// semitones `note` is bent by, the first channel's bend and its own channel's if that is
@@ -159,6 +161,7 @@ impl Notes {
       channels: [Channel::REST; CHANNELS],
       mode: Mode::Off,
       clock: 0,
+      scratch: Scratch::new(),
     };
     notes.release_all();
     notes
@@ -178,6 +181,7 @@ impl Notes {
       down: _,
       latch: _,
       mode: _,
+      scratch: _,
     } = self;
     for voice in voices {
       voice.reset(input_pitch);
@@ -389,11 +393,11 @@ impl Notes {
   }
 
   /// adds every voice to the samples of `out`, of which `input` already holds every one's
-  /// input. each has its own input cycle, settings and ratio the vibrato moves the pitches by
+  /// input. each has its own settings, and in `heard` its input cycle and the ratio the
+  /// vibrato moves the pitches by
   pub(crate) fn tick(
     &mut self,
-    cycles: &[Cycle],
-    vibratos: &[f64],
+    heard: &[(Cycle, f64)],
     settings: &[Settings],
     input: &[Ring; 2],
     out: &mut [[f32; 2]],
@@ -402,7 +406,7 @@ impl Notes {
       let bend = voice
         .note
         .map_or(0.0, |note| note_bend(&self.channels, note));
-      voice.tick(cycles, bend, vibratos, settings, input, out);
+      voice.tick(heard, bend, settings, input, &mut self.scratch, out);
     }
   }
 }
