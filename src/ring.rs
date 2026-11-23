@@ -48,15 +48,19 @@ impl Ring {
   /// the four samples a read at a delay of `whole` samples and a part of one goes by, the
   /// newest first, as they were before the newest `newer` samples were pushed
   pub(crate) fn taps(&self, newer: usize, whole: usize) -> [f32; 4] {
-    let ago = |delay: usize| self.ago(newer + delay);
-    let (b, c, d) = (ago(whole), ago(whole + 1), ago(whole + 2));
+    debug_assert!(
+      newer + whole + 2 < self.samples.len(),
+      "a delay of {whole} is past what the ring held {newer} samples ago"
+    );
+    // they lie one after another, the oldest first, unless the end of the ring comes between
+    let oldest = self.next.wrapping_sub(newer + whole + 3) & self.mask;
+    let [d, c, b, after] = match self.samples.get(oldest..oldest + 4) {
+      Some(&[d, c, b, after]) => [d, c, b, after],
+      _ => std::array::from_fn(|tap| self.samples[(oldest + tap) & self.mask]),
+    };
     // nothing is newer than the newest sample, so its neighbour is taken from the line
     // through it and the one before
-    let a = if whole == 0 {
-      2.0 * b - c
-    } else {
-      ago(whole - 1)
-    };
+    let a = if whole == 0 { 2.0 * b - c } else { after };
     [a, b, c, d]
   }
 }
