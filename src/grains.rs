@@ -4,8 +4,6 @@
 //!
 //! frequencies are in cycles per two samples, as in `shifter`
 
-use std::f64::consts::TAU;
-
 use crate::marks::Cycle;
 use crate::ring::{Ring, cubic, split};
 use crate::shifter::BLOCK;
@@ -293,6 +291,37 @@ impl Engine {
   }
 }
 
+/// the terms of the sine of x quarter turns, in odd powers of x from the first up
+const QUARTER_TURN_SINE: [f64; 11] = [
+  std::f64::consts::FRAC_PI_2,
+  -0.6459640975062463,
+  0.07969262624616705,
+  -0.004681754135318688,
+  0.00016044118478735983,
+  -3.598843235212085e-6,
+  5.692172921967927e-8,
+  -6.688035109811468e-10,
+  6.0669357311061955e-12,
+  -4.377065467313742e-14,
+  2.571422892860474e-16,
+];
+
+/// a raised cosine `quarters` quarter turns from its foot, `0.5 - 0.5 * cos(PI * quarters)`.
+/// taken as the square of the sine of half the angle, the sine summed from its series,
+/// which the math library's cosine costs several times as much as
+fn raised_cosine(quarters: f64) -> f64 {
+  let square = quarters * quarters;
+  // in pairs, and pairs of pairs, which are all worked out at once where a sum term by
+  // term has to wait for each
+  let [a, b, c, d, e, f, g, h, i, j, k] = QUARTER_TURN_SINE;
+  let (fourth, eighth) = (square * square, (square * square) * (square * square));
+  let low = (a + b * square) + fourth * (c + d * square);
+  let middle = (e + f * square) + fourth * (g + h * square);
+  let high = (i + j * square) + fourth * k;
+  let sine = quarters * (low + eighth * (middle + eighth * high));
+  sine * sine
+}
+
 impl Grain {
   /// adds the grain to the sums of `scratch` over `samples`, a sample at a time until it
   /// ends, and gives how far into them it ended if it did. `input` holds `newer` samples
@@ -317,12 +346,12 @@ impl Grain {
     }
     for (level, &phase) in scratch.levels[..sounded].iter_mut().zip(&scratch.phases) {
       // half a raised cosine up to the peak and half one down from it
-      let turn = if phase < self.peak {
-        0.5 * phase / self.peak
+      let quarters = if phase < self.peak {
+        phase / self.peak
       } else {
-        0.5 + 0.5 * (phase - self.peak) / (1.0 - self.peak)
+        1.0 - (phase - self.peak) / (1.0 - self.peak)
       };
-      *level = (0.5 - 0.5 * (TAU * turn).cos()) as f32;
+      *level = raised_cosine(quarters) as f32;
     }
     for (index, &delay) in scratch.delays[..sounded].iter().enumerate() {
       let (whole, part) = split(delay);
@@ -340,5 +369,28 @@ impl Grain {
       }
     }
     (!going).then(|| sounded - 1)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::f64::consts::PI;
+
+  use super::*;
+
+  /// the series is the raised cosine to a few parts in 1e16 over a window, a quarter turn
+  /// either way. the first sample of a grain shorter than a sample can lie a little over
+  /// two quarter turns before that, and is still within 1e-9 there
+  #[test]
+  fn the_series_is_a_raised_cosine() {
+    let furthest = |quarters: std::ops::RangeInclusive<i32>| {
+      let errors = quarters.map(|thousandths| {
+        let quarters = f64::from(thousandths) / 1000.0;
+        (raised_cosine(quarters) - (0.5 - 0.5 * (PI * quarters).cos())).abs()
+      });
+      errors.fold(0.0, f64::max)
+    };
+    assert!(furthest(0..=1000) < 1e-15, "{} off", furthest(0..=1000));
+    assert!(furthest(-2300..=0) < 1e-9, "{} off", furthest(-2300..=0));
   }
 }
