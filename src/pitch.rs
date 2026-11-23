@@ -7,9 +7,9 @@ use crate::ring::Ring;
 /// the span of pitches looked for
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Range {
-  Low,
-  Mid,
   High,
+  Mid,
+  Bass,
 }
 
 struct RangeSpec {
@@ -33,7 +33,7 @@ impl Range {
       crossing_hz,
     };
     match self {
-      Self::Low => spec(4, 25.0, 700.0, 8000.0, 200.0),
+      Self::Bass => spec(4, 25.0, 700.0, 8000.0, 200.0),
       Self::Mid => spec(2, 40.0, 1000.0, 8000.0, 400.0),
       Self::High => spec(2, 40.0, 2000.0, 16000.0, 800.0),
     }
@@ -450,8 +450,8 @@ mod tests {
   fn each_range_is_found_between_its_quarters() {
     let sine = |phase: f32| 0.5 * (phase * std::f32::consts::TAU).sin();
     for (range, hz) in [
-      (Range::Low, 35.0),
-      (Range::Low, 500.0),
+      (Range::Bass, 35.0),
+      (Range::Bass, 500.0),
       (Range::High, 1400.0),
     ] {
       assert_detects(hz, range, sine);

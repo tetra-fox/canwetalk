@@ -35,9 +35,9 @@ enum MidiMode {
 /// the span of pitches the detector looks for
 #[derive(Enum, Clone, Copy, PartialEq, Eq)]
 enum DetectRange {
-  Low,
-  Mid,
   High,
+  Mid,
+  Bass,
 }
 
 #[derive(Params)]
@@ -100,7 +100,7 @@ impl Default for CanWeTalkParams {
       glide: percent("Glide", 0.0),
       glide_notes_only: BoolParam::new("Glide Notes Only", false),
       midi: EnumParam::new("MIDI", MidiMode::Poly),
-      detect: EnumParam::new("Detect", DetectRange::Mid),
+      detect: EnumParam::new("Detection Range", DetectRange::Mid),
       mix: percent("Mix", 1.0),
     }
   }
@@ -187,7 +187,7 @@ impl Plugin for CanWeTalk {
         MidiMode::Poly => Mode::Poly,
       },
       detect: match params.detect.value() {
-        DetectRange::Low => Range::Low,
+        DetectRange::Bass => Range::Bass,
         DetectRange::Mid => Range::Mid,
         DetectRange::High => Range::High,
       },
