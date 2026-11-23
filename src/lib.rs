@@ -66,6 +66,8 @@ struct CanWeTalkParams {
   glide_notes_only: BoolParam,
   #[id = "midi"]
   midi: EnumParam<MidiMode>,
+  #[id = "latch"]
+  latch: BoolParam,
   #[id = "bend_range"]
   bend_range: IntParam,
   #[id = "detect"]
@@ -106,6 +108,7 @@ impl Default for CanWeTalkParams {
       glide: percent("Glide", 0.0),
       glide_notes_only: BoolParam::new("Glide Notes Only", false),
       midi: EnumParam::new("MIDI", MidiMode::Poly),
+      latch: BoolParam::new("Latch", false),
       // 48 is what MPE controllers send over unless told otherwise
       bend_range: IntParam::new("MPE Bend Range", 48, IntRange::Linear { min: 1, max: 96 })
         .with_unit(" st"),
@@ -196,6 +199,7 @@ impl Plugin for CanWeTalk {
         MidiMode::Mono => Mode::Mono,
         MidiMode::Poly => Mode::Poly,
       },
+      latch: params.latch.value(),
       detect: match params.detect.value() {
         DetectRange::Bass => Range::Bass,
         DetectRange::Mid => Range::Mid,

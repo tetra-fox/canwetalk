@@ -13,6 +13,8 @@ use crate::ring::Ring;
 const VOICES: usize = 16;
 /// notes that wait for a voice while more are held than there are voices
 const MAX_WAITING: usize = 16;
+/// keys tracked as down at once, for latch to know when the last one comes up
+const MAX_DOWN: usize = 64;
 const HISTORY_SAMPLES: usize = 200_000;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
@@ -61,6 +63,8 @@ pub(crate) struct Settings {
   /// glide between notes only, and follow the input pitch as it is
   pub(crate) glide_notes_only: bool,
   pub(crate) mode: Mode,
+  /// notes sound on after their keys come up, until the next key pressed with none down
+  pub(crate) latch: bool,
   pub(crate) detect: Range,
 }
 
@@ -77,6 +81,9 @@ pub(crate) struct Shifter {
   follower: Option<usize>,
   /// held notes that lost their voice to a later one, the latest last
   waiting: Vec<Note>,
+  latch: bool,
+  /// the keys that are down, which under latch are not all the notes that sound
+  down: Vec<Note>,
   /// semitones each channel is bent by. the first bends every note, the rest their own
   bends: [f64; CHANNELS],
   mode: Mode,
@@ -192,6 +199,8 @@ impl Shifter {
       voices: std::array::from_fn(|_| Voice::new(rate, input_pitch)),
       follower: None,
       waiting: Vec::with_capacity(MAX_WAITING),
+      latch: false,
+      down: Vec::with_capacity(MAX_DOWN),
       bends: [0.0; CHANNELS],
       mode: Mode::Off,
       clock: 0,
@@ -234,6 +243,7 @@ impl Shifter {
   /// drops every note and leaves the first voice following the input
   fn release_all(&mut self) {
     self.waiting.clear();
+    self.down.clear();
     for voice in &mut self.voices {
       voice.note = None;
       voice.sounding = false;
@@ -248,6 +258,18 @@ impl Shifter {
       Mode::Mono => 1,
       Mode::Poly => VOICES,
     };
+    if self.latch && self.down.is_empty() {
+      // the first key after all came up starts over. the notes it replaces fade out where
+      // they are, and it takes one of their voices so it can glide from there
+      self.waiting.clear();
+      for voice in &mut self.voices {
+        voice.sounding &= voice.note.is_none();
+        voice.note = None;
+      }
+    }
+    if !self.down.contains(&note) && self.down.len() < MAX_DOWN {
+      self.down.push(note);
+    }
     self.clock += 1;
     let bend = channel_bend(&self.bends, note.channel);
     let voices = &mut self.voices[..count];
@@ -281,6 +303,14 @@ impl Shifter {
   }
 
   pub(crate) fn note_off(&mut self, note: Note) {
+    self.down.retain(|&down| down != note);
+    if !self.latch {
+      self.release(note);
+    }
+  }
+
+  /// stops a note sounding
+  fn release(&mut self, note: Note) {
     self.waiting.retain(|&waiting| waiting != note);
     let Some(index) = self
       .voices
@@ -329,6 +359,23 @@ impl Shifter {
       self.release_all();
     }
 
+    if settings.latch != self.latch {
+      self.latch = settings.latch;
+      if !self.latch {
+        // what only the latch was holding goes, a waiting note before the voices so that
+        // none of them takes it up
+        let down = &self.down;
+        self.waiting.retain(|note| down.contains(note));
+        for index in 0..VOICES {
+          if let Some(note) = self.voices[index]
+            .note
+            .filter(|note| !self.down.contains(note))
+          {
+            self.release(note);
+          }
+        }
+      }
+    }
     if settings.detect != self.detector.range() {
       self.detector.set_range(settings.detect);
       self.input_pitch = self.lowest_pitch();
@@ -395,6 +442,7 @@ mod tests {
     glide: 0.0,
     glide_notes_only: false,
     mode: Mode::Poly,
+    latch: false,
     detect: Range::Mid,
   };
 
@@ -529,6 +577,63 @@ mod tests {
       let formant = strongest_harmonic_hz(&output, A3);
       assert_near(formant, FORMANT_HZ * 2f32.powf(follow), A3, "formant");
     }
+  }
+
+  #[test]
+  fn latch_holds_notes_until_the_next_key_after_all_are_up() {
+    let latched = Settings {
+      latch: true,
+      ..NEUTRAL
+    };
+    let mut shifter = shifter_in(&latched);
+    shifter.note_on(key(57));
+    shifter.note_off(key(57));
+    let output = run(&mut shifter, &vowel(), &latched);
+    assert_near(
+      pitch_hz(&output),
+      A3,
+      0.005 * A3,
+      "fundamental after the key came up",
+    );
+
+    shifter.note_on(key(64));
+    shifter.note_off(key(64));
+    let output = run(&mut shifter, &vowel(), &latched);
+    assert_near(
+      pitch_hz(&output),
+      E4,
+      0.005 * E4,
+      "fundamental after the next key",
+    );
+    assert!(
+      power_at(&output, E4) > 100.0 * power_at(&output, A3),
+      "the first note still sounds"
+    );
+
+    let output = run(&mut shifter, &vowel(), &NEUTRAL);
+    assert_near(
+      pitch_hz(&output),
+      VOWEL_HZ,
+      0.55,
+      "fundamental with the latch off",
+    );
+  }
+
+  #[test]
+  fn latch_adds_keys_pressed_while_one_is_down() {
+    let latched = Settings {
+      latch: true,
+      ..NEUTRAL
+    };
+    let mut shifter = shifter_in(&latched);
+    shifter.note_on(key(57));
+    shifter.note_on(key(64));
+    shifter.note_off(key(57));
+    shifter.note_off(key(64));
+    let output = run(&mut shifter, &vowel(), &latched);
+    let absent = power_at(&output, C4);
+    assert!(power_at(&output, A3) > 100.0 * absent, "A3 is missing");
+    assert!(power_at(&output, E4) > 100.0 * absent, "E4 is missing");
   }
 
   fn key(key: u8) -> Note {
