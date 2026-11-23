@@ -40,8 +40,6 @@ pub(crate) struct CanWeTalkParams {
 pub(crate) struct Block {
   /// whether there is one channel
   mono: bool,
-  play: Play,
-  envelope: Adsr,
   detect: Range,
   vibrato: VibratoClock,
 }
@@ -216,8 +214,6 @@ impl CanWeTalkParams {
   pub(crate) fn block(&self, transport: &Transport, sample_rate: f32, mono: bool) -> Block {
     Block {
       mono,
-      play: self.notes.play(),
-      envelope: self.envelope.adsr(),
       detect: self.detect.value(),
       vibrato: self.vibrato.clock(transport, sample_rate),
     }
@@ -229,8 +225,8 @@ impl CanWeTalkParams {
     Settings {
       shape: self.shift.next(),
       vibrato: self.vibrato.next(&block.vibrato, index),
-      play: block.play,
-      envelope: block.envelope,
+      play: self.notes.next(),
+      envelope: self.envelope.next(),
       expression: self.expression.next(),
       effects: self.effects.next(block.mono),
       detect: block.detect,
@@ -360,11 +356,12 @@ impl Default for NoteParams {
 }
 
 impl NoteParams {
-  fn play(&self) -> Play {
+  /// how notes are played for the next sample
+  fn next(&self) -> Play {
     Play {
       mode: self.mode.value(),
       latch: self.latch.value(),
-      glide: f64::from(self.glide.value()),
+      glide: f64::from(self.glide.smoothed.next()),
       glide_notes_only: self.glide_notes_only.value(),
     }
   }
@@ -382,12 +379,12 @@ impl Default for EnvelopeParams {
 }
 
 impl EnvelopeParams {
-  /// the times in seconds
-  fn adsr(&self) -> Adsr {
+  /// the envelope for the next sample, its times in seconds
+  fn next(&self) -> Adsr {
     Adsr {
       attack: f64::from(self.attack.value() / 1000.0),
       decay: f64::from(self.decay.value() / 1000.0),
-      sustain: f64::from(self.sustain.value()),
+      sustain: f64::from(self.sustain.smoothed.next()),
       release: f64::from(self.release.value() / 1000.0),
     }
   }
