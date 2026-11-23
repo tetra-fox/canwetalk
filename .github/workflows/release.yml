@@ -1,0 +1,102 @@
+# a v* tag makes a draft release with the plugin bundled for each platform, to be published by
+# hand. run by hand it only bundles the plugin and keeps the bundles as the run's artifacts
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# the checks run every dependency's code, so only the release job can write
+permissions:
+  contents: read
+
+env:
+  # the package the bundler is asked for, which the bundles and the downloads are named after
+  PLUGIN: canwetalk
+
+jobs:
+  check:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: The tag names the manifest's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(nix develop -c cargo pkgid | sed 's/.*[#@]//')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match the manifest's version $version" >&2
+            exit 1
+          fi
+      - run: nix develop -c just ci
+
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu
+            platform: linux-amd64
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc
+            platform: windows-amd64
+          - os: macos-latest
+            targets: x86_64-apple-darwin aarch64-apple-darwin
+            platform: macos-universal
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGETS: ${{ matrix.targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rustup instead of the flake, which has no Windows or macOS; it installs the toolchain
+      # that rust-toolchain.toml names
+      - name: Set up Rust
+        run: |
+          rustup toolchain install
+          for target in $TARGETS; do rustup target add "$target"; done
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # both formats, into target/bundled
+      - name: Bundle
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            cargo xtask bundle-universal "$PLUGIN" --release
+          else
+            cargo xtask bundle "$PLUGIN" --release --target "$TARGETS"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.PLUGIN }}-${{ matrix.platform }}
+          path: target/bundled/
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # each platform's bundles in a directory named after its artifact
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: Zip each platform
+        run: |
+          for dir in "$PLUGIN"-*/; do
+            (cd "$dir" && zip -r "../${dir%/}.zip" .)
+          done
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          files: ${{ env.PLUGIN }}-*.zip
+          fail_on_unmatched_files: true
+          draft: true
+          # a tag such as v0.2.0-rc1 is published as a prerelease, which is never marked latest
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true

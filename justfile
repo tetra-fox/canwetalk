@@ -15,3 +15,6 @@ test:
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
+
+# the gate for every push; ci.yml runs it
+ci: lint test
