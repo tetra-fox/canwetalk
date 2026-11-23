@@ -73,11 +73,12 @@ pub(crate) struct Scratch {
   /// what the grains come to at each sample, for each channel
   sums: [[f32; BLOCK]; 2],
   /// for one grain at each sample it sounds: how far through its window it is and how
-  /// loud that makes it, how far behind it reads, as a part of a sample past the whole
-  /// ones, and each of the four samples of each channel that it reads between
+  /// loud that makes it, how far behind it reads, as whole samples and the part of one
+  /// past them, and each of the four samples of each channel that it reads between
   phases: [f64; BLOCK],
   levels: [f32; BLOCK],
   delays: [f64; BLOCK],
+  wholes: [usize; BLOCK],
   parts: [f32; BLOCK],
   taps: [[[f32; BLOCK]; 4]; 2],
 }
@@ -89,6 +90,7 @@ impl Scratch {
       phases: [0.0; BLOCK],
       levels: [0.0; BLOCK],
       delays: [0.0; BLOCK],
+      wholes: [0; BLOCK],
       parts: [0.0; BLOCK],
       taps: [[[0.0; BLOCK]; 4]; 2],
     }
@@ -362,9 +364,12 @@ impl Grain {
         line.taps_along(newer, whole, taps.each_mut().map(|tap| &mut tap[..sounded]));
       }
     } else {
-      for (index, &delay) in scratch.delays[..sounded].iter().enumerate() {
-        let (whole, part) = split(delay);
-        scratch.parts[index] = part;
+      for ((whole, part), &delay) in
+        (scratch.wholes.iter_mut().zip(&mut scratch.parts)).zip(&scratch.delays[..sounded])
+      {
+        (*whole, *part) = split(delay);
+      }
+      for (index, &whole) in scratch.wholes[..sounded].iter().enumerate() {
         for (line, taps) in input.iter().zip(&mut scratch.taps) {
           for (tap, sample) in taps.iter_mut().zip(line.taps(newer - index, whole)) {
             tap[index] = sample;

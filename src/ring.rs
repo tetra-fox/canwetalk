@@ -95,12 +95,13 @@ impl Ring {
   }
 }
 
-/// the whole samples in a delay and the part of one that is left
+/// the whole samples in a delay, which no ring holds 2^31 of, and the part of one that is
+/// left
 pub(crate) fn split(delay: f64) -> (usize, f32) {
   // the floor, taken by hand since `floor` is a call into the math library
-  let toward_zero = delay as i64;
-  let whole = toward_zero - i64::from(toward_zero as f64 > delay);
-  let part = (delay - whole as f64) as f32;
+  let toward_zero = delay as i32;
+  let whole = toward_zero - i32::from(f64::from(toward_zero) > delay);
+  let part = (delay - f64::from(whole)) as f32;
   // under zero the whole part counts as zero, as it does cast to an index
   (whole.max(0) as usize, part)
 }
