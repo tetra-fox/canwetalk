@@ -23,6 +23,15 @@ pub(crate) const SLIDE_REST: f64 = 0.5;
 const A4_HZ: f64 = 440.0;
 const A4_NOTE: f64 = 69.0;
 
+/// what a note's pressure and slide do to it
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Expression {
+  /// how much of a note's level its pressure sets, 0 for none of it and 1 for all
+  pub(crate) pressure_level: f64,
+  /// octaves a note's slide moves its formants at either end of its travel
+  pub(crate) slide_formant: f64,
+}
+
 pub(crate) struct Voice {
   sample_rate: f64,
   engine: Engine,
@@ -116,9 +125,9 @@ impl Voice {
       }
       None => input_pitch,
     };
-    let step = 1.0 / (settings.glide.powi(3) * self.sample_rate + 1.0);
+    let step = 1.0 / (settings.play.glide.powi(3) * self.sample_rate + 1.0);
     self.pitch += step * (goal - self.pitch);
-    let target = if settings.glide_notes_only {
+    let target = if settings.play.glide_notes_only {
       let held = f64::from(u8::from(self.note.is_some()));
       self.note_blend += step * (held - self.note_blend);
       if self.note_blend < 1e-8 {
@@ -130,7 +139,7 @@ impl Voice {
     };
     // times one with no vibrato, which leaves a voice at the input pitch exactly there
     let target = target * vibrato;
-    let adsr = if settings.gate {
+    let adsr = if settings.play.mode.is_gated() {
       &settings.envelope
     } else {
       &FADE
@@ -138,18 +147,16 @@ impl Voice {
     // a voice with no note has no pressure or slide to go by
     let (pressed, slid) = match self.note {
       Some(_) => (
-        1.0 - settings.pressure_level * (1.0 - self.pressure),
-        settings.slide_formant * (self.slide - SLIDE_REST) / SLIDE_REST,
+        1.0 - settings.expression.pressure_level * (1.0 - self.pressure),
+        settings.expression.slide_formant * (self.slide - SLIDE_REST) / SLIDE_REST,
       ),
       None => (1.0, 0.0),
     };
     let level = self.envelope.tick(self.sounding, adsr, self.sample_rate);
     let gain = (pressed * level) as f32;
     let shape = Shape {
-      pitch: settings.pitch,
-      formant: settings.formant + slid,
-      formant_follow: settings.formant_follow,
-      smooth: settings.smooth,
+      formant: settings.shape.formant + slid,
+      ..settings.shape
     };
     self
       .engine

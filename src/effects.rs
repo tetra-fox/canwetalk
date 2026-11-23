@@ -19,6 +19,14 @@ fn shifted(phase: f64, offset: f64) -> f64 {
   (phase + offset + 1.0).rem_euclid(2.0) - 1.0
 }
 
+/// how much of each effect there is, 0 to 1
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Amounts {
+  pub(crate) detune: f64,
+  pub(crate) smear: f64,
+  pub(crate) stereo: f64,
+}
+
 const SMEAR_SECONDS: f32 = 11.0;
 /// input periods in half a slow cycle with the control at zero
 const SMEAR_SHORTEST: f64 = 6.0;

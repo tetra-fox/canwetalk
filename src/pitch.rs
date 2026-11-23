@@ -2,10 +2,12 @@
 //! when to look and roughly where, the correlation of the newest period with the one before
 //! scores a lag, and once a lag is held only its neighbours are scored
 
+use nice_plug::prelude::Enum;
+
 use crate::ring::Ring;
 
-/// the span of pitches looked for
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// the span of pitches looked for, which is also a parameter the host sets
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Range {
   High,
   Mid,

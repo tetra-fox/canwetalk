@@ -1,6 +1,8 @@
 //! which notes sound and which voice plays each: a voice for each held note, and outside the
 //! gate modes one voice at the input's own pitch while none is held
 
+use nice_plug::prelude::Enum;
+
 use crate::ring::Ring;
 use crate::shifter::Settings;
 use crate::voice::{SLIDE_REST, Voice};
@@ -21,14 +23,39 @@ pub(crate) struct Note {
   pub(crate) key: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// how notes are played, which is also a parameter the host sets
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
   /// notes are ignored and one voice follows the input pitch
   Off,
-  /// one voice plays the latest note
+  /// one voice plays the latest note, or follows the input pitch while none is held
   Mono,
-  /// each held note gets a voice, up to `VOICES`
+  /// as Mono, but each held note gets a voice, up to `VOICES`
   Poly,
+  /// as Mono, but nothing sounds without a note and notes rise and fall by the envelope
+  #[name = "Mono Gate"]
+  MonoGate,
+  /// as Poly, but gated the same way
+  #[name = "Poly Gate"]
+  PolyGate,
+}
+
+impl Mode {
+  pub(crate) fn is_gated(self) -> bool {
+    matches!(self, Self::MonoGate | Self::PolyGate)
+  }
+}
+
+/// how notes are taken up and how the pitch moves between them
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Play {
+  pub(crate) mode: Mode,
+  /// notes sound on after their keys come up, until the next key pressed with none down
+  pub(crate) latch: bool,
+  /// the pitch settles in about the cube of this in seconds
+  pub(crate) glide: f64,
+  /// glide between notes only, and follow the input pitch as it is
+  pub(crate) glide_notes_only: bool,
 }
 
 /// what was last sent on a channel
@@ -55,14 +82,11 @@ pub(crate) struct Notes {
   follower: Option<usize>,
   /// held notes that lost their voice to a later one, the latest last
   waiting: Vec<Note>,
-  /// notes sound on after their keys come up, until the next key pressed with none down
   latch: bool,
   /// the keys that are down, which under latch are not all the notes that sound
   down: Vec<Note>,
   channels: [Channel; CHANNELS],
   mode: Mode,
-  /// nothing sounds without a note
-  gate: bool,
   /// counts notes, to tell which voice has had its note longest
   clock: u64,
 }
@@ -85,7 +109,6 @@ impl Notes {
       down: Vec::with_capacity(MAX_DOWN),
       channels: [Channel::REST; CHANNELS],
       mode: Mode::Off,
-      gate: false,
       clock: 0,
     };
     notes.release_all();
@@ -110,18 +133,17 @@ impl Notes {
       voice.sounding = false;
     }
     self.follower = None;
-    if !self.gate {
+    if !self.mode.is_gated() {
       self.voices[0].sounding = true;
       self.voices[0].envelope.trigger();
       self.follower = Some(0);
     }
   }
 
-  /// a change of either drops every note
-  pub(crate) fn set_mode(&mut self, mode: Mode, gate: bool) {
-    if mode != self.mode || gate != self.gate {
+  /// a change of mode drops every note
+  pub(crate) fn set_mode(&mut self, mode: Mode) {
+    if mode != self.mode {
       self.mode = mode;
-      self.gate = gate;
       self.release_all();
     }
   }
@@ -150,8 +172,8 @@ impl Notes {
   pub(crate) fn on(&mut self, note: Note) {
     let count = match self.mode {
       Mode::Off => return,
-      Mode::Mono => 1,
-      Mode::Poly => VOICES,
+      Mode::Mono | Mode::MonoGate => 1,
+      Mode::Poly | Mode::PolyGate => VOICES,
     };
     if self.latch && self.down.is_empty() {
       // the first key after all came up starts over. the notes it replaces fade out where
@@ -216,7 +238,7 @@ impl Notes {
       return;
     }
     self.voices[index].note = None;
-    if !self.gate && self.voices.iter().all(|voice| voice.note.is_none()) {
+    if !self.mode.is_gated() && self.voices.iter().all(|voice| voice.note.is_none()) {
       // the last voice playing goes back to following the input
       self.follower = Some(index);
     } else {

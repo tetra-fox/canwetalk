@@ -5,15 +5,15 @@ use std::sync::Arc;
 use nice_plug::midi::{Channel, Key};
 use nice_plug::prelude::*;
 
-use crate::envelope::Adsr;
-use crate::notes::{Mode, Note};
-use crate::pitch::Range;
-use crate::shifter::{Settings, Shifter};
+use crate::notes::Note;
+use crate::params::CanWeTalkParams;
+use crate::shifter::{Settings, Shifter, Vibrato};
 
 mod effects;
 mod envelope;
 mod grains;
 mod notes;
+mod params;
 mod pitch;
 mod ring;
 mod shifter;
@@ -27,206 +27,11 @@ const TAIL_SECONDS: f32 = 10.0;
 const MASTER_BEND_SEMITONES: f32 = 2.0;
 /// the control change MPE sends a note's slide as
 const SLIDE_CC: u8 = 74;
-/// the pitch and formant controls reach this far either way
-const SHIFT_SEMITONES: f32 = 24.0;
 
 pub struct CanWeTalk {
   params: Arc<CanWeTalkParams>,
   shifter: Shifter,
   sample_rate: f32,
-}
-
-#[derive(Enum, Clone, Copy, PartialEq, Eq)]
-enum MidiMode {
-  Off,
-  Mono,
-  Poly,
-  /// as Mono, but nothing sounds without a note and notes follow the envelope
-  #[name = "Mono Gate"]
-  MonoGate,
-  #[name = "Poly Gate"]
-  PolyGate,
-}
-
-/// the length of a vibrato cycle against the host's tempo
-#[derive(Enum, Clone, Copy, PartialEq, Eq)]
-enum Division {
-  #[name = "1/1"]
-  Whole,
-  #[name = "1/2"]
-  Half,
-  #[name = "1/4"]
-  Quarter,
-  #[name = "1/4T"]
-  QuarterTriplet,
-  #[name = "1/8"]
-  Eighth,
-  #[name = "1/8T"]
-  EighthTriplet,
-  #[name = "1/16"]
-  Sixteenth,
-  #[name = "1/16T"]
-  SixteenthTriplet,
-  #[name = "1/32"]
-  ThirtySecond,
-}
-
-impl Division {
-  /// in quarter notes, which is what hosts count beats in
-  fn beats(self) -> f64 {
-    match self {
-      Self::Whole => 4.0,
-      Self::Half => 2.0,
-      Self::Quarter => 1.0,
-      Self::QuarterTriplet => 2.0 / 3.0,
-      Self::Eighth => 0.5,
-      Self::EighthTriplet => 1.0 / 3.0,
-      Self::Sixteenth => 0.25,
-      Self::SixteenthTriplet => 1.0 / 6.0,
-      Self::ThirtySecond => 0.125,
-    }
-  }
-}
-
-/// the span of pitches the detector looks for
-#[derive(Enum, Clone, Copy, PartialEq, Eq)]
-enum DetectRange {
-  High,
-  Mid,
-  Bass,
-}
-
-#[derive(Params)]
-struct CanWeTalkParams {
-  #[id = "pitch"]
-  pitch: FloatParam,
-  #[id = "formant"]
-  formant: FloatParam,
-  #[id = "formant_follow"]
-  formant_follow: FloatParam,
-  #[id = "detune"]
-  detune: FloatParam,
-  #[id = "smear"]
-  smear: FloatParam,
-  #[id = "stereo"]
-  stereo: FloatParam,
-  #[id = "smooth"]
-  smooth: FloatParam,
-  #[id = "glide"]
-  glide: FloatParam,
-  #[id = "glide_notes"]
-  glide_notes_only: BoolParam,
-  #[id = "vibrato"]
-  vibrato: FloatParam,
-  #[id = "vibrato_rate"]
-  vibrato_rate: FloatParam,
-  #[id = "vibrato_sync"]
-  vibrato_sync: BoolParam,
-  #[id = "vibrato_division"]
-  vibrato_division: EnumParam<Division>,
-  #[id = "midi"]
-  midi: EnumParam<MidiMode>,
-  #[id = "attack"]
-  attack: FloatParam,
-  #[id = "decay"]
-  decay: FloatParam,
-  #[id = "sustain"]
-  sustain: FloatParam,
-  #[id = "release"]
-  release: FloatParam,
-  #[id = "pressure_level"]
-  pressure_level: FloatParam,
-  #[id = "slide_formant"]
-  slide_formant: FloatParam,
-  #[id = "latch"]
-  latch: BoolParam,
-  #[id = "bend_range"]
-  bend_range: IntParam,
-  #[id = "detect"]
-  detect: EnumParam<DetectRange>,
-  #[id = "mix"]
-  mix: FloatParam,
-}
-
-impl Default for CanWeTalkParams {
-  fn default() -> Self {
-    // the time a control takes to reach a new value
-    let ramp = SmoothingStyle::Linear(100.0);
-    let semitones = |name| {
-      let range = FloatRange::Linear {
-        min: -SHIFT_SEMITONES,
-        max: SHIFT_SEMITONES,
-      };
-      FloatParam::new(name, 0.0, range)
-        .with_smoother(ramp.clone())
-        .with_unit(" st")
-        .with_value_to_string(formatters::v2s_f32_rounded(2))
-    };
-    let percent = |name, default| {
-      FloatParam::new(name, default, FloatRange::Linear { min: 0.0, max: 1.0 })
-        .with_smoother(ramp.clone())
-        .with_unit("%")
-        .with_value_to_string(formatters::v2s_f32_percentage(0))
-        .with_string_to_value(formatters::s2v_f32_percentage())
-    };
-    let milliseconds = |name, default| {
-      let range = FloatRange::Skewed {
-        min: 0.0,
-        max: 10_000.0,
-        factor: FloatRange::skew_factor(-2.5),
-      };
-      FloatParam::new(name, default, range)
-        .with_unit(" ms")
-        .with_value_to_string(formatters::v2s_f32_rounded(0))
-    };
-    Self {
-      pitch: semitones("Pitch"),
-      formant: semitones("Formant"),
-      formant_follow: percent("Formant Follow", 0.0),
-      detune: percent("Detune", 0.0),
-      smear: percent("Smear", 0.0),
-      stereo: percent("Stereo", 0.0),
-      smooth: percent("Smooth", 0.0),
-      glide: percent("Glide", 0.0),
-      glide_notes_only: BoolParam::new("Glide Notes Only", false),
-      vibrato: FloatParam::new(
-        "Vibrato",
-        0.0,
-        FloatRange::Linear {
-          min: 0.0,
-          max: 200.0,
-        },
-      )
-      .with_smoother(ramp.clone())
-      .with_unit(" ct")
-      .with_value_to_string(formatters::v2s_f32_rounded(0)),
-      vibrato_rate: FloatParam::new(
-        "Vibrato Rate",
-        5.0,
-        FloatRange::Linear {
-          min: 2.0,
-          max: 15.0,
-        },
-      )
-      .with_unit(" Hz")
-      .with_value_to_string(formatters::v2s_f32_rounded(2)),
-      vibrato_sync: BoolParam::new("Vibrato Sync", false),
-      vibrato_division: EnumParam::new("Vibrato Division", Division::Sixteenth),
-      midi: EnumParam::new("MIDI", MidiMode::Poly),
-      attack: milliseconds("Attack", 5.0),
-      decay: milliseconds("Decay", 200.0),
-      sustain: percent("Sustain", 1.0),
-      release: milliseconds("Release", 200.0),
-      pressure_level: percent("Pressure to Level", 0.0),
-      slide_formant: semitones("Slide to Formant"),
-      latch: BoolParam::new("Latch", false),
-      // 48 is what MPE controllers send over unless told otherwise
-      bend_range: IntParam::new("MPE Bend Range", 48, IntRange::Linear { min: 1, max: 96 })
-        .with_unit(" st"),
-      detect: EnumParam::new("Detection Range", DetectRange::Mid),
-      mix: percent("Mix", 1.0),
-    }
-  }
 }
 
 impl Default for CanWeTalk {
@@ -298,52 +103,21 @@ impl Plugin for CanWeTalk {
     // synced, the vibrato takes its rate from the tempo, and while the host plays its phase
     // from the position too, so a cycle starts on each division of the bar
     let transport = context.transport();
-    let cycle_beats = params.vibrato_division.value().beats();
+    let cycle_beats = params.vibrato.division.value().beats();
     let beats_per_sample = (transport.tempo)
-      .filter(|_| params.vibrato_sync.value())
+      .filter(|_| params.vibrato.sync.value())
       .map(|tempo| tempo / 60.0 / f64::from(self.sample_rate));
     let vibrato_step = match beats_per_sample {
       Some(beats) => beats / cycle_beats,
-      None => f64::from(params.vibrato_rate.value() / self.sample_rate),
+      None => f64::from(params.vibrato.rate.value() / self.sample_rate),
     };
     let start_beats = transport
       .pos_beats()
       .filter(|_| transport.playing)
       .zip(beats_per_sample);
-    let mut settings = Settings {
-      pitch: 0.0,
-      formant: 0.0,
-      formant_follow: 0.0,
-      detune: 0.0,
-      smear: 0.0,
-      stereo: 0.0,
-      smooth: 0.0,
-      glide: f64::from(params.glide.value()),
-      glide_notes_only: params.glide_notes_only.value(),
-      vibrato: 0.0,
-      vibrato_step,
-      vibrato_phase: None,
-      mode: match params.midi.value() {
-        MidiMode::Off => Mode::Off,
-        MidiMode::Mono | MidiMode::MonoGate => Mode::Mono,
-        MidiMode::Poly | MidiMode::PolyGate => Mode::Poly,
-      },
-      gate: matches!(params.midi.value(), MidiMode::MonoGate | MidiMode::PolyGate),
-      envelope: Adsr {
-        attack: f64::from(params.attack.value() / 1000.0),
-        decay: f64::from(params.decay.value() / 1000.0),
-        sustain: f64::from(params.sustain.value()),
-        release: f64::from(params.release.value() / 1000.0),
-      },
-      pressure_level: 0.0,
-      slide_formant: 0.0,
-      latch: params.latch.value(),
-      detect: match params.detect.value() {
-        DetectRange::Bass => Range::Bass,
-        DetectRange::Mid => Range::Mid,
-        DetectRange::High => Range::High,
-      },
-    };
+    let play = params.notes.play();
+    let envelope = params.envelope.adsr();
+    let detect = params.detect.value();
 
     let mut next_event = context.next_event();
     for (index, mut samples) in buffer.iter_samples().enumerate() {
@@ -419,7 +193,7 @@ impl Plugin for CanWeTalk {
           NoteEvent::MidiPitchBend { channel, value, .. } => {
             let range = match channel {
               0 => MASTER_BEND_SEMITONES,
-              _ => params.bend_range.value() as f32,
+              _ => params.expression.bend_range.value() as f32,
             };
             self
               .shifter
@@ -431,20 +205,20 @@ impl Plugin for CanWeTalk {
         next_event = context.next_event();
       }
 
-      settings.pitch = f64::from(params.pitch.smoothed.next() / 12.0);
-      settings.formant = f64::from(params.formant.smoothed.next() / 12.0);
-      settings.formant_follow = f64::from(params.formant_follow.smoothed.next());
-      settings.vibrato = f64::from(params.vibrato.smoothed.next() / 100.0);
-      settings.vibrato_phase =
-        start_beats.map(|(start, per_sample)| (start + index as f64 * per_sample) / cycle_beats);
-      settings.pressure_level = f64::from(params.pressure_level.smoothed.next());
-      settings.slide_formant = f64::from(params.slide_formant.smoothed.next() / 12.0);
-      settings.detune = f64::from(params.detune.smoothed.next());
-      settings.smear = f64::from(params.smear.smoothed.next());
-      // one channel has no sides to widen, and the widener would only comb it
-      let stereo = params.stereo.smoothed.next();
-      settings.stereo = if mono { 0.0 } else { f64::from(stereo) };
-      settings.smooth = f64::from(params.smooth.smoothed.next());
+      let settings = Settings {
+        shape: params.shift.next(),
+        vibrato: Vibrato {
+          depth: f64::from(params.vibrato.depth.smoothed.next() / 100.0),
+          step: vibrato_step,
+          phase: start_beats
+            .map(|(start, per_sample)| (start + index as f64 * per_sample) / cycle_beats),
+        },
+        play,
+        envelope,
+        expression: params.expression.next(),
+        effects: params.effects.next(mono),
+        detect,
+      };
       let mix = params.mix.smoothed.next();
 
       let mut dry = [0.0; 2];

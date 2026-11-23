@@ -7,52 +7,39 @@
 
 use std::f64::consts::TAU;
 
-use crate::effects::{Detune, Smear, Stereo};
+use crate::effects::{Amounts, Detune, Smear, Stereo};
 use crate::envelope::Adsr;
-use crate::notes::{Mode, Notes};
+use crate::grains::Shape;
+use crate::notes::{Notes, Play};
 use crate::pitch::{Detector, Range};
 use crate::ring::Ring;
+use crate::voice::Expression;
 
 const HISTORY_SAMPLES: usize = 200_000;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
 
+/// a slow rise and fall of every voice's pitch
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Vibrato {
+  /// semitones the pitch moves, either way
+  pub(crate) depth: f64,
+  /// cycles the vibrato moves on each sample
+  pub(crate) step: f64,
+  /// where in its cycle the vibrato is, when something outside sets that. otherwise it runs
+  /// on by `step`
+  pub(crate) phase: Option<f64>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Settings {
-  /// octaves
-  pub(crate) pitch: f64,
-  /// octaves
-  pub(crate) formant: f64,
-  /// octaves the formants move further for each octave a voice is from the input's pitch
-  pub(crate) formant_follow: f64,
-  /// 0 to 1, as are the rest unless they say otherwise
-  pub(crate) detune: f64,
-  pub(crate) smear: f64,
-  pub(crate) stereo: f64,
-  /// how far grains stretch to keep overlapping when the pitch is lowered
-  pub(crate) smooth: f64,
-  /// the pitch settles in about the cube of this in seconds
-  pub(crate) glide: f64,
-  /// glide between notes only, and follow the input pitch as it is
-  pub(crate) glide_notes_only: bool,
-  /// semitones the vibrato moves every voice's pitch, either way
-  pub(crate) vibrato: f64,
-  /// cycles the vibrato moves on each sample
-  pub(crate) vibrato_step: f64,
-  /// where in its cycle the vibrato is, when something outside sets that. otherwise it runs
-  /// on by `vibrato_step`
-  pub(crate) vibrato_phase: Option<f64>,
-  pub(crate) mode: Mode,
-  /// nothing sounds without a note, and notes rise and fall by `envelope`. otherwise a voice
-  /// follows the input while no note is held
-  pub(crate) gate: bool,
+  pub(crate) shape: Shape,
+  pub(crate) vibrato: Vibrato,
+  pub(crate) play: Play,
+  /// how notes rise and fall in the gate modes
   pub(crate) envelope: Adsr,
-  /// how much of a note's level its pressure sets, 0 for none of it and 1 for all
-  pub(crate) pressure_level: f64,
-  /// octaves a note's slide moves its formants at either end of its travel
-  pub(crate) slide_formant: f64,
-  /// notes sound on after their keys come up, until the next key pressed with none down
-  pub(crate) latch: bool,
+  pub(crate) expression: Expression,
+  pub(crate) effects: Amounts,
   pub(crate) detect: Range,
 }
 
@@ -108,8 +95,8 @@ impl Shifter {
 
   /// the effect alone, with no latency against the input
   pub(crate) fn process(&mut self, frame: [f32; 2], settings: &Settings) -> [f32; 2] {
-    self.notes.set_mode(settings.mode, settings.gate);
-    self.notes.set_latch(settings.latch);
+    self.notes.set_mode(settings.play.mode);
+    self.notes.set_latch(settings.play.latch);
     if settings.detect != self.detector.range() {
       self.detector.set_range(settings.detect);
       self.input_pitch = lowest_pitch(&self.detector, self.sample_rate as f32);
@@ -118,10 +105,13 @@ impl Shifter {
       self.input_pitch = (2.0 / f64::from(period)).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end());
     }
 
-    let frame = if settings.smear > 0.0 {
-      self
-        .smear
-        .process(frame, 0.5 * self.input_pitch, settings.smear)
+    let Amounts {
+      detune,
+      smear,
+      stereo,
+    } = settings.effects;
+    let frame = if smear > 0.0 {
+      self.smear.process(frame, 0.5 * self.input_pitch, smear)
     } else {
       frame
     };
@@ -129,22 +119,20 @@ impl Shifter {
       line.push(sample);
     }
 
-    self.vibrato_phase = match settings.vibrato_phase {
+    self.vibrato_phase = match settings.vibrato.phase {
       Some(phase) => phase.rem_euclid(1.0),
-      None => (self.vibrato_phase + settings.vibrato_step).fract(),
+      None => (self.vibrato_phase + settings.vibrato.step).fract(),
     };
-    let vibrato = 2f64.powf(settings.vibrato * (TAU * self.vibrato_phase).sin() / 12.0);
+    let vibrato = 2f64.powf(settings.vibrato.depth * (TAU * self.vibrato_phase).sin() / 12.0);
 
     let mut out = self
       .notes
       .tick(self.input_pitch, vibrato, settings, &self.input);
-    if settings.detune > 0.0 {
-      out = self
-        .detune
-        .process(out, settings.detune * settings.detune, self.sample_rate);
+    if detune > 0.0 {
+      out = self.detune.process(out, detune * detune, self.sample_rate);
     }
-    if settings.stereo > 0.0 {
-      out = self.stereo.process(out, settings.stereo, self.sample_rate);
+    if stereo > 0.0 {
+      out = self.stereo.process(out, stereo, self.sample_rate);
     }
     out
   }
@@ -154,35 +142,44 @@ impl Shifter {
 mod tests {
   use super::*;
   use crate::grains::UNITY_DRIFT;
-  use crate::notes::Note;
+  use crate::notes::{Mode, Note};
 
   const RATE: f32 = 48_000.0;
   const VOWEL_HZ: f32 = 110.0;
   const FORMANT_HZ: f32 = 800.0;
   const NEUTRAL: Settings = Settings {
-    pitch: 0.0,
-    formant: 0.0,
-    formant_follow: 0.0,
-    detune: 0.0,
-    smear: 0.0,
-    stereo: 0.0,
-    smooth: 0.0,
-    glide: 0.0,
-    glide_notes_only: false,
-    pressure_level: 0.0,
-    slide_formant: 0.0,
-    vibrato: 0.0,
-    vibrato_step: 0.0,
-    vibrato_phase: None,
-    mode: Mode::Poly,
-    gate: false,
+    shape: Shape {
+      pitch: 0.0,
+      formant: 0.0,
+      formant_follow: 0.0,
+      smooth: 0.0,
+    },
+    vibrato: Vibrato {
+      depth: 0.0,
+      step: 0.0,
+      phase: None,
+    },
+    play: Play {
+      mode: Mode::Poly,
+      latch: false,
+      glide: 0.0,
+      glide_notes_only: false,
+    },
     envelope: Adsr {
       attack: 0.01,
       decay: 0.05,
       sustain: 0.5,
       release: 0.1,
     },
-    latch: false,
+    expression: Expression {
+      pressure_level: 0.0,
+      slide_formant: 0.0,
+    },
+    effects: Amounts {
+      detune: 0.0,
+      smear: 0.0,
+      stereo: 0.0,
+    },
     detect: Range::Mid,
   };
 
@@ -278,7 +275,10 @@ mod tests {
   #[test]
   fn pitch_moves_the_fundamental_and_keeps_the_formant() {
     let settings = Settings {
-      pitch: 7.0 / 12.0,
+      shape: Shape {
+        pitch: 7.0 / 12.0,
+        ..NEUTRAL.shape
+      },
       ..NEUTRAL
     };
     let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
@@ -292,7 +292,10 @@ mod tests {
   #[test]
   fn formant_moves_the_resonance_and_keeps_the_fundamental() {
     let settings = Settings {
-      formant: 1.0,
+      shape: Shape {
+        formant: 1.0,
+        ..NEUTRAL.shape
+      },
       ..NEUTRAL
     };
     let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
@@ -308,7 +311,10 @@ mod tests {
   fn formant_follows_the_note_by_the_set_share() {
     for follow in [0.5, 1.0] {
       let settings = Settings {
-        formant_follow: f64::from(follow),
+        shape: Shape {
+          formant_follow: f64::from(follow),
+          ..NEUTRAL.shape
+        },
         ..NEUTRAL
       };
       let mut shifter = shifter_in(&settings);
@@ -322,7 +328,10 @@ mod tests {
   #[test]
   fn latch_holds_notes_until_the_next_key_after_all_are_up() {
     let latched = Settings {
-      latch: true,
+      play: Play {
+        latch: true,
+        ..NEUTRAL.play
+      },
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&latched);
@@ -362,7 +371,10 @@ mod tests {
   #[test]
   fn latch_adds_keys_pressed_while_one_is_down() {
     let latched = Settings {
-      latch: true,
+      play: Play {
+        latch: true,
+        ..NEUTRAL.play
+      },
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&latched);
@@ -380,7 +392,10 @@ mod tests {
   #[test]
   fn gate_sounds_only_notes() {
     let gated = Settings {
-      gate: true,
+      play: Play {
+        mode: Mode::PolyGate,
+        ..NEUTRAL.play
+      },
       ..NEUTRAL
     };
     let loudest = |signal: &[f32]| signal.iter().fold(0f32, |peak, x| peak.max(x.abs()));
@@ -411,8 +426,11 @@ mod tests {
   fn vibrato_moves_the_pitch_by_its_depth() {
     for (phase, semitones) in [(0.25, 2.0), (0.75, -2.0)] {
       let settings = Settings {
-        vibrato: 2.0,
-        vibrato_phase: Some(phase),
+        vibrato: Vibrato {
+          depth: 2.0,
+          phase: Some(phase),
+          ..NEUTRAL.vibrato
+        },
         ..NEUTRAL
       };
       let mut shifter = shifter_in(&settings);
@@ -427,8 +445,11 @@ mod tests {
   #[test]
   fn vibrato_runs_at_its_rate() {
     let settings = Settings {
-      vibrato: 1.0,
-      vibrato_step: 4.0 / f64::from(RATE),
+      vibrato: Vibrato {
+        depth: 1.0,
+        step: 4.0 / f64::from(RATE),
+        ..NEUTRAL.vibrato
+      },
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&settings);
@@ -445,7 +466,10 @@ mod tests {
   #[test]
   fn pressure_sets_the_level_of_its_own_note() {
     let settings = Settings {
-      pressure_level: 1.0,
+      expression: Expression {
+        pressure_level: 1.0,
+        ..NEUTRAL.expression
+      },
       ..NEUTRAL
     };
     let loudest = |signal: &[f32]| signal.iter().fold(0f32, |peak, x| peak.max(x.abs()));
@@ -468,7 +492,10 @@ mod tests {
   #[test]
   fn slide_moves_the_formants_of_its_own_note() {
     let settings = Settings {
-      slide_formant: 1.0,
+      expression: Expression {
+        slide_formant: 1.0,
+        ..NEUTRAL.expression
+      },
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&settings);
@@ -587,7 +614,10 @@ mod tests {
   #[test]
   fn mono_plays_the_latest_note_and_returns_to_the_one_still_held() {
     let settings = Settings {
-      mode: Mode::Mono,
+      play: Play {
+        mode: Mode::Mono,
+        ..NEUTRAL.play
+      },
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&settings);
@@ -613,7 +643,10 @@ mod tests {
   #[test]
   fn off_ignores_notes() {
     let settings = Settings {
-      mode: Mode::Off,
+      play: Play {
+        mode: Mode::Off,
+        ..NEUTRAL.play
+      },
       ..NEUTRAL
     };
     let mut shifter = shifter_in(&settings);

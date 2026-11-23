@@ -20,6 +20,7 @@ const UNITY_REACH: f64 = 4.0;
 const WET_STEP: f64 = 0.0125;
 
 /// how the grains differ from the input
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Shape {
   /// octaves above the target pitch
   pub(crate) pitch: f64,
