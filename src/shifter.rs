@@ -148,17 +148,21 @@ impl Shifter {
     };
     let vibrato = 2f64.powf(settings.vibrato.depth * (TAU * self.vibrato_phase).sin() / 12.0);
 
-    let cycle = if settings.anchor {
-      let (period, phase) = self.marks.tick(&self.input, 2.0 / self.input_pitch);
-      Cycle {
+    // where the waveform does not repeat there are no cycles to mark, at the start of a word
+    // or in a consonant, and the grains count the period off as they do unanchored
+    let unmarked = Cycle {
+      pitch: self.input_pitch,
+      phase: None,
+    };
+    let cycle = match settings
+      .anchor
+      .then(|| self.marks.tick(&self.input, 2.0 / self.input_pitch))
+    {
+      Some(Some((period, phase))) => Cycle {
         pitch: (2.0 / period).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end()),
         phase: Some(phase),
-      }
-    } else {
-      Cycle {
-        pitch: self.input_pitch,
-        phase: None,
-      }
+      },
+      _ => unmarked,
     };
     let mut out = self.notes.tick(cycle, vibrato, settings, &self.input);
     if detune > 0.0 {

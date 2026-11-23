@@ -58,9 +58,9 @@ impl Marks {
   }
 
   /// takes in the sample just pushed to `input` and gives the period in samples and how far
-  /// through its cycle the input is. `detected` is the period the detector has, which says
-  /// where to look
-  pub(crate) fn tick(&mut self, input: &[Ring; 2], detected: f64) -> (f64, f64) {
+  /// through its cycle the input is, while its waveform repeats. `detected` is the period the
+  /// detector has, which says where to look
+  pub(crate) fn tick(&mut self, input: &[Ring; 2], detected: f64) -> Option<(f64, f64)> {
     self.age += 1.0;
     // marks that have come away from the detected period follow a pitch that is gone
     let followed = self
@@ -81,8 +81,8 @@ impl Marks {
         self.age -= pull * energy_offset(input, self.age, half as usize);
       }
     }
-    let period = self.period.unwrap_or(detected);
-    (period, (self.age / period).rem_euclid(1.0))
+    let period = self.period?;
+    Some((period, (self.age / period).rem_euclid(1.0)))
   }
 
   /// the distance from the last mark to where the waveform best matches the waveform around
@@ -165,8 +165,9 @@ mod tests {
       for line in &mut input {
         line.push(y as f32);
       }
-      let (period, _) = marks.tick(&input, 1.04 * true_period);
+      let marked = marks.tick(&input, 1.04 * true_period);
       if index > 4800 {
+        let (period, _) = marked.expect("the waveform repeats");
         worst = worst.max((period / true_period - 1.0).abs());
       }
     }
