@@ -13,7 +13,8 @@ members = ["xtask"]
 crate-type = ["cdylib"]
 
 [dependencies]
-nice-plug = "0.4.2"
+# fades and filters decay into denormals on silence, which the wrapper flushes to zero
+nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]
