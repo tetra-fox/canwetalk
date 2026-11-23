@@ -27,7 +27,7 @@ const UNITY_REACH: f64 = 4.0;
 const WET_STEP: f64 = 0.0125;
 
 /// how the grains differ from the input
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Shape {
   /// octaves above the target pitch
   pub(crate) pitch: f64,
@@ -93,13 +93,34 @@ impl Engine {
     };
   }
 
-  /// one sample of the voice, sounding at `target` an input whose pitch is `input_pitch`
+  /// the voice over the samples of `out`, sounding at each of `targets` an input whose cycle
+  /// is each of `cycles`. `input` holds `after` samples that came after the last of them
   pub(crate) fn tick(
+    &mut self,
+    cycles: &[Cycle],
+    targets: &[f64],
+    shapes: &[Shape],
+    input: &[Ring; 2],
+    after: usize,
+    out: &mut [[f32; 2]],
+  ) {
+    let held = after + out.len();
+    for (index, (((out, cycle), target), shape)) in
+      (out.iter_mut().zip(cycles).zip(targets).zip(shapes)).enumerate()
+    {
+      *out = self.sample(*cycle, *target, shape, input, held - 1 - index);
+    }
+  }
+
+  /// one sample of the voice, sounding at `target` an input whose cycle is `cycle`. `input`
+  /// holds `newer` samples that came after it
+  fn sample(
     &mut self,
     cycle: Cycle,
     target: f64,
     shape: &Shape,
     input: &[Ring; 2],
+    newer: usize,
   ) -> [f32; 2] {
     // at the input pitch the grains only rebuild the input, so they are moved onto the input
     // periods and then faded out for the input itself
@@ -212,7 +233,7 @@ impl Engine {
       };
       let hann = (0.5 - 0.5 * (TAU * turn).cos()) as f32;
       for (sum, line) in grains.iter_mut().zip(input) {
-        *sum += hann * line.read(grain.delay + grain.extra);
+        *sum += hann * line.read_before(newer, grain.delay + grain.extra);
       }
       grain.extra -= grain.slope;
       grain.window_phase += grain.window_step;
@@ -227,7 +248,7 @@ impl Engine {
     let wet = wet as f32;
     let mut out = [0.0; 2];
     for ((out, grains), line) in out.iter_mut().zip(grains).zip(input) {
-      *out = wet * grains + (1.0 - wet) * line.ago(0);
+      *out = wet * grains + (1.0 - wet) * line.ago(newer);
     }
     out
   }

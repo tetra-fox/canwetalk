@@ -388,25 +388,22 @@ impl Notes {
     }
   }
 
-  /// one sample of every voice, summed. `vibrato` is the ratio it moves their pitches by
+  /// adds every voice to the samples of `out`, of which `input` already holds every one's
+  /// input. each has its own input cycle, settings and ratio the vibrato moves the pitches by
   pub(crate) fn tick(
     &mut self,
-    cycle: Cycle,
-    vibrato: f64,
-    settings: &Settings,
+    cycles: &[Cycle],
+    vibratos: &[f64],
+    settings: &[Settings],
     input: &[Ring; 2],
-  ) -> [f32; 2] {
-    let mut out = [0.0; 2];
+    out: &mut [[f32; 2]],
+  ) {
     for voice in &mut self.voices {
       let bend = voice
         .note
         .map_or(0.0, |note| note_bend(&self.channels, note));
-      let voiced = voice.tick(cycle, bend, vibrato, settings, input);
-      for (out, sample) in out.iter_mut().zip(voiced) {
-        *out += sample;
-      }
+      voice.tick(cycles, bend, vibratos, settings, input, out);
     }
-    out
   }
 }
 

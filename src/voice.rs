@@ -8,7 +8,7 @@ use crate::grains::{Engine, Shape};
 use crate::marks::Cycle;
 use crate::notes::Note;
 use crate::ring::Ring;
-use crate::shifter::Settings;
+use crate::shifter::{BLOCK, Settings};
 
 /// seconds a voice takes to fade when it starts or stops
 const FADE_SECONDS: f64 = 0.005;
@@ -146,18 +146,56 @@ impl Voice {
     self.slide_sent = slide;
   }
 
-  /// one sample of the voice. `bend` is the semitones its note's channels are bent by and
-  /// `vibrato` the ratio the vibrato moves its pitch by
+  /// adds the voice to the samples of `out`, of which `input` already holds every one's
+  /// input. each has its own input cycle, settings and ratio the vibrato moves the pitch by.
+  /// `bend` is the semitones the note's channels are bent by
   pub(crate) fn tick(
+    &mut self,
+    cycles: &[Cycle],
+    bend: f64,
+    vibratos: &[f64],
+    settings: &[Settings],
+    input: &[Ring; 2],
+    out: &mut [[f32; 2]],
+  ) {
+    let (mut targets, mut gains) = ([0.0; BLOCK], [0.0; BLOCK]);
+    let mut shapes = [Shape::default(); BLOCK];
+    // a voice that fades to silence is left where it is from that sample on
+    let mut sounded = 0;
+    for ((cycle, vibrato), settings) in cycles.iter().zip(vibratos).zip(settings) {
+      let Some(moved) = self.moved(*cycle, bend, *vibrato, settings) else {
+        break;
+      };
+      (targets[sounded], shapes[sounded], gains[sounded]) = moved;
+      sounded += 1;
+    }
+    let mut voiced = [[0.0; 2]; BLOCK];
+    self.engine.tick(
+      &cycles[..sounded],
+      &targets[..sounded],
+      &shapes[..sounded],
+      input,
+      out.len() - sounded,
+      &mut voiced[..sounded],
+    );
+    for ((out, voiced), gain) in out.iter_mut().zip(voiced).zip(gains).take(sounded) {
+      for (out, sample) in out.iter_mut().zip(voiced) {
+        *out += gain * sample;
+      }
+    }
+  }
+
+  /// moves the voice on by one sample and gives the pitch and shape its grains have there
+  /// and its level, or nothing once it is silent
+  fn moved(
     &mut self,
     cycle: Cycle,
     bend: f64,
     vibrato: f64,
     settings: &Settings,
-    input: &[Ring; 2],
-  ) -> [f32; 2] {
+  ) -> Option<(f64, Shape, f32)> {
     if !self.sounding && self.envelope.is_silent() {
-      return [0.0; 2];
+      return None;
     }
     let goal = match self.note {
       Some(note) => {
@@ -196,15 +234,11 @@ impl Voice {
       None => (1.0, 0.0),
     };
     let level = self.envelope.tick(self.sounding, adsr, self.sample_rate);
-    let gain = (pressed * level) as f32;
     let shape = Shape {
       formant: settings.shape.formant + slid,
       ..settings.shape
     };
-    self
-      .engine
-      .tick(cycle, target, &shape, input)
-      .map(|sample| gain * sample)
+    Some((target, shape, (pressed * level) as f32))
   }
 }
 

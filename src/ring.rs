@@ -41,16 +41,22 @@ impl Ring {
 
   /// `ago` at a fractional delay, by cubic interpolation
   pub(crate) fn read(&self, delay: f64) -> f32 {
+    self.read_before(0, delay)
+  }
+
+  /// `read` as it was before the newest `newer` samples were pushed
+  pub(crate) fn read_before(&self, newer: usize, delay: f64) -> f32 {
     let whole = delay.floor();
     let t = (delay - whole) as f32;
     let whole = whole as usize;
-    let (b, c, d) = (self.ago(whole), self.ago(whole + 1), self.ago(whole + 2));
+    let ago = |delay: usize| self.ago(newer + delay);
+    let (b, c, d) = (ago(whole), ago(whole + 1), ago(whole + 2));
     // nothing is newer than the newest sample, so its neighbour is taken from the line
     // through it and the one before
     let a = if whole == 0 {
       2.0 * b - c
     } else {
-      self.ago(whole - 1)
+      ago(whole - 1)
     };
     b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)))
   }
@@ -70,5 +76,6 @@ mod tests {
     assert_eq!(ring.ago(7), 32.0);
     assert!((ring.read(7.25) - 31.75).abs() < 1e-4);
     assert!((ring.read(0.5) - 38.5).abs() < 1e-4);
+    assert!((ring.read_before(3, 0.5) - 35.5).abs() < 1e-4);
   }
 }

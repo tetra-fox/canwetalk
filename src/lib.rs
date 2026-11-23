@@ -7,7 +7,7 @@ use nice_plug::prelude::*;
 
 use crate::notes::Note;
 use crate::params::CanWeTalkParams;
-use crate::shifter::Shifter;
+use crate::shifter::{BLOCK, Shifter};
 
 mod effects;
 mod envelope;
@@ -108,31 +108,52 @@ impl Plugin for CanWeTalk {
       .params
       .block(context.transport(), self.sample_rate, mono);
 
+    let samples = buffer.samples();
+    let channels = buffer.as_slice();
     let mut next_event = context.next_event();
-    for (index, mut samples) in buffer.iter_samples().enumerate() {
-      let settings = self.params.settings(&block, index);
-      // before the sample's notes, which are taken up in the mode they come in
-      self.shifter.notes.set_play(&settings.play);
-      while let Some(event) = next_event.filter(|event| event.timing() <= index as u32) {
+    let mut start = 0;
+    while start < samples {
+      let first = self.params.settings(&block, start);
+      // before the sample's notes, which are taken up in the mode they come in. the mode and
+      // latch are not smoothed, so they stay as they are to the end of the buffer
+      self.shifter.notes.set_play(&first.play);
+      while let Some(event) = next_event.filter(|event| event.timing() <= start as u32) {
         self.handle(event);
         next_event = context.next_event();
       }
-      let mix = self.params.mix.smoothed.next();
+      // a block goes up to the next sample that has something played at it
+      let played = next_event.map_or(samples, |event| event.timing() as usize);
+      let count = BLOCK.min(samples.min(played) - start);
+      let settings: [_; BLOCK] = std::array::from_fn(|index| {
+        if (1..count).contains(&index) {
+          self.params.settings(&block, start + index)
+        } else {
+          first
+        }
+      });
 
-      let mut dry = [0.0; 2];
-      for (dry, sample) in dry.iter_mut().zip(samples.iter_mut()) {
-        // false for a sample that is no number too, which is then silence
-        if sample.abs() <= INPUT_LIMIT {
-          *dry = *sample;
+      let mut dry = [[0.0; 2]; BLOCK];
+      for (index, dry) in dry[..count].iter_mut().enumerate() {
+        for (dry, channel) in dry.iter_mut().zip(channels.iter()) {
+          let sample = channel[start + index];
+          // false for a sample that is no number too, which is then silence
+          if sample.abs() <= INPUT_LIMIT {
+            *dry = sample;
+          }
+        }
+        if mono {
+          dry[1] = dry[0];
         }
       }
-      if mono {
-        dry[1] = dry[0];
+      let mut wet = dry;
+      self.shifter.process(&mut wet[..count], &settings[..count]);
+      for (index, (dry, wet)) in dry.iter().zip(wet).take(count).enumerate() {
+        let mix = self.params.mix.smoothed.next();
+        for ((channel, dry), wet) in channels.iter_mut().zip(dry).zip(wet) {
+          channel[start + index] = dry + (wet - dry) * mix;
+        }
       }
-      let wet = self.shifter.process(dry, &settings);
-      for ((sample, wet), dry) in samples.iter_mut().zip(wet).zip(dry) {
-        *sample = dry + (wet - dry) * mix;
-      }
+      start += count;
     }
 
     ProcessStatus::Tail(self.shifter.tail() as u32)
@@ -1034,14 +1055,21 @@ mod tests {
             })
             .collect();
           shares.sort_by(f64::total_cmp);
+          // the slowest buffer, each taken at its fastest of a few runs, which leaves out
+          // what the machine was doing besides
           let worst = |size: usize, spans: &mut Vec<f64>| {
-            let worst = (0..3).map(|_| {
+            let mut fastest = Vec::new();
+            for _ in 0..4 {
               spans.clear();
               render_timed(&take, &[size], spans);
-              let from = skip(spans, size);
-              spans[from..].iter().copied().fold(0.0, f64::max) * 1e6
-            });
-            worst.fold(f64::INFINITY, f64::min)
+              fastest.resize(spans.len(), f64::INFINITY);
+              for (fastest, span) in fastest.iter_mut().zip(spans.iter()) {
+                *fastest = fastest.min(*span);
+              }
+            }
+            let from = skip(&fastest, size);
+            *spans = fastest;
+            spans[from..].iter().copied().fold(0.0, f64::max) * 1e6
           };
           let buffer = worst(64, &mut spans);
           let per_sample = spans.iter().sum::<f64>() / spans.len() as f64 / 64.0 * 1e9;

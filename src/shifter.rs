@@ -20,6 +20,9 @@ use crate::voice::Expression;
 const HISTORY_SECONDS: f32 = 4.5;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
+/// the most frames taken at once. a grain never reads the oldest of the input lines, by far
+/// more than this, so a block of input can go into them ahead of the voices that read them
+pub(crate) const BLOCK: usize = 64;
 
 /// a slow rise and fall of every voice's pitch
 #[derive(Clone, Copy, Debug)]
@@ -129,9 +132,39 @@ impl Shifter {
       + self.stereo.longest_delay()
   }
 
-  /// the effect alone, with no latency against the input. the mode and latch of `settings`
-  /// are given to `notes` beforehand, ahead of the sample's notes
-  pub(crate) fn process(&mut self, frame: [f32; 2], settings: &Settings) -> [f32; 2] {
+  /// the effect alone on up to `BLOCK` frames, each with its own settings, with no latency
+  /// against the input. the mode and latch of the settings are given to `notes` beforehand,
+  /// ahead of the notes of the first frame, and no note comes with a later one
+  pub(crate) fn process(&mut self, frames: &mut [[f32; 2]], settings: &[Settings]) {
+    let count = frames.len();
+    let mut cycles = [Cycle {
+      pitch: 0.0,
+      phase: None,
+    }; BLOCK];
+    let mut vibratos = [0.0; BLOCK];
+    for (((frame, settings), cycle), vibrato) in
+      (frames.iter().zip(settings).zip(&mut cycles)).zip(&mut vibratos)
+    {
+      (*cycle, *vibrato) = self.hear(*frame, settings);
+    }
+    let (cycles, vibratos) = (&cycles[..count], &vibratos[..count]);
+    let mut voiced = [[0.0; 2]; BLOCK];
+    let voiced = &mut voiced[..count];
+    self
+      .notes
+      .tick(cycles, vibratos, settings, &self.input, voiced);
+    for ((frame, voiced), settings) in frames.iter_mut().zip(voiced).zip(settings) {
+      let Amounts { detune, stereo, .. } = settings.effects;
+      let out = self
+        .detune
+        .process(*voiced, detune * detune, self.sample_rate);
+      *frame = self.stereo.process(out, stereo, self.sample_rate);
+    }
+  }
+
+  /// takes one frame of input into the lines the voices read, after smear, and gives the
+  /// cycle the input is in there and the ratio the vibrato moves the voices' pitch by
+  fn hear(&mut self, frame: [f32; 2], settings: &Settings) -> (Cycle, f64) {
     if settings.detect != self.detector.range() {
       self.detector.set_range(settings.detect);
       self.input_pitch = lowest_pitch(&self.detector, self.sample_rate as f32);
@@ -140,11 +173,7 @@ impl Shifter {
       self.input_pitch = (2.0 / f64::from(period)).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end());
     }
 
-    let Amounts {
-      detune,
-      smear,
-      stereo,
-    } = settings.effects;
+    let smear = settings.effects.smear;
     let frame = if smear > 0.0 {
       self.smear.process(frame, 0.5 * self.input_pitch, smear)
     } else {
@@ -177,9 +206,7 @@ impl Shifter {
       },
       _ => unmarked,
     };
-    let out = self.notes.tick(cycle, vibrato, settings, &self.input);
-    let out = self.detune.process(out, detune * detune, self.sample_rate);
-    self.stereo.process(out, stereo, self.sample_rate)
+    (cycle, vibrato)
   }
 }
 
@@ -242,13 +269,18 @@ mod tests {
   }
 
   fn run(shifter: &mut Shifter, input: &[f32], settings: &Settings) -> Vec<f32> {
-    input
-      .iter()
-      .map(|&x| {
-        shifter.notes.set_play(&settings.play);
-        shifter.process([x, x], settings)[0]
-      })
-      .collect()
+    shifter.notes.set_play(&settings.play);
+    let mut output = Vec::with_capacity(input.len());
+    for block in input.chunks(BLOCK) {
+      let mut frames = [[0.0; 2]; BLOCK];
+      let frames = &mut frames[..block.len()];
+      for (frame, &x) in frames.iter_mut().zip(block) {
+        *frame = [x, x];
+      }
+      shifter.process(frames, &[*settings; BLOCK][..block.len()]);
+      output.extend(frames.iter().map(|frame| frame[0]));
+    }
+    output
   }
 
   /// every reading of the pitch the detector makes after the first `skip` samples
@@ -810,7 +842,7 @@ mod tests {
       ..NEUTRAL
     };
     let mut shifter = Shifter::new(192_000.0, Range::Mid);
-    shifter.process([0.0; 2], &settings);
+    shifter.process(&mut [[0.0; 2]], &[settings]);
     assert!(
       INPUT_PITCH.contains(&shifter.input_pitch),
       "{} is out of range",
@@ -893,7 +925,7 @@ mod tests {
   fn shifter_in(settings: &Settings) -> Shifter {
     let mut shifter = Shifter::new(RATE, settings.detect);
     shifter.notes.set_play(&settings.play);
-    shifter.process([0.0; 2], settings);
+    shifter.process(&mut [[0.0; 2]], &[*settings]);
     shifter
   }
 
