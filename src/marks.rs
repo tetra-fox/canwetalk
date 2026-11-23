@@ -26,6 +26,8 @@ const PULL: f64 = 0.02;
 const MAX_LAGS: usize = 256;
 /// samples a match compares before it takes to comparing every few
 const MAX_COMPARED: usize = 512;
+/// lags scored side by side
+const LANES: usize = 8;
 
 pub(crate) struct Marks {
   /// samples since the last mark
@@ -34,6 +36,8 @@ pub(crate) struct Marks {
   period: Option<f64>,
   /// scratch, a score for each lag looked at
   scores: Vec<f32>,
+  /// scratch, the sum of the input's channels over the stretch a search takes in
+  window: Vec<f32>,
 }
 
 /// the input's cycle as the grains go by it
@@ -49,10 +53,15 @@ pub(crate) struct Cycle {
 impl Marks {
   /// `longest_period` is in samples
   pub(crate) fn new(longest_period: f64) -> Self {
+    // the marks' own period can be `AGREE` past the longest detected one. a search takes in
+    // a step of that, the reach either way from it and a window, each rounded up
+    let longest = (1.0 + AGREE) * longest_period;
+    let taken_in = (1.0 + REACH + 2.0 * HALF_WINDOW) * longest;
     Self {
       age: 0.0,
       period: None,
       scores: vec![0.0; 2 * (REACH * longest_period).ceil() as usize + 3],
+      window: vec![0.0; taken_in.ceil() as usize + 5],
     }
   }
 
@@ -92,43 +101,42 @@ impl Marks {
   /// the distance from the last mark to where the waveform best matches the waveform around
   /// it, if it matches anywhere near `expected`
   fn step(&mut self, input: &[Ring; 2], expected: f64, reach: usize, half: usize) -> Option<f64> {
-    let mono = |ago: usize| input[0].ago(ago) + input[1].ago(ago);
     let last = self.age.round() as usize;
     let nearest = expected.round() as usize;
     // a match is made in the time of one sample, which a long period has too many samples
     // and lags for. past `MAX_COMPARED` every few samples are compared, and past `MAX_LAGS`
     // every few lags are scored and then all of those around the best
-    let every = (2 * half + 1).div_ceil(MAX_COMPARED);
-    let around = |centre: usize| (centre - half..=centre + half).step_by(every).map(mono);
-    let energy = |centre: usize| around(centre).map(|x| x * x).sum::<f32>();
-    let last_energy = energy(last);
-    let score = |lag: usize| {
-      let product: f32 = around(last)
-        .zip(around(last - lag))
-        .map(|(a, b)| a * b)
-        .sum();
-      let norm = (last_energy * energy(last - lag)).sqrt();
-      if norm > 0.0 { product / norm } else { 0.0 }
-    };
-
     let (mut first, mut end) = (nearest - reach, nearest + reach);
     let stride = (end - first + 1).div_ceil(MAX_LAGS);
+    let stretch = Stretch {
+      at: end,
+      every: (2 * half + 1).div_ceil(MAX_COMPARED),
+      count: 2 * half,
+    };
+    // the input from the newest sample a match takes in, half a window after the longest
+    // step, back to the oldest, half a window before the last mark. lanes past the lags
+    // looked at read on beyond that, which a short period has not the samples for
+    let newest = last - end - half;
+    let width = end.max(2 * reach + (LANES - 1) * stride) + 2 * half + 1;
+    let window = &mut self.window[..width];
+    for (sample, ago) in window.iter_mut().zip(newest..) {
+      *sample = input[0].ago(ago) + input[1].ago(ago);
+    }
+
     if stride > 1 {
-      let rough = (first..=end)
-        .step_by(stride)
-        .map(|lag| (lag, score(lag)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .expect("there is a lag in reach")
-        .0;
+      let scores = &mut self.scores[..(end - first) / stride + 1];
+      stretch.score(window, scores, first, stride);
+      let best = (0..scores.len())
+        .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
+        .expect("there is a lag in reach");
+      let rough = first + best * stride;
       (first, end) = (
         rough.saturating_sub(stride).max(first),
         (rough + stride).min(end),
       );
     }
     let scores = &mut self.scores[..end - first + 1];
-    for (slot, lag) in scores.iter_mut().zip(first..) {
-      *slot = score(lag);
-    }
+    stretch.score(window, scores, first, 1);
     let best = (0..scores.len())
       .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
       .expect("there is a lag to score");
@@ -145,6 +153,56 @@ impl Marks {
       }
     }
     Some(step)
+  }
+}
+
+/// the samples around the last mark that a search matches, in a window of the input that
+/// starts with its newest sample
+struct Stretch {
+  /// where in the window the stretch starts. the stretch a lag before the mark starts that
+  /// many samples sooner
+  at: usize,
+  /// every this many samples one is compared
+  every: usize,
+  /// samples from the first compared to the last that could be
+  count: usize,
+}
+
+impl Stretch {
+  /// how alike the stretch around the mark is to the one each lag before it, 1 for
+  /// identical. the lags are `apart` apart from `first` up, one for each of `scores`. they
+  /// are summed `LANES` side by side, each in the order it would be alone, since one sum has
+  /// to wait for each of its additions and many can wait together
+  fn score(&self, window: &[f32], scores: &mut [f32], first: usize, apart: usize) {
+    let compared = || (0..=self.count).step_by(self.every);
+    let energy: f32 = compared()
+      .map(|index| window[self.at + index].powi(2))
+      .sum();
+    for (chunk, scores) in scores.chunks_mut(LANES).enumerate() {
+      // a lane for each lag, the longest first, which puts their stretches in order
+      let longest = first + (chunk * LANES + scores.len() - 1) * apart;
+      let (mut products, mut energies) = ([0f32; LANES], [0f32; LANES]);
+      for index in compared() {
+        let sample = window[self.at + index];
+        let from = self.at - longest + index;
+        let mut others = [0.0; LANES];
+        if apart == 1 {
+          others.copy_from_slice(&window[from..][..LANES]);
+        } else {
+          for (lane, other) in others.iter_mut().enumerate() {
+            *other = window[from + lane * apart];
+          }
+        }
+        for ((product, energy), other) in products.iter_mut().zip(&mut energies).zip(others) {
+          *product += sample * other;
+          *energy += other * other;
+        }
+      }
+      for ((score, product), other_energy) in scores.iter_mut().rev().zip(products).zip(energies) {
+        let norm = (energy * other_energy).sqrt();
+        *score = if norm > 0.0 { product / norm } else { 0.0 };
+      }
+    }
   }
 }
 
@@ -208,6 +266,32 @@ mod tests {
         worst < 0.01,
         "a period of {first_period} was marked {worst} off at worst"
       );
+    }
+  }
+
+  /// a search for the longest step there can be takes in the most input, and one for the
+  /// shortest has lanes that read past the little it takes in. both stay inside the scratch
+  #[test]
+  fn searches_at_both_ends_fit_the_scratch() {
+    let longest = 6400.0;
+    let mut input = [Ring::new(65_536), Ring::new(65_536)];
+    let mut state = 0x2545_f491_u32;
+    for _ in 0..65_536 {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      for line in &mut input {
+        line.push(state as f32 / u32::MAX as f32 - 0.5);
+      }
+    }
+    // just inside how far the marks' period may be from the detected one
+    let furthest = (1.0 + AGREE) * (1.0 - 1e-12);
+    for (period, detected) in [(furthest * longest, longest), (4.0, 4.0)] {
+      let mut marks = Marks::new(longest);
+      marks.period = Some(period);
+      marks.age = 3.0 * period;
+      marks.tick(&input, detected);
+      assert!(marks.age < 3.0 * period, "no search was made");
     }
   }
 }
