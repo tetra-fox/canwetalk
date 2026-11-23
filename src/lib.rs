@@ -387,11 +387,6 @@ mod tests {
   /// what the plugin makes of `take`, handed over in buffers of the sizes `sizes` gives, over
   /// and over, and cut short where a control is set
   fn render(take: &Take, sizes: &[usize]) -> Vec<[f32; 2]> {
-    render_timed(take, sizes, &mut Vec::new())
-  }
-
-  /// PROBE: `render`, noting how long each buffer took
-  fn render_timed(take: &Take, sizes: &[usize], spans: &mut Vec<f64>) -> Vec<[f32; 2]> {
     let Take {
       rate, ref input, ..
     } = *take;
@@ -461,9 +456,7 @@ mod tests {
         inputs: &mut [],
         outputs: &mut [],
       };
-      let before = std::time::Instant::now();
       plugin.process(&mut buffer, &mut aux, &mut host);
-      spans.push(before.elapsed().as_secs_f64());
       let [left, right] = &channels;
       // one channel is heard on both sides
       let right = if take.mono { left } else { right };
@@ -1022,88 +1015,6 @@ mod tests {
       2 * output.len(),
       -20.0 * (furthest / loudest).log10()
     );
-  }
-
-  /// PROBE: share of real time and the slowest sample and buffer, for held notes
-  #[test]
-  #[ignore = "a timing probe"]
-  fn probe() {
-    let only = std::env::var("PROBE").unwrap_or_default();
-    let keys = [
-      45, 48, 52, 55, 57, 60, 64, 67, 69, 72, 76, 79, 40, 43, 62, 65,
-    ];
-    for rate in [48_000.0, 96_000.0, 192_000.0] {
-      for (hz, detect, steady) in [(110.0, 1.0, true), (45.0, 2.0, true), (110.0, 1.0, false)] {
-        for (notes, formant) in [(0, 0.0), (1, 0.0), (8, 0.0), (16, 0.0), (16, 3.0)] {
-          // `~` for a voice that wanders and stops, which the detector loses and finds
-          let kind = if steady { "" } else { "~" };
-          let name = format!("{}k {hz}Hz{kind} {notes}n{formant}", rate / 1000.0);
-          if !name.contains(&only) || !(steady || notes == 0 || notes == 8) {
-            continue;
-          }
-          let seconds = 4;
-          let input = if steady {
-            let input = vowel_sampled_at(rate, seconds * rate as usize, |_| hz);
-            input.iter().map(|x| [0.1 * x; 2]).collect()
-          } else {
-            voice(rate, seconds as f32, hz)
-          };
-          let take = Take {
-            played: keys[..notes].iter().map(|&key| on(500, 0, key)).collect(),
-            set: vec![(0, "detect", detect), (0, "formant", formant)],
-            ..Take::new(rate, input)
-          };
-          let size = std::env::var("PROBE_SIZE").map_or(512, |size| size.parse().expect("a size"));
-          let mut spans = Vec::new();
-          let skip = |spans: &[f64], size: usize| spans.len().min(rate as usize / size);
-          let mut shares: Vec<f64> = (0..5)
-            .map(|_| {
-              spans.clear();
-              render_timed(&take, &[size], &mut spans);
-              let from = skip(&spans, size);
-              spans[from..].iter().sum::<f64>() / (seconds - 1) as f64 * 100.0
-            })
-            .collect();
-          shares.sort_by(f64::total_cmp);
-          if std::env::var("PROBE_QUICK").is_ok() {
-            println!("{name:20} {:6.2}% at the least", shares[0]);
-            continue;
-          }
-          // the slowest buffer, each taken at its fastest of a few runs, which leaves out
-          // what the machine was doing besides
-          let worst = |size: usize, spans: &mut Vec<f64>| {
-            let mut fastest = Vec::new();
-            for _ in 0..3 {
-              spans.clear();
-              render_timed(&take, &[size], spans);
-              fastest.resize(spans.len(), f64::INFINITY);
-              for (fastest, span) in fastest.iter_mut().zip(spans.iter()) {
-                *fastest = fastest.min(*span);
-              }
-            }
-            let from = skip(&fastest, size);
-            *spans = fastest;
-            spans[from..].iter().copied().fold(0.0, f64::max) * 1e6
-          };
-          let buffer = worst(64, &mut spans);
-          let per_sample = spans.iter().sum::<f64>() / spans.len() as f64 / 64.0 * 1e9;
-          let sample = worst(1, &mut spans);
-          let alone = spans.iter().sum::<f64>() / spans.len() as f64 * 1e9;
-          if std::env::var("PROBE_TOP").is_ok() {
-            let mut top: Vec<(usize, f64)> = spans.iter().copied().enumerate().collect();
-            top.sort_by(|a, b| b.1.total_cmp(&a.1));
-            for (at, span) in &top[..40] {
-              println!("  {at:8} {:8.1} us", span * 1e6);
-            }
-          }
-          println!(
-            "{name:20} {:6.2}% ({:.2} to {:.2})  worst sample {sample:7.1} us  \
-             worst 64 {buffer:7.1} us  mean {per_sample:6.0} ns/sample, {alone:6.0} alone",
-            shares[2], shares[0], shares[4]
-          );
-        }
-      }
-    }
   }
 
   #[test]
