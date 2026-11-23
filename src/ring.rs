@@ -66,7 +66,8 @@ impl Ring {
 
   /// `taps` for reads at one delay a sample after another, each of the four a run of its
   /// own. the first read is as it was before the newest `newer` samples were pushed. a run
-  /// is of the ring itself where it lies in one piece there, and else is put in `room`
+  /// is of the ring itself where it lies in one piece there, and else is put in the room
+  /// given for it
   pub(crate) fn taps_along<'a>(
     &'a self,
     newer: usize,

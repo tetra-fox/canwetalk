@@ -25,6 +25,9 @@ pub(crate) const UNITY_DRIFT: f64 = 0.001;
 const UNITY_REACH: f64 = 4.0;
 /// how much of the way the grains fade in or out against the plain input each sample
 const WET_STEP: f64 = 0.0125;
+/// samples a grain has to sound in a block for what it reads to be taken as runs of the
+/// input. fewer are sooner read one by one
+const SHORTEST_RUN: usize = 8;
 
 /// how the grains differ from the input
 #[derive(Clone, Copy, Debug, Default)]
@@ -38,10 +41,6 @@ pub(crate) struct Shape {
   /// 0 to 1, how far grains stretch to keep overlapping when the pitch is lowered
   pub(crate) smooth: f64,
 }
-
-/// samples a grain has to sound in a block for what it reads to be taken as runs of the
-/// input. fewer are sooner read one by one
-const SHORTEST_RUN: usize = 8;
 
 /// what a voice wants of its grains at one sample
 #[derive(Clone, Copy)]
@@ -317,8 +316,8 @@ const QUARTER_TURN_SINE: [f64; 11] = [
 ];
 
 /// a raised cosine `quarters` quarter turns from its foot, `0.5 - 0.5 * cos(PI * quarters)`.
-/// taken as the square of the sine of half the angle, the sine summed from its series,
-/// which the math library's cosine costs several times as much as
+/// taken as the square of the sine of half the angle, with the sine summed from its series,
+/// at a fraction of what the math library's cosine costs
 fn raised_cosine(quarters: f64) -> f64 {
   let square = quarters * quarters;
   // in pairs, and pairs of pairs, which are all worked out at once where a sum term by
@@ -354,8 +353,8 @@ impl Grain {
       going = self.window_phase <= 1.0;
       sounded += 1;
     }
-    // how much of its half of the window a grain gets through for each part of the whole,
-    // which saves a division for every sample
+    // what a phase is multiplied by for how far it is through each half of the window, in
+    // place of a division for every sample
     let (up, down) = (1.0 / self.peak, 1.0 / (1.0 - self.peak));
     for (level, &phase) in scratch.levels[..sounded].iter_mut().zip(&scratch.phases) {
       // half a raised cosine up to the peak and half one down from it

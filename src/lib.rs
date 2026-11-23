@@ -1033,18 +1033,25 @@ mod tests {
       45, 48, 52, 55, 57, 60, 64, 67, 69, 72, 76, 79, 40, 43, 62, 65,
     ];
     for rate in [48_000.0, 96_000.0, 192_000.0] {
-      for (hz, detect) in [(110.0, 1.0), (45.0, 2.0)] {
+      for (hz, detect, steady) in [(110.0, 1.0, true), (45.0, 2.0, true), (110.0, 1.0, false)] {
         for (notes, formant) in [(0, 0.0), (1, 0.0), (8, 0.0), (16, 0.0), (16, 3.0)] {
-          let name = format!("{}k {hz}Hz {notes}n{formant}", rate / 1000.0);
-          if !name.contains(&only) {
+          // `~` for a voice that wanders and stops, which the detector loses and finds
+          let kind = if steady { "" } else { "~" };
+          let name = format!("{}k {hz}Hz{kind} {notes}n{formant}", rate / 1000.0);
+          if !name.contains(&only) || !(steady || notes == 0 || notes == 8) {
             continue;
           }
           let seconds = 4;
-          let input = vowel_sampled_at(rate, seconds * rate as usize, |_| hz);
+          let input = if steady {
+            let input = vowel_sampled_at(rate, seconds * rate as usize, |_| hz);
+            input.iter().map(|x| [0.1 * x; 2]).collect()
+          } else {
+            voice(rate, seconds as f32, hz)
+          };
           let take = Take {
             played: keys[..notes].iter().map(|&key| on(500, 0, key)).collect(),
             set: vec![(0, "detect", detect), (0, "formant", formant)],
-            ..Take::new(rate, input.iter().map(|x| [0.1 * x; 2]).collect())
+            ..Take::new(rate, input)
           };
           let size = std::env::var("PROBE_SIZE").map_or(512, |size| size.parse().expect("a size"));
           let mut spans = Vec::new();
@@ -1066,7 +1073,7 @@ mod tests {
           // what the machine was doing besides
           let worst = |size: usize, spans: &mut Vec<f64>| {
             let mut fastest = Vec::new();
-            for _ in 0..4 {
+            for _ in 0..3 {
               spans.clear();
               render_timed(&take, &[size], spans);
               fastest.resize(spans.len(), f64::INFINITY);
