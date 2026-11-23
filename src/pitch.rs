@@ -119,6 +119,9 @@ impl Biquad {
   }
 }
 
+/// a lag and the scores of the `LANES` lags from it up
+type Scored = (usize, [f32; LANES]);
+
 pub(crate) struct Detector {
   sample_rate: f32,
   range: Range,
@@ -265,7 +268,8 @@ impl Detector {
     self.until_track = TRACK_EVERY;
 
     // a held lag that has left the range scores nothing, like no lag at all
-    let mut best = self.track().unwrap_or((0, 0.0));
+    let tracked = self.track();
+    let mut best = tracked.map_or((0, 0.0), |(best, _)| best);
     if look {
       best = self.look(best);
     }
@@ -289,7 +293,8 @@ impl Detector {
       return None;
     }
     self.held = Some(lag);
-    Some(self.refined(lag, score) * self.decimation as f32)
+    let scored = tracked.map(|(_, scored)| scored);
+    Some(self.refined(lag, score, scored) * self.decimation as f32)
   }
 
   /// records a crossing at the current time and says whether it is time to look
@@ -372,12 +377,18 @@ impl Detector {
     self.shortest_lag <= lags.start && lags.end <= self.longest_lag
   }
 
-  /// the best of the lags around the held one
-  fn track(&self) -> Option<(usize, f32)> {
+  /// the best of the lags around the held one. with it come the first lag and the scores of
+  /// the set of lanes it was scored in, which has those lags and one more either side
+  fn track(&self) -> Option<((usize, f32), Scored)> {
     let held = self
       .held
       .filter(|&lag| self.shortest_lag < lag && lag < self.longest_lag)?;
-    self.best_of(held.saturating_sub(TRACK_BELOW).max(1)..held + TRACK_ABOVE + 1)
+    let lags = held.saturating_sub(TRACK_BELOW).max(1)..=held + TRACK_ABOVE;
+    let first = held.saturating_sub(TRACK_BELOW + 1);
+    let scores = self.scores(first);
+    let tracked = (first..).zip(scores).filter(|(lag, _)| lags.contains(lag));
+    let best = tracked.reduce(|best, next| if next.1 > best.1 { next } else { best })?;
+    Some((best, (first, scores)))
   }
 
   /// a look at the lags the crossings suggest. `tracked` stands if it is good enough, else
@@ -433,9 +444,19 @@ impl Detector {
       .copied()
   }
 
-  /// `lag` moved to the vertex of the parabola through its score and its neighbours'
-  fn refined(&self, lag: usize, score: f32) -> f32 {
-    let [below, _, above, ..] = self.scores(lag - 1);
+  /// `lag` moved to the vertex of the parabola through its score and its neighbours'.
+  /// `scored` is what tracking scored, which has the neighbours unless a look took up
+  /// another lag
+  fn refined(&self, lag: usize, score: f32, scored: Option<Scored>) -> f32 {
+    let [below, above] = match scored {
+      Some((first, scores)) if first < lag && lag + 1 < first + LANES => {
+        [scores[lag - 1 - first], scores[lag + 1 - first]]
+      }
+      _ => {
+        let [below, _, above, ..] = self.scores(lag - 1);
+        [below, above]
+      }
+    };
     let curvature = below - 2.0 * score + above;
     let offset = if curvature < 0.0 {
       0.5 * (below - above) / curvature
