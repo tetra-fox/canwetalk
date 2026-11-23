@@ -4,8 +4,6 @@
 
 use nice_plug::prelude::Enum;
 
-use crate::ring::Ring;
-
 /// the span of pitches looked for, which is also a parameter the host sets
 #[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Range {
@@ -74,6 +72,11 @@ const SHORTER_WINS_ABOVE: f32 = 0.95;
 const HALVES_PERCENT: u64 = 2;
 /// mean magnitude of an analysis sample below which the input is taken for silence
 const SILENCE_LEVEL: f32 = 5e-5;
+/// lags scored side by side: the ones tracking scores and one either side of them
+const LANES: usize = TRACK_BELOW + TRACK_ABOVE + 3;
+/// analysis samples kept. two periods of the longest lag there is, and of a set of lanes
+/// started on one of the lags tracking scores above it
+const KEPT: usize = HISTORY + 2 * LANES;
 
 /// second-order section, transposed direct form II
 #[derive(Clone, Copy, Default)]
@@ -126,8 +129,11 @@ pub(crate) struct Detector {
   crossing_filters: [Biquad; 2],
   /// input samples until the next analysis sample
   until_tick: usize,
-  /// analysis samples
-  history: Ring,
+  /// analysis samples, each of them twice and `KEPT` apart, so that the newest `KEPT` are
+  /// always in one piece
+  history: Vec<f32>,
+  /// where in the first `KEPT` of `history` the next sample goes
+  next: usize,
   /// analysis samples so far
   now: u64,
   /// whether the crossing path was above zero at the last analysis sample
@@ -160,7 +166,8 @@ impl Detector {
       analysis_filter: Biquad::default(),
       crossing_filters: [Biquad::default(); 2],
       until_tick: 1,
-      history: Ring::new(HISTORY),
+      history: vec![0.0; 2 * KEPT],
+      next: 0,
       now: 0,
       positive: false,
       crossings: [0; MAX_CROSSINGS],
@@ -208,7 +215,7 @@ impl Detector {
       filter.state = [0.0; 2];
     }
     self.until_tick = self.decimation;
-    self.history.clear();
+    self.history.fill(0.0);
     self.positive = false;
     self.until_look = None;
     self.patience = 0;
@@ -228,7 +235,9 @@ impl Detector {
       return None;
     }
     self.until_tick = self.decimation;
-    self.history.push(analysis);
+    self.history[self.next] = analysis;
+    self.history[self.next + KEPT] = analysis;
+    self.next = (self.next + 1) % KEPT;
     self.now += 1;
     self.level += analysis.abs();
 
@@ -311,27 +320,51 @@ impl Detector {
     true
   }
 
-  /// how alike the newest `lag` samples and the `lag` before them are, 1 for identical
-  fn score(&self, lag: usize) -> f32 {
-    let (mut product, mut energy) = (0.0, 0.0);
-    for age in 0..lag {
-      let (newer, older) = (self.history.ago(age), self.history.ago(age + lag));
-      product += newer * older;
-      energy += newer * newer + older * older;
+  /// how alike the newest samples and the ones before them are, 1 for identical, over each
+  /// of the `LANES` lags from `first` up. a lag takes as many samples of each as it is long.
+  /// the lags are summed side by side, each in the order it would be alone, since one sum
+  /// has to wait for each of its additions and many can wait together
+  fn scores(&self, first: usize) -> [f32; LANES] {
+    let longest = first + LANES - 1;
+    let recent = &self.history[self.next + KEPT - 2 * longest..self.next + KEPT];
+    // a lane for each lag, the longest first, which puts the samples a lag behind in order
+    let (mut products, mut energies) = ([0f32; LANES], [0f32; LANES]);
+    let mut add = |age: usize, lanes: usize| {
+      let newer = recent[2 * longest - 1 - age];
+      let behind = &recent[longest - 1 - age..][..lanes];
+      for ((product, energy), older) in products.iter_mut().zip(&mut energies).zip(behind) {
+        *product += newer * older;
+        *energy += newer * newer + older * older;
+      }
+    };
+    // every lag goes as far as the shortest, then each stops a sample before the next
+    for age in 0..first {
+      add(age, LANES);
     }
-    // silence is alike but is no pitch
-    if energy > 0.0 {
-      2.0 * product / energy
-    } else {
-      0.0
+    for age in first..longest {
+      add(age, longest - age);
     }
+    let mut scores = [0.0; LANES];
+    for ((score, product), energy) in scores.iter_mut().rev().zip(products).zip(energies) {
+      // silence is alike but is no pitch
+      if energy > 0.0 {
+        *score = 2.0 * product / energy;
+      }
+    }
+    scores
   }
 
   /// the best scoring lag and its score, the shortest of equals
-  fn best_of(&self, lags: impl Iterator<Item = usize>) -> Option<(usize, f32)> {
-    lags
-      .map(|lag| (lag, self.score(lag)))
-      .reduce(|best, next| if next.1 > best.1 { next } else { best })
+  fn best_of(&self, lags: std::ops::Range<usize>) -> Option<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+    for first in lags.clone().step_by(LANES) {
+      for scored in (first..lags.end).zip(self.scores(first)) {
+        if best.is_none_or(|best| scored.1 > best.1) {
+          best = Some(scored);
+        }
+      }
+    }
+    best
   }
 
   /// whether every lag of `lags` is one a look may score
@@ -344,7 +377,7 @@ impl Detector {
     let held = self
       .held
       .filter(|&lag| self.shortest_lag < lag && lag < self.longest_lag)?;
-    self.best_of(held.saturating_sub(TRACK_BELOW).max(1)..=held + TRACK_ABOVE)
+    self.best_of(held.saturating_sub(TRACK_BELOW).max(1)..held + TRACK_ABOVE + 1)
   }
 
   /// a look at the lags the crossings suggest. `tracked` stands if it is good enough, else
@@ -402,7 +435,7 @@ impl Detector {
 
   /// `lag` moved to the vertex of the parabola through its score and its neighbours'
   fn refined(&self, lag: usize, score: f32) -> f32 {
-    let (below, above) = (self.score(lag - 1), self.score(lag + 1));
+    let [below, _, above, ..] = self.scores(lag - 1);
     let curvature = below - 2.0 * score + above;
     let offset = if curvature < 0.0 {
       0.5 * (below - above) / curvature
@@ -439,6 +472,35 @@ mod tests {
       (detected / hz - 1.0).abs() < 0.005,
       "{hz} Hz detected as {detected} Hz at {rate} Hz"
     );
+  }
+
+  /// the lags scored side by side each come out as one scored alone does, to the bit
+  #[test]
+  fn lags_score_side_by_side_as_they_do_alone() {
+    let mut detector = Detector::new(RATE, Range::Mid);
+    let mut state = 0x2545_f491_u32;
+    // more samples than are kept, so the newest are across where the first of them went
+    for _ in 0..3 * KEPT {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      detector.push(state as f32 / u32::MAX as f32 - 0.5);
+    }
+    let ago = |age: usize| detector.history[(detector.next + KEPT - 1 - age) % KEPT];
+    let alone = |lag: usize| {
+      let (mut product, mut energy) = (0.0, 0.0);
+      for age in 0..lag {
+        let (newer, older) = (ago(age), ago(age + lag));
+        product += newer * older;
+        energy += newer * newer + older * older;
+      }
+      2.0 * product / energy
+    };
+    for first in [1, 2, 17, 300, HISTORY / 2 - 1] {
+      for (lag, score) in (first..).zip(detector.scores(first)) {
+        assert!(score == alone(lag), "a lag of {lag} scored from {first}");
+      }
+    }
   }
 
   #[test]
