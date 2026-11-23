@@ -843,6 +843,38 @@ mod tests {
     );
   }
 
+  /// a host can send a bend, tuning, pressure or slide that is no number. the note goes on
+  /// sounding as it was
+  #[test]
+  fn values_that_are_no_numbers_do_not_reach_a_note() {
+    let settings = Settings {
+      expression: Expression {
+        pressure_level: 1.0,
+        slide_formant: 1.0,
+      },
+      ..NEUTRAL
+    };
+    let mut shifter = shifter_in(&settings);
+    let played = note(3, 57);
+    shifter.notes.on(played);
+    shifter.notes.channel_pressure(3, 1.0);
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+      shifter.notes.bend(3, bad);
+      shifter.notes.bend(0, bad);
+      shifter.notes.tune(played, bad);
+      shifter.notes.channel_pressure(3, bad);
+      shifter.notes.note_pressure(played, bad);
+      shifter.notes.channel_slide(3, bad);
+      shifter.notes.note_slide(played, bad);
+    }
+    let output = run(&mut shifter, &vowel(), &settings);
+    assert!(
+      output.iter().all(|sample| sample.is_finite()),
+      "the output is no number"
+    );
+    assert_near(pitch_hz(&output), A3, 0.005 * A3, "fundamental");
+  }
+
   fn key(key: u8) -> Note {
     note(0, key)
   }

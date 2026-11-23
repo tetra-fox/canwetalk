@@ -141,6 +141,12 @@ fn note_bend(channels: &[Channel; CHANNELS], note: Note) -> f64 {
   channels[0].bend + if note.channel == 0 { 0.0 } else { own.bend }
 }
 
+/// a value a host sent for a note or channel, if it is a number. one that is not would make
+/// the pitch or level it sets no number either, and the output with it
+fn sent(value: f64) -> Option<f64> {
+  value.is_finite().then_some(value)
+}
+
 impl Notes {
   /// voices start out at `input_pitch`
   pub(crate) fn new(sample_rate: f64, input_pitch: f64) -> Self {
@@ -306,6 +312,9 @@ impl Notes {
 
   /// bends a channel's notes by `semitones`, or every note if it is the first channel
   pub(crate) fn bend(&mut self, channel: u8, semitones: f64) {
+    let Some(semitones) = sent(semitones) else {
+      return;
+    };
     // a channel past the sixteenth is not one a note can be on
     if let Some(sent) = self.channels.get_mut(usize::from(channel)) {
       sent.bend = semitones;
@@ -314,6 +323,9 @@ impl Notes {
 
   /// sets the pressure, 0 to 1, of the notes on a channel and of those to come on it
   pub(crate) fn channel_pressure(&mut self, channel: u8, pressure: f64) {
+    let Some(pressure) = sent(pressure) else {
+      return;
+    };
     if let Some(sent) = self.channels.get_mut(usize::from(channel)) {
       sent.pressure = pressure;
     }
@@ -324,6 +336,7 @@ impl Notes {
 
   /// sets the slide, 0 to 1, of the notes on a channel and of those to come on it
   pub(crate) fn channel_slide(&mut self, channel: u8, slide: f64) {
+    let Some(slide) = sent(slide) else { return };
     if let Some(sent) = self.channels.get_mut(usize::from(channel)) {
       sent.slide = slide;
     }
@@ -349,6 +362,9 @@ impl Notes {
 
   /// sets the pressure of one sounding note
   pub(crate) fn note_pressure(&mut self, note: Note, pressure: f64) {
+    let Some(pressure) = sent(pressure) else {
+      return;
+    };
     if let Some(voice) = self.voice_of(note) {
       voice.pressure_sent = pressure;
     }
@@ -356,6 +372,7 @@ impl Notes {
 
   /// sets the slide of one sounding note
   pub(crate) fn note_slide(&mut self, note: Note, slide: f64) {
+    let Some(slide) = sent(slide) else { return };
     if let Some(voice) = self.voice_of(note) {
       voice.slide_sent = slide;
     }
@@ -363,6 +380,9 @@ impl Notes {
 
   /// tunes one sounding note by `semitones`
   pub(crate) fn tune(&mut self, note: Note, semitones: f64) {
+    let Some(semitones) = sent(semitones) else {
+      return;
+    };
     if let Some(voice) = self.voice_of(note) {
       voice.tuning = semitones;
     }
