@@ -20,8 +20,9 @@ use crate::voice::Expression;
 const HISTORY_SECONDS: f32 = 4.5;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
-/// the most frames taken at once. a grain never reads the oldest of the input lines, by far
-/// more than this, so a block of input can go into them ahead of the voices that read them
+/// the most frames taken at once. a block's input goes into the lines before the voices
+/// read them, which puts that many of the oldest samples out early. no grain reads those,
+/// since the limit on how far one stretches keeps it out of the oldest fortieth of a line
 pub(crate) const BLOCK: usize = 64;
 
 /// a slow rise and fall of every voice's pitch
