@@ -168,34 +168,46 @@ fn energy_offset(input: &[Ring; 2], age: f64, half: usize) -> f64 {
 mod tests {
   use super::*;
 
-  /// a pulse train whose period glides, with a resonance on it. the marks are told a period
-  /// a twenty-fifth off, inside what they reach, and still step by the true one
+  /// a pulse train whose period glides by a fifth, with a resonance on it. the marks are told
+  /// a period a twenty-fifth off, inside what they reach, and still step by the true one.
+  /// the second period is long enough that every few samples are compared, and the third
+  /// that every few lags are scored first, as a low voice at a high sample rate is
   #[test]
   fn marks_step_by_the_true_period() {
-    let mut input = [Ring::new(8192), Ring::new(8192)];
-    let mut marks = Marks::new(2000.0);
-    let (mut phase, mut y1, mut y2) = (0.0, 0.0, 0.0);
-    let mut worst = 0f64;
-    for index in 0..48_000 {
-      let true_period = 200.0 + 40.0 * (index as f64 / 48_000.0);
-      phase += 1.0 / true_period;
-      let pulse = if phase >= 1.0 {
-        phase -= 1.0;
-        1.0
-      } else {
-        0.0
-      };
-      let y: f64 = pulse + 1.8 * y1 - 0.9 * y2;
-      (y2, y1) = (y1, y);
-      for line in &mut input {
-        line.push(y as f32);
+    for first_period in [200.0_f64, 600.0, 4267.0] {
+      let mut input = [Ring::new(65_536), Ring::new(65_536)];
+      let mut marks = Marks::new(6400.0);
+      // ringing forty samples to the cycle, short against the long periods as a voice's is
+      // at a high sample rate. that is what a search too coarse would step over
+      let radius = (-1.0_f64 / 40.0).exp();
+      let feedback = 2.0 * radius * (std::f64::consts::TAU / 40.0).cos();
+      let (mut phase, mut y1, mut y2) = (0.0, 0.0, 0.0);
+      let mut worst = 0f64;
+      let samples = 240 * first_period as usize;
+      for index in 0..samples {
+        let true_period = first_period * (1.0 + 0.2 * index as f64 / samples as f64);
+        phase += 1.0 / true_period;
+        let pulse = if phase >= 1.0 {
+          phase -= 1.0;
+          1.0
+        } else {
+          0.0
+        };
+        let y: f64 = pulse + feedback * y1 - radius * radius * y2;
+        (y2, y1) = (y1, y);
+        for line in &mut input {
+          line.push(y as f32);
+        }
+        let marked = marks.tick(&input, 1.04 * true_period);
+        if index > samples / 10 {
+          let (period, _) = marked.expect("the waveform repeats");
+          worst = worst.max((period / true_period - 1.0).abs());
+        }
       }
-      let marked = marks.tick(&input, 1.04 * true_period);
-      if index > 4800 {
-        let (period, _) = marked.expect("the waveform repeats");
-        worst = worst.max((period / true_period - 1.0).abs());
-      }
+      assert!(
+        worst < 0.01,
+        "a period of {first_period} was marked {worst} off at worst"
+      );
     }
-    assert!(worst < 0.01, "the marked period was {worst} off at worst");
   }
 }
