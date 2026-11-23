@@ -12,6 +12,7 @@ use crate::shifter::{BLOCK, Settings, Shifter};
 mod effects;
 mod envelope;
 mod grains;
+mod last;
 mod marks;
 mod notes;
 mod params;

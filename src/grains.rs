@@ -4,6 +4,7 @@
 //!
 //! frequencies are in cycles per two samples, as in `shifter`
 
+use crate::last::Last;
 use crate::marks::Cycle;
 use crate::ring::{Ring, cubic, split};
 use crate::shifter::BLOCK;
@@ -65,6 +66,8 @@ pub(crate) struct Engine {
   /// input samples a grain centred on a cycle start takes to rise, which follows the input
   /// period slowly
   rise: Option<f64>,
+  /// the ratio the pitch was last shifted by, for the octaves that was
+  shift: Last,
   grains: Vec<Grain>,
 }
 
@@ -119,6 +122,7 @@ impl Engine {
       locked: true,
       wet: None,
       rise: None,
+      shift: Last::default(),
       grains: Vec::with_capacity(MAX_GRAINS),
     }
   }
@@ -202,8 +206,8 @@ impl Engine {
     } else {
       0.0
     };
-    let pitch =
-      (2f64.powf(shape.pitch + drift) * target).clamp(*OUTPUT_PITCH.start(), *OUTPUT_PITCH.end());
+    let shift = (self.shift).answer(shape.pitch + drift, |octaves| 2f64.powf(octaves));
+    let pitch = (shift * target).clamp(*OUTPUT_PITCH.start(), *OUTPUT_PITCH.end());
 
     match cycle.phase {
       Some(phase) => self.input_phase = phase,

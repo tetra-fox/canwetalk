@@ -5,6 +5,7 @@
 
 use crate::envelope::{Adsr, Envelope};
 use crate::grains::{self, Engine, Shape, Wanted};
+use crate::last::Last;
 use crate::marks::Cycle;
 use crate::notes::Note;
 use crate::ring::Ring;
@@ -88,6 +89,8 @@ pub(crate) struct Voice {
   pitch: f64,
   /// how far the pitch has moved from the input's to the note's under `glide_notes_only`
   note_blend: f64,
+  /// the pitch of the key the note was last at, bend and all
+  key_pitch: Last,
 }
 
 impl Voice {
@@ -108,6 +111,7 @@ impl Voice {
       control_step: 1.0 - (-1.0 / (FADE_SECONDS * sample_rate)).exp(),
       pitch: input_pitch,
       note_blend: 0.0,
+      key_pitch: Last::default(),
     }
   }
 
@@ -130,6 +134,7 @@ impl Voice {
       slide_sent,
       pitch,
       note_blend,
+      key_pitch,
     } = self;
     engine.reset();
     *note = None;
@@ -141,6 +146,7 @@ impl Voice {
     (*slide, *slide_sent) = (SLIDE_REST, SLIDE_REST);
     *pitch = input_pitch;
     *note_blend = 0.0;
+    *key_pitch = Last::default();
   }
 
   /// the note while it is held
@@ -233,7 +239,12 @@ impl Voice {
         self.bend += self.control_step * (bend + self.tuning - self.bend);
         self.pressure += self.control_step * (self.pressure_sent - self.pressure);
         self.slide += self.control_step * (self.slide_sent - self.slide);
-        note_pitch(f64::from(note.key()) + self.bend, self.sample_rate)
+        let sample_rate = self.sample_rate;
+        self
+          .key_pitch
+          .answer(f64::from(note.key()) + self.bend, |key| {
+            note_pitch(key, sample_rate)
+          })
       }
       None => cycle.pitch,
     };

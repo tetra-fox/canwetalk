@@ -1,5 +1,7 @@
 //! the level of a voice over the life of its note
 
+use crate::last::Last;
+
 /// level a released voice counts as silent at, 60 dB down
 const SILENT: f64 = 0.001;
 
@@ -19,6 +21,8 @@ pub(crate) struct Adsr {
 pub(crate) struct Envelope {
   level: f64,
   attacking: bool,
+  /// the factor the level last fell by each sample, for the samples that fall took
+  fall: Last,
 }
 
 impl Envelope {
@@ -35,7 +39,12 @@ impl Envelope {
   pub(crate) fn tick(&mut self, held: bool, adsr: &Adsr, sample_rate: f64) -> f64 {
     // a time of zero makes the factor zero and the attack's step infinite, either of which
     // ends its stage in one sample
-    let falling = |seconds: f64| (SILENT.ln() / (seconds * sample_rate)).exp();
+    let fall = &mut self.fall;
+    let mut falling = |seconds: f64| {
+      fall.answer(seconds * sample_rate, |samples| {
+        (SILENT.ln() / samples).exp()
+      })
+    };
     if !held {
       self.attacking = false;
       self.level *= falling(adsr.release);
