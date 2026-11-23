@@ -350,12 +350,15 @@ impl Grain {
       going = self.window_phase <= 1.0;
       sounded += 1;
     }
+    // how much of its half of the window a grain gets through for each part of the whole,
+    // which saves a division for every sample
+    let (up, down) = (1.0 / self.peak, 1.0 / (1.0 - self.peak));
     for (level, &phase) in scratch.levels[..sounded].iter_mut().zip(&scratch.phases) {
       // half a raised cosine up to the peak and half one down from it
       let quarters = if phase < self.peak {
-        phase / self.peak
+        phase * up
       } else {
-        1.0 - (phase - self.peak) / (1.0 - self.peak)
+        1.0 - (phase - self.peak) * down
       };
       *level = raised_cosine(quarters) as f32;
     }
