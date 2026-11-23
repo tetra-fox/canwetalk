@@ -188,10 +188,9 @@ mod tests {
   use super::*;
   use crate::grains::UNITY_DRIFT;
   use crate::notes::{Mode, Note};
+  use crate::signals::{FORMANT_HZ, VOWEL_HZ, vowel_sampled_at};
 
   const RATE: f32 = 48_000.0;
-  const VOWEL_HZ: f32 = 110.0;
-  const FORMANT_HZ: f32 = 800.0;
   const NEUTRAL: Settings = Settings {
     shape: Shape {
       pitch: 0.0,
@@ -229,37 +228,13 @@ mod tests {
     anchor: false,
   };
 
-  /// a pulse train through a low-pass, for the tilt of a voice's spectrum, and a resonance
   fn vowel_for(seconds: usize) -> Vec<f32> {
     vowel_at(seconds * RATE as usize, |_| VOWEL_HZ)
   }
 
-  /// the same with the pitch `hz` gives for each sample
+  /// a vowel with the pitch `hz` gives for each sample
   fn vowel_at(samples: usize, hz: impl Fn(usize) -> f32) -> Vec<f32> {
     vowel_sampled_at(RATE, samples, hz)
-  }
-
-  /// the same at a sample rate of `rate`
-  fn vowel_sampled_at(rate: f32, samples: usize, hz: impl Fn(usize) -> f32) -> Vec<f32> {
-    let radius = (-std::f32::consts::PI * 80.0 / rate).exp();
-    let feedback = 2.0 * radius * (std::f32::consts::TAU * FORMANT_HZ / rate).cos();
-    let tilt = (-std::f32::consts::TAU * VOWEL_HZ / rate).exp();
-    let (mut y1, mut y2, mut phase, mut source) = (0.0, 0.0, 0.0, 0.0);
-    (0..samples)
-      .map(|index| {
-        phase += hz(index) / rate;
-        let pulse = if phase >= 1.0 {
-          phase -= 1.0;
-          3.0
-        } else {
-          0.0
-        };
-        source = pulse + tilt * (source - pulse);
-        let y = source + feedback * y1 - radius * radius * y2;
-        (y2, y1) = (y1, y);
-        y
-      })
-      .collect()
   }
 
   fn vowel() -> Vec<f32> {
