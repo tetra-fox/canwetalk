@@ -1055,6 +1055,10 @@ mod tests {
             })
             .collect();
           shares.sort_by(f64::total_cmp);
+          if std::env::var("PROBE_QUICK").is_ok() {
+            println!("{name:18} {:6.2}% at the least", shares[0]);
+            continue;
+          }
           // the slowest buffer, each taken at its fastest of a few runs, which leaves out
           // what the machine was doing besides
           let worst = |size: usize, spans: &mut Vec<f64>| {

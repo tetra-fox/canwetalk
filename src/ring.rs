@@ -46,9 +46,12 @@ impl Ring {
 
   /// `read` as it was before the newest `newer` samples were pushed
   pub(crate) fn read_before(&self, newer: usize, delay: f64) -> f32 {
-    let whole = delay.floor();
-    let t = (delay - whole) as f32;
-    let whole = whole as usize;
+    // the floor, taken by hand since `floor` is a call into the math library
+    let toward_zero = delay as i64;
+    let whole = toward_zero - i64::from(toward_zero as f64 > delay);
+    let t = (delay - whole as f64) as f32;
+    // under zero the whole part counts as zero, as it does cast to an index
+    let whole = whole.max(0) as usize;
     let ago = |delay: usize| self.ago(newer + delay);
     let (b, c, d) = (ago(whole), ago(whole + 1), ago(whole + 2));
     // nothing is newer than the newest sample, so its neighbour is taken from the line
