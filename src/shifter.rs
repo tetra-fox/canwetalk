@@ -139,6 +139,7 @@ impl Shifter {
     let frame = if smear > 0.0 {
       self.smear.process(frame, 0.5 * self.input_pitch, smear)
     } else {
+      self.smear.rest();
       frame
     };
     for (line, sample) in self.input.iter_mut().zip(frame) {
@@ -167,14 +168,9 @@ impl Shifter {
       },
       _ => unmarked,
     };
-    let mut out = self.notes.tick(cycle, vibrato, settings, &self.input);
-    if detune > 0.0 {
-      out = self.detune.process(out, detune * detune, self.sample_rate);
-    }
-    if stereo > 0.0 {
-      out = self.stereo.process(out, stereo, self.sample_rate);
-    }
-    out
+    let out = self.notes.tick(cycle, vibrato, settings, &self.input);
+    let out = self.detune.process(out, detune * detune, self.sample_rate);
+    self.stereo.process(out, stereo, self.sample_rate)
   }
 }
 
@@ -714,6 +710,27 @@ mod tests {
       play(&mut used) == play(&mut Shifter::new(RATE, settings.detect)),
       "a reset shifter differs from a new one"
     );
+  }
+
+  /// an effect that is turned off and on again goes on from what it is given then. with
+  /// silence coming in, nothing it held when it was last on is heard
+  #[test]
+  fn an_effect_turned_on_again_holds_nothing_from_before() {
+    let off = NEUTRAL.effects;
+    let quiet = vec![0.0; 2 * RATE as usize];
+    for effects in [
+      Amounts { smear: 1.0, ..off },
+      Amounts { detune: 1.0, ..off },
+      Amounts { stereo: 1.0, ..off },
+    ] {
+      let on = Settings { effects, ..NEUTRAL };
+      let mut shifter = Shifter::new(RATE, NEUTRAL.detect);
+      run(&mut shifter, &vowel(), &on);
+      run(&mut shifter, &quiet, &NEUTRAL);
+      let output = run(&mut shifter, &quiet, &on);
+      let loudest = output.iter().fold(0f32, |peak, x| peak.max(x.abs()));
+      assert!(loudest < 1e-6, "a peak of {loudest} with {effects:?}");
+    }
   }
 
   fn note(channel: u8, key: u8) -> Note {

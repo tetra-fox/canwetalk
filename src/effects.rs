@@ -65,6 +65,13 @@ impl Smear {
     for line in &mut self.lines {
       line.clear();
     }
+    self.rest();
+  }
+
+  /// lets go of the stretches held, for while there is no smear and nothing goes into the
+  /// lines. the loops then start from the input as it next comes, not from what the lines
+  /// were left with
+  pub(crate) fn rest(&mut self) {
     self.fast = 0.0;
     self.slow = 0.0;
     self.since_anchor = [0; 2];
@@ -161,9 +168,13 @@ impl Detune {
     self.phase = 0.0;
   }
 
-  /// `amount` is the control squared
+  /// `amount` is the control squared. at zero the frame comes back as it is, and still goes
+  /// into the line for the copies to start from
   pub(crate) fn process(&mut self, frame: [f32; 2], amount: f64, sample_rate: f64) -> [f32; 2] {
     self.line.push(0.5 * (frame[0] + frame[1]));
+    if amount == 0.0 {
+      return frame;
+    }
     advance(&mut self.phase, 2.0 / (DETUNE_CYCLE_SECONDS * sample_rate));
     // both copies at full level from a hundredth of the way up, half each at zero where
     // they coincide
@@ -217,6 +228,8 @@ impl Stereo {
     }
   }
 
+  /// at an `amount` of zero the frame comes back as it is, and still goes through the
+  /// sections and into the lines for the copy to start from
   pub(crate) fn process(&mut self, frame: [f32; 2], amount: f64, sample_rate: f64) -> [f32; 2] {
     let gain = (2.0 * amount).min(1.0) as f32;
     let delay = STEREO_DELAY_SECONDS * sample_rate * amount;
