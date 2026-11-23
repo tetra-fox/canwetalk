@@ -219,6 +219,7 @@ fn scene(editor: &Editor) -> Scene {
     look: Look::default(),
     meshes: editor.meshes.clone(),
     objects,
+    lamps: Vec::new(),
   }
 }
 
