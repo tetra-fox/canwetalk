@@ -50,7 +50,11 @@ impl Control {
   fn knob(self) -> parts::Knob {
     match self {
       Self::Pitch | Self::Formant => parts::Knob::skirted(KNOB_RADIUS, KNOB_HEIGHT),
-      Self::Mix => parts::Knob::dished(KNOB_RADIUS * 0.8, KNOB_HEIGHT),
+      Self::Mix => parts::Knob {
+        skirt: 0.0,
+        top: parts::Top::Flat,
+        ..parts::Knob::knurled(KNOB_RADIUS * 0.8, KNOB_HEIGHT)
+      },
     }
   }
 
@@ -104,8 +108,8 @@ pub(crate) fn create(params: Arc<CanWeTalkParams>) -> Option<IcedEditor> {
   )
 }
 
-/// the meshes every panel is made of, ahead of two for each control: its knob and the mark
-/// on it
+/// the meshes every panel is made of, ahead of three for each control: its knob, the
+/// aluminum face inlaid in it and the line painted on it
 const PLATE: usize = 0;
 const SCREW: usize = 1;
 const SCALE: usize = 2;
@@ -125,7 +129,7 @@ fn meshes() -> Arc<[Mesh]> {
   ];
   for control in Control::ALL {
     let knob = control.knob();
-    meshes.extend([knob.body(), knob.dot()]);
+    meshes.extend([knob.body(), knob.cap(0.86), knob.line()]);
   }
   Arc::from(meshes)
 }
@@ -170,31 +174,30 @@ fn scene(editor: &Editor) -> Scene {
   let mut objects = vec![Object {
     mesh: PLATE,
     transform: Mat4::IDENTITY,
-    material: Material {
-      specular: 0.15,
-      shininess: 20.0,
-      ..Material::matte(Vec3::new(0.30, 0.33, 0.38))
-    },
+    material: Material::satin(Vec3::new(0.27, 0.29, 0.33)),
   }];
   for (index, control) in Control::ALL.into_iter().enumerate() {
     let turn = control.param(&editor.params).unmodulated_normalized_value();
     let transform = parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
-    let body = KNOBS + index * 2;
+    let body = KNOBS + index * 3;
     objects.push(Object {
       mesh: SCALE,
       transform: Mat4::from_translation(Vec3::new(control.x(), KNOB_Y, 0.0)),
       material: Material::matte(Vec3::splat(0.85)),
     });
-    objects.push(Object {
-      mesh: body,
-      transform,
-      material: Material::glossy(Vec3::new(0.08, 0.08, 0.09)),
-    });
-    objects.push(Object {
-      mesh: body + 1,
-      transform,
-      material: Material::matte(Vec3::splat(0.95)),
-    });
+    let black = Vec3::new(0.035, 0.035, 0.04);
+    let parts = [
+      Material::glossy(black),
+      Material::spun(Vec3::new(0.78, 0.79, 0.81)),
+      Material::matte(black),
+    ];
+    for (part, material) in parts.into_iter().enumerate() {
+      objects.push(Object {
+        mesh: body + part,
+        transform,
+        material,
+      });
+    }
   }
   for (x, y) in [
     (14.0, 14.0),
@@ -205,7 +208,7 @@ fn scene(editor: &Editor) -> Scene {
     objects.push(Object {
       mesh: SCREW,
       transform: Mat4::from_translation(Vec3::new(x, y, 0.0)) * Mat4::from_rotation_z(x + y),
-      material: Material::glossy(Vec3::splat(0.6)),
+      material: Material::chrome(Vec3::splat(0.75)),
     });
   }
   Scene {
