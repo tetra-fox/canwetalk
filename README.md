@@ -1,5 +1,11 @@
 # CanWeTalk
 
+_baby, can we taaaaalk?_
+
+[![crates.io](https://img.shields.io/crates/v/canwetalk)](https://crates.io/crates/canwetalk)
+[![ci](https://github.com/tetra-fox/canwetalk/actions/workflows/ci.yml/badge.svg)](https://github.com/tetra-fox/canwetalk/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/canwetalk)](#license)
+
 A pitch and formant shifter plugin for a monophonic input, played by MIDI notes. VST3 and CLAP.
 
 CanWeTalk detects the pitch of its input and resynthesizes it from grains two input periods
