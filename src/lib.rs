@@ -25,6 +25,10 @@ mod voice;
 const MASTER_BEND_SEMITONES: f32 = 2.0;
 /// the control change MPE sends a note's slide as
 const SLIDE_CC: u8 = 74;
+/// the largest sample taken for sound, a million times full scale. a fault upstream can send
+/// larger ones or ones that are no numbers, which would overflow the sums taken over the
+/// input and never leave the filters
+const INPUT_LIMIT: f32 = 1e6;
 
 pub struct CanWeTalk {
   params: Arc<CanWeTalkParams>,
@@ -115,7 +119,10 @@ impl Plugin for CanWeTalk {
 
       let mut dry = [0.0; 2];
       for (dry, sample) in dry.iter_mut().zip(samples.iter_mut()) {
-        *dry = *sample;
+        // false for a sample that is no number too, which is then silence
+        if sample.abs() <= INPUT_LIMIT {
+          *dry = *sample;
+        }
       }
       if mono {
         dry[1] = dry[0];
@@ -354,5 +361,24 @@ mod tests {
         "buffers of {sizes:?} samples sound different"
       );
     }
+  }
+
+  /// a fault upstream can send samples that are no numbers or far too large to be sound. the
+  /// output stays a number through them, and a note played after them sounds
+  #[test]
+  fn samples_that_are_not_sound_leave_nothing_behind() {
+    let mut input = tone(RATE as usize);
+    for (at, sample) in [(12_000, f32::NAN), (12_100, f32::INFINITY), (12_200, -1e30)] {
+      input[at] = [sample; 2];
+    }
+    let note = [(RATE as usize / 2, [0x90, 64, 100])];
+    let output = render(&input, &note, &[512]);
+    let lost = output.iter().flatten().position(|x| !x.is_finite());
+    assert_eq!(lost, None, "the output is not a number from there");
+    let last = &output[output.len() - 4800..];
+    assert!(
+      last.iter().flatten().any(|x| x.abs() > 0.1),
+      "the note is silent"
+    );
   }
 }
