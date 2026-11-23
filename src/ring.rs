@@ -63,6 +63,36 @@ impl Ring {
     let a = if whole == 0 { 2.0 * b - c } else { after };
     [a, b, c, d]
   }
+
+  /// `taps` for reads at one delay a sample after another, each of the four in a slice of
+  /// its own. the first read is as it was before the newest `newer` samples were pushed
+  pub(crate) fn taps_along(&self, newer: usize, whole: usize, [a, b, c, d]: [&mut [f32]; 4]) {
+    self.run(newer + whole, b);
+    self.run(newer + whole + 1, c);
+    self.run(newer + whole + 2, d);
+    if whole == 0 {
+      for ((a, b), c) in a.iter_mut().zip(b).zip(c) {
+        *a = 2.0 * *b - *c;
+      }
+    } else {
+      self.run(newer + whole - 1, a);
+    }
+  }
+
+  /// fills `run` with samples in the order they were pushed, from the one pushed `ago`
+  /// pushes before the newest
+  fn run(&self, ago: usize, run: &mut [f32]) {
+    debug_assert!(
+      run.len() <= ago + 1 && ago < self.samples.len(),
+      "{} samples from {ago} ago are not all held",
+      run.len()
+    );
+    let first = self.next.wrapping_sub(1 + ago) & self.mask;
+    // up to the end of the ring, and the rest from its start
+    let (straight, around) = run.split_at_mut(run.len().min(self.samples.len() - first));
+    straight.copy_from_slice(&self.samples[first..][..straight.len()]);
+    around.copy_from_slice(&self.samples[..around.len()]);
+  }
 }
 
 /// the whole samples in a delay and the part of one that is left
@@ -97,5 +127,27 @@ mod tests {
     assert!((ring.read(7.25) - 31.75).abs() < 1e-4);
     assert!((ring.read(0.5) - 38.5).abs() < 1e-4);
     assert!((cubic(ring.taps(3, 0), 0.5) - 35.5).abs() < 1e-4);
+  }
+
+  /// reads a sample after another at one delay go by the same samples whether they are
+  /// taken together or one by one, across the end of the ring too
+  #[test]
+  fn taps_along_are_the_taps_of_each_read() {
+    let mut ring = Ring::new(32);
+    for i in 0..70 {
+      ring.push((i * i) as f32);
+    }
+    for (newer, whole) in [(4, 0), (4, 1), (9, 3), (7, 20)] {
+      let mut along = [[0.0; 5]; 4];
+      ring.taps_along(newer, whole, along.each_mut().map(|tap| &mut tap[..]));
+      for read in 0..5 {
+        let each = ring.taps(newer - read, whole);
+        assert_eq!(
+          along.map(|tap| tap[read]),
+          each,
+          "read {read} of {newer}, {whole}"
+        );
+      }
+    }
   }
 }

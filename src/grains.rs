@@ -74,12 +74,12 @@ pub(crate) struct Scratch {
   sums: [[f32; BLOCK]; 2],
   /// for one grain at each sample it sounds: how far through its window it is and how
   /// loud that makes it, how far behind it reads, as a part of a sample past the whole
-  /// ones, and the samples of each channel that it reads between
+  /// ones, and each of the four samples of each channel that it reads between
   phases: [f64; BLOCK],
   levels: [f32; BLOCK],
   delays: [f64; BLOCK],
   parts: [f32; BLOCK],
-  taps: [[[f32; 4]; BLOCK]; 2],
+  taps: [[[f32; BLOCK]; 4]; 2],
 }
 
 impl Scratch {
@@ -90,7 +90,7 @@ impl Scratch {
       levels: [0.0; BLOCK],
       delays: [0.0; BLOCK],
       parts: [0.0; BLOCK],
-      taps: [[[0.0; 4]; BLOCK]; 2],
+      taps: [[[0.0; BLOCK]; 4]; 2],
     }
   }
 }
@@ -353,19 +353,32 @@ impl Grain {
       };
       *level = raised_cosine(quarters) as f32;
     }
-    for (index, &delay) in scratch.delays[..sounded].iter().enumerate() {
-      let (whole, part) = split(delay);
-      scratch.parts[index] = part;
+    if self.slope == 0.0 {
+      // at the input's own speed every read is as far behind as the first, and each of the
+      // samples they go by is a run of the input
+      let (whole, part) = split(scratch.delays[0]);
+      scratch.parts[..sounded].fill(part);
       for (line, taps) in input.iter().zip(&mut scratch.taps) {
-        taps[index] = line.taps(newer - index, whole);
+        line.taps_along(newer, whole, taps.each_mut().map(|tap| &mut tap[..sounded]));
+      }
+    } else {
+      for (index, &delay) in scratch.delays[..sounded].iter().enumerate() {
+        let (whole, part) = split(delay);
+        scratch.parts[index] = part;
+        for (line, taps) in input.iter().zip(&mut scratch.taps) {
+          for (tap, sample) in taps.iter_mut().zip(line.taps(newer - index, whole)) {
+            tap[index] = sample;
+          }
+        }
       }
     }
-    for (sums, taps) in scratch.sums.iter_mut().zip(&scratch.taps) {
+    for (sums, [a, b, c, d]) in scratch.sums.iter_mut().zip(&scratch.taps) {
       let sums = &mut sums[samples.start..][..sounded];
-      for (((sum, &taps), &part), level) in
-        (sums.iter_mut().zip(taps).zip(&scratch.parts)).zip(&scratch.levels)
+      let taps = a.iter().zip(b).zip(c).zip(d);
+      for ((sum, (((&a, &b), &c), &d)), (part, level)) in
+        (sums.iter_mut().zip(taps)).zip(scratch.parts.iter().zip(&scratch.levels))
       {
-        *sum += level * cubic(taps, part);
+        *sum += level * cubic([a, b, c, d], *part);
       }
     }
     (!going).then(|| sounded - 1)
