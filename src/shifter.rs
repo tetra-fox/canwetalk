@@ -32,6 +32,8 @@ const FADE: Adsr = Adsr {
 };
 /// channels a note can be on
 const CHANNELS: usize = 16;
+/// where a slide sits untouched, half way along its travel
+const SLIDE_REST: f64 = 0.5;
 const A4_HZ: f64 = 440.0;
 const A4_NOTE: f64 = 69.0;
 
@@ -83,6 +85,10 @@ pub(crate) struct Settings {
   /// follows the input while no note is held
   pub(crate) gate: bool,
   pub(crate) envelope: Adsr,
+  /// how much of a note's level its pressure sets, 0 for none of it and 1 for all
+  pub(crate) pressure_level: f64,
+  /// octaves a note's slide moves its formants at either end of its travel
+  pub(crate) slide_formant: f64,
   /// notes sound on after their keys come up, until the next key pressed with none down
   pub(crate) latch: bool,
   pub(crate) detect: Range,
@@ -106,6 +112,9 @@ pub(crate) struct Shifter {
   down: Vec<Note>,
   /// semitones each channel is bent by. the first bends every note, the rest their own
   bends: [f64; CHANNELS],
+  /// the pressure and slide last sent on each channel, which a note there starts from
+  pressures: [f64; CHANNELS],
+  slides: [f64; CHANNELS],
   /// where in its cycle the vibrato is, 0 to 1
   vibrato_phase: f64,
   mode: Mode,
@@ -126,8 +135,15 @@ struct Voice {
   sounding: bool,
   started: u64,
   envelope: Envelope,
-  /// how much of the way the bend moves to where it was sent each sample
-  bend_step: f64,
+  /// the note's pressure, 0 to 1, and where it was last sent
+  pressure: f64,
+  pressure_sent: f64,
+  /// the note's slide, 0 to 1 with the middle at rest, and where it was last sent
+  slide: f64,
+  slide_sent: f64,
+  /// how much of the way the bend, pressure and slide move to where they were sent each
+  /// sample. they arrive in steps, which would be heard
+  control_step: f64,
   /// the gliding pitch
   pitch: f64,
   /// how far the pitch has moved from the input's to the note's under `glide_notes_only`
@@ -144,7 +160,11 @@ impl Voice {
       sounding: false,
       started: 0,
       envelope: Envelope::default(),
-      bend_step: 1.0 - (-1.0 / (FADE_SECONDS * sample_rate)).exp(),
+      pressure: 0.0,
+      pressure_sent: 0.0,
+      slide: SLIDE_REST,
+      slide_sent: SLIDE_REST,
+      control_step: 1.0 - (-1.0 / (FADE_SECONDS * sample_rate)).exp(),
       pitch: input_pitch,
       note_blend: 0.0,
     }
@@ -164,8 +184,9 @@ impl Voice {
     }
     let goal = match self.note {
       Some(note) => {
-        // bends arrive in steps, which would be heard
-        self.bend += self.bend_step * (bend + self.tuning - self.bend);
+        self.bend += self.control_step * (bend + self.tuning - self.bend);
+        self.pressure += self.control_step * (self.pressure_sent - self.pressure);
+        self.slide += self.control_step * (self.slide_sent - self.slide);
         note_pitch(f64::from(note.key) + self.bend, sample_rate)
       }
       None => input_pitch,
@@ -189,10 +210,18 @@ impl Voice {
     } else {
       &FADE
     };
-    let gain = self.envelope.tick(self.sounding, adsr, sample_rate) as f32;
+    // a voice with no note has no pressure or slide to go by
+    let (pressed, slid) = match self.note {
+      Some(_) => (
+        1.0 - settings.pressure_level * (1.0 - self.pressure),
+        settings.slide_formant * (self.slide - SLIDE_REST) / SLIDE_REST,
+      ),
+      None => (1.0, 0.0),
+    };
+    let gain = (pressed * self.envelope.tick(self.sounding, adsr, sample_rate)) as f32;
     let shape = Shape {
       pitch: settings.pitch,
-      formant: settings.formant,
+      formant: settings.formant + slid,
       formant_follow: settings.formant_follow,
       smooth: settings.smooth,
     };
@@ -232,6 +261,8 @@ impl Shifter {
       latch: false,
       down: Vec::with_capacity(MAX_DOWN),
       bends: [0.0; CHANNELS],
+      pressures: [0.0; CHANNELS],
+      slides: [SLIDE_REST; CHANNELS],
       vibrato_phase: 0.0,
       mode: Mode::Off,
       gate: false,
@@ -269,6 +300,8 @@ impl Shifter {
     self.detune.reset();
     self.stereo.reset();
     self.bends = [0.0; CHANNELS];
+    self.pressures = [0.0; CHANNELS];
+    self.slides = [SLIDE_REST; CHANNELS];
     self.release_all();
   }
 
@@ -308,6 +341,14 @@ impl Shifter {
     }
     self.clock += 1;
     let bend = channel_bend(&self.bends, note.channel);
+    // a channel past the sixteenth is not one anything was sent on
+    let sent = |values: &[f64; CHANNELS], rest| {
+      values
+        .get(usize::from(note.channel))
+        .copied()
+        .unwrap_or(rest)
+    };
+    let (pressure, slide) = (sent(&self.pressures, 0.0), sent(&self.slides, SLIDE_REST));
     let voices = &mut self.voices[..count];
     // the follower first, then a voice with nothing to play, then the one longest on its note
     let index = (self.follower.take())
@@ -328,6 +369,8 @@ impl Shifter {
     // a bend sent ahead of the note is where the note starts, not somewhere it slides to
     voice.tuning = 0.0;
     voice.bend = bend;
+    (voice.pressure, voice.pressure_sent) = (pressure, pressure);
+    (voice.slide, voice.slide_sent) = (slide, slide);
     if !voice.sounding && voice.envelope.is_silent() {
       // a voice coming from silence has no pitch to glide from
       voice.pitch = note_pitch(f64::from(note.key) + bend, self.sample_rate);
@@ -375,6 +418,55 @@ impl Shifter {
     // a channel past the sixteenth is not one a note can be on
     if let Some(bend) = self.bends.get_mut(usize::from(channel)) {
       *bend = semitones;
+    }
+  }
+
+  /// sets the pressure, 0 to 1, of the notes on a channel and of those to come on it
+  pub(crate) fn channel_pressure(&mut self, channel: u8, pressure: f64) {
+    if let Some(sent) = self.pressures.get_mut(usize::from(channel)) {
+      *sent = pressure;
+    }
+    for voice in self.voices_on(channel) {
+      voice.pressure_sent = pressure;
+    }
+  }
+
+  /// sets the slide, 0 to 1, of the notes on a channel and of those to come on it
+  pub(crate) fn channel_slide(&mut self, channel: u8, slide: f64) {
+    if let Some(sent) = self.slides.get_mut(usize::from(channel)) {
+      *sent = slide;
+    }
+    for voice in self.voices_on(channel) {
+      voice.slide_sent = slide;
+    }
+  }
+
+  fn voices_on(&mut self, channel: u8) -> impl Iterator<Item = &mut Voice> {
+    self
+      .voices
+      .iter_mut()
+      .filter(move |voice| voice.note.is_some_and(|note| note.channel == channel))
+  }
+
+  /// sets the pressure of one sounding note
+  pub(crate) fn note_pressure(&mut self, note: Note, pressure: f64) {
+    if let Some(voice) = self
+      .voices
+      .iter_mut()
+      .find(|voice| voice.note == Some(note))
+    {
+      voice.pressure_sent = pressure;
+    }
+  }
+
+  /// sets the slide of one sounding note
+  pub(crate) fn note_slide(&mut self, note: Note, slide: f64) {
+    if let Some(voice) = self
+      .voices
+      .iter_mut()
+      .find(|voice| voice.note == Some(note))
+    {
+      voice.slide_sent = slide;
     }
   }
 
@@ -486,6 +578,8 @@ mod tests {
     smooth: 0.0,
     glide: 0.0,
     glide_notes_only: false,
+    pressure_level: 0.0,
+    slide_formant: 0.0,
     vibrato: 0.0,
     vibrato_step: 0.0,
     vibrato_phase: None,
@@ -754,6 +848,59 @@ mod tests {
       0.0,
       1e-3,
       "phase after four whole cycles",
+    );
+  }
+
+  #[test]
+  fn pressure_sets_the_level_of_its_own_note() {
+    let settings = Settings {
+      pressure_level: 1.0,
+      ..NEUTRAL
+    };
+    let loudest = |signal: &[f32]| signal.iter().fold(0f32, |peak, x| peak.max(x.abs()));
+    let mut shifter = shifter_in(&settings);
+    shifter.note_on(Note {
+      channel: 3,
+      key: 57,
+    });
+    shifter.channel_pressure(5, 1.0);
+    assert_eq!(loudest(&run(&mut shifter, &vowel(), &settings)), 0.0);
+
+    shifter.channel_pressure(3, 1.0);
+    let full = loudest(&run(&mut shifter, &vowel(), &settings));
+    shifter.channel_pressure(3, 0.5);
+    let half = loudest(&run(&mut shifter, &vowel(), &settings)[RATE as usize / 2..]);
+    assert_near(half, 0.5 * full, 0.05 * full, "level at half pressure");
+  }
+
+  /// slid to the top of its travel, a note's formants are up by the whole of the setting
+  #[test]
+  fn slide_moves_the_formants_of_its_own_note() {
+    let settings = Settings {
+      slide_formant: 1.0,
+      ..NEUTRAL
+    };
+    let mut shifter = shifter_in(&settings);
+    let note = Note {
+      channel: 3,
+      key: 57,
+    };
+    shifter.note_on(note);
+    let output = run(&mut shifter, &vowel(), &settings);
+    assert_near(
+      strongest_harmonic_hz(&output, A3),
+      FORMANT_HZ,
+      A3,
+      "formant at rest",
+    );
+
+    shifter.note_slide(note, 1.0);
+    let output = run(&mut shifter, &vowel(), &settings);
+    assert_near(
+      strongest_harmonic_hz(&output, A3),
+      2.0 * FORMANT_HZ,
+      A3,
+      "formant slid up",
     );
   }
 

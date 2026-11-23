@@ -22,6 +22,8 @@ const TAIL_SECONDS: f32 = 10.0;
 /// semitones the first channel's pitch bend reaches either way. it bends every note, as a
 /// plain keyboard's wheel does and as the MPE master channel does
 const MASTER_BEND_SEMITONES: f32 = 2.0;
+/// the control change MPE sends a note's slide as
+const SLIDE_CC: u8 = 74;
 /// the pitch and formant controls reach this far either way
 const SHIFT_SEMITONES: f32 = 24.0;
 
@@ -129,6 +131,10 @@ struct CanWeTalkParams {
   sustain: FloatParam,
   #[id = "release"]
   release: FloatParam,
+  #[id = "pressure_level"]
+  pressure_level: FloatParam,
+  #[id = "slide_formant"]
+  slide_formant: FloatParam,
   #[id = "latch"]
   latch: BoolParam,
   #[id = "bend_range"]
@@ -208,6 +214,8 @@ impl Default for CanWeTalkParams {
       decay: milliseconds("Decay", 200.0),
       sustain: percent("Sustain", 1.0),
       release: milliseconds("Release", 200.0),
+      pressure_level: percent("Pressure to Level", 0.0),
+      slide_formant: semitones("Slide to Formant"),
       latch: BoolParam::new("Latch", false),
       // 48 is what MPE controllers send over unless told otherwise
       bend_range: IntParam::new("MPE Bend Range", 48, IntRange::Linear { min: 1, max: 96 })
@@ -324,6 +332,8 @@ impl Plugin for CanWeTalk {
         sustain: f64::from(params.sustain.value()),
         release: f64::from(params.release.value() / 1000.0),
       },
+      pressure_level: 0.0,
+      slide_formant: 0.0,
       latch: params.latch.value(),
       detect: match params.detect.value() {
         DetectRange::Bass => Range::Bass,
@@ -367,6 +377,39 @@ impl Plugin for CanWeTalk {
               self.shifter.tune(note, f64::from(tuning));
             }
           }
+          NoteEvent::PolyPressure {
+            channel,
+            key,
+            pressure,
+            ..
+          } => {
+            if let Some(note) = note(channel, key) {
+              self.shifter.note_pressure(note, f64::from(pressure));
+            }
+          }
+          NoteEvent::PolyBrightness {
+            channel,
+            key,
+            brightness,
+            ..
+          } => {
+            if let Some(note) = note(channel, key) {
+              self.shifter.note_slide(note, f64::from(brightness));
+            }
+          }
+          NoteEvent::MidiChannelPressure {
+            channel, pressure, ..
+          } => {
+            self.shifter.channel_pressure(channel, f64::from(pressure));
+          }
+          NoteEvent::MidiCC {
+            channel,
+            cc: SLIDE_CC,
+            value,
+            ..
+          } => {
+            self.shifter.channel_slide(channel, f64::from(value));
+          }
           NoteEvent::MidiPitchBend { channel, value, .. } => {
             let range = match channel {
               0 => MASTER_BEND_SEMITONES,
@@ -387,6 +430,8 @@ impl Plugin for CanWeTalk {
       settings.vibrato = f64::from(params.vibrato.smoothed.next() / 100.0);
       settings.vibrato_phase =
         start_beats.map(|(start, per_sample)| (start + index as f64 * per_sample) / cycle_beats);
+      settings.pressure_level = f64::from(params.pressure_level.smoothed.next());
+      settings.slide_formant = f64::from(params.slide_formant.smoothed.next() / 12.0);
       settings.detune = f64::from(params.detune.smoothed.next());
       settings.smear = f64::from(params.smear.smoothed.next());
       // one channel has no sides to widen, and the widener would only comb it
