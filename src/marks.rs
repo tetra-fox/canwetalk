@@ -22,6 +22,10 @@ const MATCH: f32 = 0.5;
 /// it. the first mark of a run moves the whole distance. the marks settle on the quiet part
 /// of the cycle, half a period from the loud part
 const PULL: f64 = 0.02;
+/// lags a search scores before it takes to scoring every few
+const MAX_LAGS: usize = 256;
+/// samples a match compares before it takes to comparing every few
+const MAX_COMPARED: usize = 512;
 
 pub(crate) struct Marks {
   /// samples since the last mark
@@ -91,26 +95,47 @@ impl Marks {
     let mono = |ago: usize| input[0].ago(ago) + input[1].ago(ago);
     let last = self.age.round() as usize;
     let nearest = expected.round() as usize;
-    let around = |centre: usize| (centre - half..=centre + half).map(mono);
+    // a match is made in the time of one sample, which a long period has too many samples
+    // and lags for. past `MAX_COMPARED` every few samples are compared, and past `MAX_LAGS`
+    // every few lags are scored and then all of those around the best
+    let every = (2 * half + 1).div_ceil(MAX_COMPARED);
+    let around = |centre: usize| (centre - half..=centre + half).step_by(every).map(mono);
     let energy = |centre: usize| around(centre).map(|x| x * x).sum::<f32>();
     let last_energy = energy(last);
-
-    let scores = &mut self.scores[..2 * reach + 1];
-    for (score, lag) in scores.iter_mut().zip(nearest - reach..) {
+    let score = |lag: usize| {
       let product: f32 = around(last)
         .zip(around(last - lag))
         .map(|(a, b)| a * b)
         .sum();
       let norm = (last_energy * energy(last - lag)).sqrt();
-      *score = if norm > 0.0 { product / norm } else { 0.0 };
+      if norm > 0.0 { product / norm } else { 0.0 }
+    };
+
+    let (mut first, mut end) = (nearest - reach, nearest + reach);
+    let stride = (end - first + 1).div_ceil(MAX_LAGS);
+    if stride > 1 {
+      let rough = (first..=end)
+        .step_by(stride)
+        .map(|lag| (lag, score(lag)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("there is a lag in reach")
+        .0;
+      (first, end) = (
+        rough.saturating_sub(stride).max(first),
+        (rough + stride).min(end),
+      );
+    }
+    let scores = &mut self.scores[..end - first + 1];
+    for (slot, lag) in scores.iter_mut().zip(first..) {
+      *slot = score(lag);
     }
     let best = (0..scores.len())
       .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
-      .expect("there are 2 * reach + 1 lags");
+      .expect("there is a lag to score");
     if scores[best] < MATCH {
       return None;
     }
-    let mut step = (nearest - reach + best) as f64;
+    let mut step = (first + best) as f64;
     if best > 0 && best + 1 < scores.len() {
       // vertex of the parabola through the best score and its neighbours
       let (a, b, c) = (scores[best - 1], scores[best], scores[best + 1]);
