@@ -106,11 +106,13 @@ impl Plugin for CanWeTalk {
 
     let mut next_event = context.next_event();
     for (index, mut samples) in buffer.iter_samples().enumerate() {
+      let settings = self.params.settings(&block, index);
+      // before the sample's notes, which are taken up in the mode they come in
+      self.shifter.notes.set_play(&settings.play);
       while let Some(event) = next_event.filter(|event| event.timing() <= index as u32) {
         self.handle(event);
         next_event = context.next_event();
       }
-      let settings = self.params.settings(&block, index);
       let mix = self.params.mix.smoothed.next();
 
       let mut dry = [0.0; 2];

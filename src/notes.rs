@@ -181,31 +181,37 @@ impl Notes {
     self.release_all();
   }
 
-  /// drops every note. outside the gate modes the first voice is left following the input
+  /// lets go of every note. outside the gate modes the first voice is left following the input
   fn release_all(&mut self) {
     self.waiting.clear();
     self.down.clear();
     for voice in &mut self.voices {
-      voice.note = None;
       voice.sounding = false;
     }
     self.follower = None;
     if !self.mode.is_gated() {
+      self.voices[0].note = None;
       self.voices[0].sounding = true;
       self.voices[0].envelope.trigger();
       self.follower = Some(0);
     }
   }
 
-  /// a change of mode drops every note
-  pub(crate) fn set_mode(&mut self, mode: Mode) {
+  /// takes up the mode and latch, which the notes that come after are played by
+  pub(crate) fn set_play(&mut self, play: &Play) {
+    self.set_mode(play.mode);
+    self.set_latch(play.latch);
+  }
+
+  /// a change of mode lets go of every note
+  fn set_mode(&mut self, mode: Mode) {
     if mode != self.mode {
       self.mode = mode;
       self.release_all();
     }
   }
 
-  pub(crate) fn set_latch(&mut self, latch: bool) {
+  fn set_latch(&mut self, latch: bool) {
     if latch == self.latch {
       return;
     }
@@ -217,7 +223,7 @@ impl Notes {
       self.waiting.retain(|&note| down.holds(note));
       for index in 0..VOICES {
         if let Some(note) = self.voices[index]
-          .note
+          .held()
           .filter(|&note| !self.down.holds(note))
         {
           self.release(note);
@@ -238,9 +244,10 @@ impl Notes {
       self.waiting.clear();
       for voice in &mut self.voices {
         voice.sounding &= voice.note.is_none();
-        voice.note = None;
       }
     }
+    // a key pressed again while it waits gets a voice here, and would get another from there
+    self.waiting.retain(|&waiting| waiting != note);
     self.down.press(note);
     self.clock += 1;
     let voices = &mut self.voices[..count];
@@ -254,7 +261,7 @@ impl Notes {
           .expect("there is at least one voice")
       });
     let voice = &mut voices[index];
-    if let Some(displaced) = voice.note.filter(|&held| held != note) {
+    if let Some(displaced) = voice.held().filter(|&held| held != note) {
       if self.waiting.len() == MAX_WAITING {
         self.waiting.remove(0);
       }
@@ -279,7 +286,7 @@ impl Notes {
     let Some(index) = self
       .voices
       .iter()
-      .position(|voice| voice.note == Some(note))
+      .position(|voice| voice.held() == Some(note))
     else {
       return;
     };
@@ -288,12 +295,12 @@ impl Notes {
       self.voices[index].tuning = 0.0;
       return;
     }
-    self.voices[index].note = None;
-    if !self.mode.is_gated() && self.voices.iter().all(|voice| voice.note.is_none()) {
+    self.voices[index].sounding = false;
+    if !self.mode.is_gated() && self.voices.iter().all(|voice| voice.held().is_none()) {
       // the last voice playing goes back to following the input
+      self.voices[index].note = None;
+      self.voices[index].sounding = true;
       self.follower = Some(index);
-    } else {
-      self.voices[index].sounding = false;
     }
   }
 
@@ -332,12 +339,12 @@ impl Notes {
       .filter(move |voice| voice.note.is_some_and(|note| note.channel == channel))
   }
 
-  /// the voice a sounding note is on
+  /// the voice a held note is on
   fn voice_of(&mut self, note: Note) -> Option<&mut Voice> {
     self
       .voices
       .iter_mut()
-      .find(|voice| voice.note == Some(note))
+      .find(|voice| voice.held() == Some(note))
   }
 
   /// sets the pressure of one sounding note
@@ -407,5 +414,29 @@ mod tests {
       notes.voice_of(key(69)).is_some(),
       "the latched notes were dropped"
     );
+  }
+
+  /// a note that lost its voice and waits for one is pressed again without coming up first,
+  /// as two overlapping notes of one key are. it is still one note, on one voice
+  #[test]
+  fn a_key_pressed_again_while_it_waits_has_one_voice() {
+    let key = |key| Note::new(0, key).expect("a key under 128");
+    let mut notes = Notes::new(48_000.0, 0.01);
+    notes.set_mode(Mode::Poly);
+    for down in 0..=VOICES as u8 {
+      notes.on(key(down));
+    }
+    notes.on(key(0));
+    // two voices come free for the waiting notes
+    notes.off(key(2));
+    notes.off(key(3));
+    let playing = |notes: &Notes| {
+      (notes.voices.iter())
+        .filter(|voice| voice.held() == Some(key(0)))
+        .count()
+    };
+    assert_eq!(playing(&notes), 1);
+    notes.off(key(0));
+    assert_eq!(playing(&notes), 0);
   }
 }

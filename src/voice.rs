@@ -36,11 +36,13 @@ pub(crate) struct Expression {
 pub(crate) struct Voice {
   sample_rate: f64,
   engine: Engine,
+  /// the note played. a released note stays through its fade, which is at the note's pitch
   pub(crate) note: Option<Note>,
   /// semitones the host has tuned this note by
   pub(crate) tuning: f64,
   /// semitones the note is off its key, following its channels' bends and its tuning
   bend: f64,
+  /// whether the note is held, or with no note the input followed. otherwise the voice fades
   pub(crate) sounding: bool,
   /// the count of notes when this one came, which `notes` keeps
   pub(crate) started: u64,
@@ -111,6 +113,11 @@ impl Voice {
     (*slide, *slide_sent) = (SLIDE_REST, SLIDE_REST);
     *pitch = input_pitch;
     *note_blend = 0.0;
+  }
+
+  /// the note while it is held
+  pub(crate) fn held(&self) -> Option<Note> {
+    self.note.filter(|_| self.sounding)
   }
 
   /// takes up `note` with the bend, pressure and slide of its channel. they are where the

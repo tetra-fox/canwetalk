@@ -116,10 +116,9 @@ impl Shifter {
     stereo.reset();
   }
 
-  /// the effect alone, with no latency against the input
+  /// the effect alone, with no latency against the input. the mode and latch of `settings`
+  /// are given to `notes` beforehand, ahead of the sample's notes
   pub(crate) fn process(&mut self, frame: [f32; 2], settings: &Settings) -> [f32; 2] {
-    self.notes.set_mode(settings.play.mode);
-    self.notes.set_latch(settings.play.latch);
     if settings.detect != self.detector.range() {
       self.detector.set_range(settings.detect);
       self.input_pitch = lowest_pitch(&self.detector, self.sample_rate as f32);
@@ -256,7 +255,10 @@ mod tests {
   fn run(shifter: &mut Shifter, input: &[f32], settings: &Settings) -> Vec<f32> {
     input
       .iter()
-      .map(|&x| shifter.process([x, x], settings)[0])
+      .map(|&x| {
+        shifter.notes.set_play(&settings.play);
+        shifter.process([x, x], settings)[0]
+      })
       .collect()
   }
 
@@ -473,6 +475,31 @@ mod tests {
     assert_eq!(loudest(&output[released + 1..]), 0.0);
   }
 
+  /// a note let go fades at its own pitch, not the input's
+  #[test]
+  fn released_note_keeps_its_pitch() {
+    let gated = Settings {
+      play: Play {
+        mode: Mode::PolyGate,
+        ..NEUTRAL.play
+      },
+      envelope: Adsr {
+        release: 2.0,
+        ..NEUTRAL.envelope
+      },
+      ..NEUTRAL
+    };
+    let mut shifter = shifter_in(&gated);
+    shifter.notes.on(key(64));
+    run(&mut shifter, &vowel(), &gated);
+    shifter.notes.off(key(64));
+    let fading = &run(&mut shifter, &vowel(), &gated)[..8192];
+    assert!(
+      power_at(fading, E4) > 100.0 * power_at(fading, VOWEL_HZ),
+      "the release went to the input pitch"
+    );
+  }
+
   /// held at the top and at the bottom of its cycle, the vibrato moves a note by its depth
   #[test]
   fn vibrato_moves_the_pitch_by_its_depth() {
@@ -589,8 +616,7 @@ mod tests {
       ..NEUTRAL
     };
     let play = |shifter: &mut Shifter| {
-      // the first sample puts the shifter in the settings' mode, which a note needs
-      shifter.process([0.0; 2], &settings);
+      shifter.notes.set_play(&settings.play);
       shifter.notes.on(key(57));
       run(shifter, &vowel(), &settings)
     };
@@ -675,9 +701,10 @@ mod tests {
     );
   }
 
-  /// a shifter that has seen `settings`, so notes are taken in its mode
+  /// a shifter that takes notes in the mode of `settings`
   fn shifter_in(settings: &Settings) -> Shifter {
     let mut shifter = Shifter::new(RATE);
+    shifter.notes.set_play(&settings.play);
     shifter.process([0.0; 2], settings);
     shifter
   }
