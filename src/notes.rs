@@ -3,6 +3,7 @@
 
 use nice_plug::prelude::Enum;
 
+use crate::marks::Cycle;
 use crate::ring::Ring;
 use crate::shifter::Settings;
 use crate::voice::{SLIDE_REST, Voice};
@@ -363,7 +364,7 @@ impl Notes {
   /// one sample of every voice, summed. `vibrato` is the ratio it moves their pitches by
   pub(crate) fn tick(
     &mut self,
-    input_pitch: f64,
+    cycle: Cycle,
     vibrato: f64,
     settings: &Settings,
     input: &[Ring; 2],
@@ -373,7 +374,7 @@ impl Notes {
       let bend = voice
         .note
         .map_or(0.0, |note| note_bend(&self.channels, note));
-      let voiced = voice.tick(input_pitch, bend, vibrato, settings, input);
+      let voiced = voice.tick(cycle, bend, vibrato, settings, input);
       for (out, sample) in out.iter_mut().zip(voiced) {
         *out += sample;
       }

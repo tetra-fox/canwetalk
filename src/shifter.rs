@@ -10,6 +10,7 @@ use std::f64::consts::TAU;
 use crate::effects::{Amounts, Detune, Smear, Stereo};
 use crate::envelope::Adsr;
 use crate::grains::Shape;
+use crate::marks::{Cycle, Marks};
 use crate::notes::{Notes, Play};
 use crate::pitch::{Detector, Range};
 use crate::ring::Ring;
@@ -41,6 +42,9 @@ pub(crate) struct Settings {
   pub(crate) expression: Expression,
   pub(crate) effects: Amounts,
   pub(crate) detect: Range,
+  /// grains start where the input's cycles do, found from its waveform. otherwise where a
+  /// count by the detected pitch puts them, which wanders off the cycles as the pitch moves
+  pub(crate) anchor: bool,
 }
 
 pub(crate) struct Shifter {
@@ -51,6 +55,8 @@ pub(crate) struct Shifter {
   smear: Smear,
   /// what the voices read, the input after smear
   input: [Ring; 2],
+  /// where the cycles of `input` start
+  marks: Marks,
   pub(crate) notes: Notes,
   /// where in its cycle the vibrato is, 0 to 1
   vibrato_phase: f64,
@@ -73,6 +79,7 @@ impl Shifter {
       input_pitch,
       smear: Smear::new(sample_rate),
       input: [Ring::new(HISTORY_SAMPLES), Ring::new(HISTORY_SAMPLES)],
+      marks: Marks::new(2.0 / INPUT_PITCH.start()),
       notes: Notes::new(f64::from(sample_rate), input_pitch),
       vibrato_phase: 0.0,
       detune: Detune::new(sample_rate),
@@ -90,6 +97,7 @@ impl Shifter {
       input_pitch,
       smear,
       input,
+      marks,
       notes,
       vibrato_phase,
       detune,
@@ -101,6 +109,7 @@ impl Shifter {
     for line in input {
       line.clear();
     }
+    marks.reset();
     notes.reset(*input_pitch);
     *vibrato_phase = 0.0;
     detune.reset();
@@ -139,9 +148,19 @@ impl Shifter {
     };
     let vibrato = 2f64.powf(settings.vibrato.depth * (TAU * self.vibrato_phase).sin() / 12.0);
 
-    let mut out = self
-      .notes
-      .tick(self.input_pitch, vibrato, settings, &self.input);
+    let cycle = if settings.anchor {
+      let (period, phase) = self.marks.tick(&self.input, 2.0 / self.input_pitch);
+      Cycle {
+        pitch: (2.0 / period).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end()),
+        phase: Some(phase),
+      }
+    } else {
+      Cycle {
+        pitch: self.input_pitch,
+        phase: None,
+      }
+    };
+    let mut out = self.notes.tick(cycle, vibrato, settings, &self.input);
     if detune > 0.0 {
       out = self.detune.process(out, detune * detune, self.sample_rate);
     }
@@ -195,17 +214,23 @@ mod tests {
       stereo: 0.0,
     },
     detect: Range::Mid,
+    anchor: false,
   };
 
   /// a pulse train through a low-pass, for the tilt of a voice's spectrum, and a resonance
   fn vowel_for(seconds: usize) -> Vec<f32> {
+    vowel_at(seconds * RATE as usize, |_| VOWEL_HZ)
+  }
+
+  /// the same with the pitch `hz` gives for each sample
+  fn vowel_at(samples: usize, hz: impl Fn(usize) -> f32) -> Vec<f32> {
     let radius = (-std::f32::consts::PI * 80.0 / RATE).exp();
     let feedback = 2.0 * radius * (std::f32::consts::TAU * FORMANT_HZ / RATE).cos();
     let tilt = (-std::f32::consts::TAU * VOWEL_HZ / RATE).exp();
     let (mut y1, mut y2, mut phase, mut source) = (0.0, 0.0, 0.0, 0.0);
-    (0..seconds * RATE as usize)
-      .map(|_| {
-        phase += VOWEL_HZ / RATE;
+    (0..samples)
+      .map(|index| {
+        phase += hz(index) / RATE;
         let pulse = if phase >= 1.0 {
           phase -= 1.0;
           3.0
@@ -277,13 +302,16 @@ mod tests {
   fn neutral_settings_settle_to_the_input_itself() {
     let periods = 1.0 / (2f32.powf(UNITY_DRIFT as f32) - 1.0);
     let input = vowel_for((periods / VOWEL_HZ).ceil() as usize + 2);
-    let output = run(&mut Shifter::new(RATE), &input, &NEUTRAL);
-    let settled = input.len() - RATE as usize;
-    let error = output[settled..]
-      .iter()
-      .zip(&input[settled..])
-      .fold(0f32, |worst, (a, b)| worst.max((a - b).abs()));
-    assert!(error < 1e-3, "error {error}");
+    for anchor in [false, true] {
+      let settings = Settings { anchor, ..NEUTRAL };
+      let output = run(&mut Shifter::new(RATE), &input, &settings);
+      let settled = input.len() - RATE as usize;
+      let error = output[settled..]
+        .iter()
+        .zip(&input[settled..])
+        .fold(0f32, |worst, (a, b)| worst.max((a - b).abs()));
+      assert!(error < 1e-3, "error {error} with anchor {anchor}");
+    }
   }
 
   #[test]
@@ -295,12 +323,15 @@ mod tests {
       },
       ..NEUTRAL
     };
-    let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
-    let expected = VOWEL_HZ * 2f32.powf(7.0 / 12.0);
-    let fundamental = pitch_hz(&output);
-    assert_near(fundamental, expected, 0.005 * expected, "fundamental");
-    let formant = strongest_harmonic_hz(&output, fundamental);
-    assert_near(formant, FORMANT_HZ, fundamental, "formant");
+    for anchor in [false, true] {
+      let settings = Settings { anchor, ..settings };
+      let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
+      let expected = VOWEL_HZ * 2f32.powf(7.0 / 12.0);
+      let fundamental = pitch_hz(&output);
+      assert_near(fundamental, expected, 0.005 * expected, "fundamental");
+      let formant = strongest_harmonic_hz(&output, fundamental);
+      assert_near(formant, FORMANT_HZ, fundamental, "formant");
+    }
   }
 
   #[test]
@@ -312,11 +343,14 @@ mod tests {
       },
       ..NEUTRAL
     };
-    let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
-    let fundamental = pitch_hz(&output);
-    assert_near(fundamental, VOWEL_HZ, 0.005 * VOWEL_HZ, "fundamental");
-    let formant = strongest_harmonic_hz(&output, fundamental);
-    assert_near(formant, 2.0 * FORMANT_HZ, fundamental, "formant");
+    for anchor in [false, true] {
+      let settings = Settings { anchor, ..settings };
+      let output = run(&mut Shifter::new(RATE), &vowel(), &settings);
+      let fundamental = pitch_hz(&output);
+      assert_near(fundamental, VOWEL_HZ, 0.005 * VOWEL_HZ, "fundamental");
+      let formant = strongest_harmonic_hz(&output, fundamental);
+      assert_near(formant, 2.0 * FORMANT_HZ, fundamental, "formant");
+    }
   }
 
   /// a note an octave above the input, with the formants following by a half and by all of
@@ -573,6 +607,29 @@ mod tests {
 
   fn note(channel: u8, key: u8) -> Note {
     Note::new(channel, key).expect("a channel under 16 and a key under 128")
+  }
+
+  /// a voice sliding fast under a held note. anchored, the note stays put. the test ends
+  /// part way down a slide, where grains that only count the input's periods off would be
+  /// flat by a third of a semitone
+  #[test]
+  fn anchored_note_holds_its_pitch_under_a_sliding_voice() {
+    // up and down two semitones either way, five times a second
+    let slide = |index: usize| {
+      let turn = (5.0 * index as f32 / RATE).fract();
+      let semitones = 2.0 * (4.0 * (turn - 0.5).abs() - 1.0);
+      VOWEL_HZ * 2.0 * 2f32.powf(semitones / 12.0)
+    };
+    let input = vowel_at((1.9 * RATE) as usize, slide);
+    let settings = Settings {
+      anchor: true,
+      ..NEUTRAL
+    };
+    let mut shifter = shifter_in(&settings);
+    shifter.notes.on(key(57));
+    let output = run(&mut shifter, &input, &settings);
+    let off = 1200.0 * (pitch_hz(&output) / A3).log2();
+    assert!(off.abs() < 6.0, "{off} cents off");
   }
 
   fn key(key: u8) -> Note {

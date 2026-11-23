@@ -5,6 +5,7 @@
 
 use crate::envelope::{Adsr, Envelope};
 use crate::grains::{Engine, Shape};
+use crate::marks::Cycle;
 use crate::notes::Note;
 use crate::ring::Ring;
 use crate::shifter::Settings;
@@ -133,7 +134,7 @@ impl Voice {
   /// `vibrato` the ratio the vibrato moves its pitch by
   pub(crate) fn tick(
     &mut self,
-    input_pitch: f64,
+    cycle: Cycle,
     bend: f64,
     vibrato: f64,
     settings: &Settings,
@@ -149,7 +150,7 @@ impl Voice {
         self.slide += self.control_step * (self.slide_sent - self.slide);
         note_pitch(f64::from(note.key()) + self.bend, self.sample_rate)
       }
-      None => input_pitch,
+      None => cycle.pitch,
     };
     let step = 1.0 / (settings.play.glide.powi(3) * self.sample_rate + 1.0);
     self.pitch += step * (goal - self.pitch);
@@ -159,7 +160,7 @@ impl Voice {
       if self.note_blend < 1e-8 {
         self.note_blend = 0.0;
       }
-      (1.0 - self.note_blend) * input_pitch + self.note_blend * self.pitch
+      (1.0 - self.note_blend) * cycle.pitch + self.note_blend * self.pitch
     } else {
       self.pitch
     };
@@ -186,7 +187,7 @@ impl Voice {
     };
     self
       .engine
-      .tick(input_pitch, target, &shape, input)
+      .tick(cycle, target, &shape, input)
       .map(|sample| gain * sample)
   }
 }

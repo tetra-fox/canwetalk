@@ -12,6 +12,7 @@ use crate::shifter::Shifter;
 mod effects;
 mod envelope;
 mod grains;
+mod marks;
 mod notes;
 mod params;
 mod pitch;

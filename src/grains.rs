@@ -6,12 +6,17 @@
 
 use std::f64::consts::TAU;
 
+use crate::marks::Cycle;
 use crate::ring::Ring;
 
 const MAX_GRAINS: usize = 128;
 const OUTPUT_PITCH: std::ops::RangeInclusive<f64> = 1e-11..=0.25;
 /// octaves the formants move at most, either way
 const MAX_FORMANT: f64 = 4.0;
+/// how much of the way a centred grain's rise moves to the input period with each grain
+const RISE_FOLLOW: f64 = 0.01;
+/// how far from the input period the rise may be, as a ratio, before it starts over from it
+const RISE_RANGE: std::ops::RangeInclusive<f64> = 0.77..=1.3;
 /// octaves a voice at the input pitch is raised by until its grains line up with the input
 pub(crate) const UNITY_DRIFT: f64 = 0.001;
 /// a grain starting within this many samples of an input period counts as lined up
@@ -44,6 +49,9 @@ pub(crate) struct Engine {
   locked: bool,
   /// how much of the output is grains, the rest is the plain input
   wet: f64,
+  /// input samples a grain centred on a cycle start takes to rise, which follows the input
+  /// period slowly
+  rise: Option<f64>,
   grains: Vec<Grain>,
 }
 
@@ -55,6 +63,9 @@ struct Grain {
   slope: f64,
   window_phase: f64,
   window_step: f64,
+  /// the window phase at which the grain is loudest, a half unless it is centred on a cycle
+  /// start
+  peak: f64,
 }
 
 impl Engine {
@@ -65,6 +76,7 @@ impl Engine {
       output_step: 0.0,
       locked: false,
       wet: 0.0,
+      rise: None,
       grains: Vec::with_capacity(MAX_GRAINS),
     }
   }
@@ -80,13 +92,14 @@ impl Engine {
   /// one sample of the voice, sounding at `target` an input whose pitch is `input_pitch`
   pub(crate) fn tick(
     &mut self,
-    input_pitch: f64,
+    cycle: Cycle,
     target: f64,
     shape: &Shape,
     input: &[Ring; 2],
   ) -> [f32; 2] {
     // at the input pitch the grains only rebuild the input, so they are moved onto the input
     // periods and then faded out for the input itself
+    let input_pitch = cycle.pitch;
     let unity = target == input_pitch && shape.pitch == 0.0;
     if !unity && self.locked {
       self.locked = false;
@@ -100,9 +113,14 @@ impl Engine {
     let pitch =
       (2f64.powf(shape.pitch + drift) * target).clamp(*OUTPUT_PITCH.start(), *OUTPUT_PITCH.end());
 
-    self.input_phase += 0.5 * input_pitch;
-    if self.input_phase >= 1.0 {
-      self.input_phase -= 1.0;
+    match cycle.phase {
+      Some(phase) => self.input_phase = phase,
+      None => {
+        self.input_phase += 0.5 * input_pitch;
+        if self.input_phase >= 1.0 {
+          self.input_phase -= 1.0;
+        }
+      }
     }
     self.output_phase += self.output_step;
     let wrapped = self.output_phase >= 1.0;
@@ -127,11 +145,37 @@ impl Engine {
       // two input periods at the read speed. below that pitch grains would leave gaps, which
       // smooth closes by stretching them toward two output periods
       let natural = rate * input_pitch;
-      let window_step = if pitch <= natural {
-        0.25 * (shape.smooth * pitch + (1.0 - shape.smooth) * natural)
+      let stretch = if pitch <= natural {
+        natural / (shape.smooth * pitch + (1.0 - shape.smooth) * natural)
       } else {
-        0.25 * natural
+        1.0
       };
+      let mut window_step = 0.25 * natural / stretch;
+      let mut peak = 0.5;
+      if cycle.phase.is_some() && !self.locked {
+        // with the cycles marked the grain is centred on the start of one. it is loudest a
+        // set time after it begins, so as the input period changes the loud parts of the
+        // grains stay evenly spaced. a grain that began at a cycle start would be loudest one
+        // input period later, and its pitch would give with the input's
+        let period = 2.0 / input_pitch;
+        let rise = self
+          .rise
+          .filter(|rise| RISE_RANGE.contains(&(rise / period)))
+          .unwrap_or(period);
+        let rise = rise + RISE_FOLLOW * (period - rise);
+        self.rise = Some(rise);
+        let (before, after) = (rise * stretch, period * stretch);
+        // the next cycle start if the rise reaches back from it to what is already here,
+        // else the last
+        let to_next = period - delay;
+        delay = if to_next <= before {
+          before - to_next
+        } else {
+          before + delay
+        };
+        window_step = rate / (before + after);
+        peak = before / (before + after);
+      }
       self.grains.push(Grain {
         delay,
         // reading faster than the input arrives needs a head start of what it will gain
@@ -144,12 +188,19 @@ impl Engine {
         // the wrap fell between samples, the grain is that far in already
         window_phase: (self.output_phase + 1.0) / pitch * window_step,
         window_step,
+        peak,
       });
     }
 
     let mut grains = [0.0; 2];
     self.grains.retain_mut(|grain| {
-      let hann = (0.5 - 0.5 * (TAU * grain.window_phase).cos()) as f32;
+      // half a raised cosine up to the peak and half one down from it
+      let turn = if grain.window_phase < grain.peak {
+        0.5 * grain.window_phase / grain.peak
+      } else {
+        0.5 + 0.5 * (grain.window_phase - grain.peak) / (1.0 - grain.peak)
+      };
+      let hann = (0.5 - 0.5 * (TAU * turn).cos()) as f32;
       for (sum, line) in grains.iter_mut().zip(input) {
         *sum += hann * line.read(grain.delay + grain.extra);
       }

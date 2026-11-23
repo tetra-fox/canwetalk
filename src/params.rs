@@ -32,6 +32,8 @@ pub(crate) struct CanWeTalkParams {
   pub(crate) expression: ExpressionParams,
   #[id = "detect"]
   detect: EnumParam<Range>,
+  #[id = "anchor"]
+  anchor: BoolParam,
   #[id = "mix"]
   pub(crate) mix: FloatParam,
 }
@@ -41,6 +43,7 @@ pub(crate) struct Block {
   /// whether there is one channel
   mono: bool,
   detect: Range,
+  anchor: bool,
   vibrato: VibratoClock,
 }
 
@@ -204,6 +207,7 @@ impl Default for CanWeTalkParams {
       envelope: EnvelopeParams::default(),
       expression: ExpressionParams::default(),
       detect: EnumParam::new("Detection Range", Range::Mid),
+      anchor: BoolParam::new("Anchor Grains", true),
       mix: percent("Mix", 1.0),
     }
   }
@@ -215,6 +219,7 @@ impl CanWeTalkParams {
     Block {
       mono,
       detect: self.detect.value(),
+      anchor: self.anchor.value(),
       vibrato: self.vibrato.clock(transport, sample_rate),
     }
   }
@@ -230,6 +235,7 @@ impl CanWeTalkParams {
       expression: self.expression.next(),
       effects: self.effects.next(block.mono),
       detect: block.detect,
+      anchor: block.anchor,
     }
   }
 }
