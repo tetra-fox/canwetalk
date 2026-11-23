@@ -8,7 +8,7 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [workspace]
-members = ["xtask"]
+members = ["crates/skeuo", "xtask"]
 
 [lib]
 crate-type = ["cdylib"]
@@ -16,6 +16,11 @@ crate-type = ["cdylib"]
 [dependencies]
 # fades and filters decay into denormals on silence, which the wrapper flushes to zero
 nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
+# iced_audio draws its widgets as canvas geometry, which the renderer only takes with `canvas`
+nice-plug-iced = { version = "0.5.0", features = ["canvas"] }
+# the editor's knobs: they take the input and draw nothing, the panel under them is skeuo's
+iced_audio = { version = "0.17.1", default-features = false, features = ["knob", "nice-plug"] }
+skeuo = { path = "crates/skeuo", features = ["iced"] }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]
