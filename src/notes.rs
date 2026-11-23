@@ -291,8 +291,8 @@ impl Notes {
       return;
     };
     if let Some(waiting) = self.waiting.pop() {
-      self.voices[index].note = Some(waiting);
-      self.voices[index].tuning = 0.0;
+      let sent = &self.channels[usize::from(waiting.channel)];
+      self.voices[index].resume(waiting, sent.pressure, sent.slide);
       return;
     }
     self.voices[index].sounding = false;
@@ -414,6 +414,25 @@ mod tests {
       notes.voice_of(key(69)).is_some(),
       "the latched notes were dropped"
     );
+  }
+
+  /// a note that gets its voice back from a later one goes on at the pressure and slide last
+  /// sent on its own channel, not at those the later note left behind
+  #[test]
+  fn a_note_that_gets_its_voice_back_has_its_own_pressure_and_slide() {
+    let note = |channel, key| Note::new(channel, key).expect("a channel and a key there are");
+    let mut notes = Notes::new(48_000.0, 0.01);
+    notes.set_mode(Mode::Mono);
+    let (first, second) = (note(1, 60), note(2, 64));
+    notes.channel_pressure(1, 0.8);
+    notes.channel_slide(1, 0.9);
+    notes.on(first);
+    notes.channel_pressure(2, 0.1);
+    notes.channel_slide(2, 0.2);
+    notes.on(second);
+    notes.off(second);
+    let voice = notes.voice_of(first).expect("the first note is still held");
+    assert_eq!((voice.pressure_sent, voice.slide_sent), (0.8, 0.9));
   }
 
   /// a note that lost its voice and waits for one is pressed again without coming up first,

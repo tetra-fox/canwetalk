@@ -137,6 +137,15 @@ impl Voice {
     self.envelope.trigger();
   }
 
+  /// goes on with `note`, which was held before the note the voice has and waited for it.
+  /// the pressure and slide move to where the note's channel has them
+  pub(crate) fn resume(&mut self, note: Note, pressure: f64, slide: f64) {
+    self.note = Some(note);
+    self.tuning = 0.0;
+    self.pressure_sent = pressure;
+    self.slide_sent = slide;
+  }
+
   /// one sample of the voice. `bend` is the semitones its note's channels are bent by and
   /// `vibrato` the ratio the vibrato moves its pitch by
   pub(crate) fn tick(
