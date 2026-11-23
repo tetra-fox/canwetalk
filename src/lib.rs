@@ -242,7 +242,9 @@ impl ClapPlugin for CanWeTalk {
 }
 
 impl Vst3Plugin for CanWeTalk {
-  const VST3_CLASS_ID: [u8; 16] = *b"CanWeTalkByTetra";
+  const VST3_CLASS_ID: [u8; 16] = [
+    0xa4, 0x67, 0xeb, 0x81, 0x0b, 0x6f, 0x76, 0x91, 0x6e, 0xff, 0x73, 0xa8, 0xe6, 0x40, 0x94, 0xfa,
+  ];
   const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
     &[Vst3SubCategory::Fx, Vst3SubCategory::PitchShift];
 }
