@@ -6,6 +6,7 @@
 //! P samples is 2 / P
 
 use crate::effects::{Detune, Smear, Stereo};
+use crate::envelope::{Adsr, Envelope};
 use crate::grains::{Engine, Shape};
 use crate::pitch::{Detector, Range};
 use crate::ring::Ring;
@@ -20,7 +21,13 @@ const HISTORY_SAMPLES: usize = 200_000;
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
 /// seconds a voice takes to fade when it starts or stops
 const FADE_SECONDS: f64 = 0.005;
-const SILENT: f64 = 0.001;
+/// the envelope of a voice outside the gate modes, short fades that keep it from clicking
+const FADE: Adsr = Adsr {
+  attack: FADE_SECONDS,
+  decay: 0.0,
+  sustain: 1.0,
+  release: FADE_SECONDS,
+};
 /// channels a note can be on
 const CHANNELS: usize = 16;
 const A4_HZ: f64 = 440.0;
@@ -63,6 +70,10 @@ pub(crate) struct Settings {
   /// glide between notes only, and follow the input pitch as it is
   pub(crate) glide_notes_only: bool,
   pub(crate) mode: Mode,
+  /// nothing sounds without a note, and notes rise and fall by `envelope`. otherwise a voice
+  /// follows the input while no note is held
+  pub(crate) gate: bool,
+  pub(crate) envelope: Adsr,
   /// notes sound on after their keys come up, until the next key pressed with none down
   pub(crate) latch: bool,
   pub(crate) detect: Range,
@@ -87,6 +98,7 @@ pub(crate) struct Shifter {
   /// semitones each channel is bent by. the first bends every note, the rest their own
   bends: [f64; CHANNELS],
   mode: Mode,
+  gate: bool,
   /// counts notes, to tell which voice has had its note longest
   clock: u64,
   detune: Detune,
@@ -102,8 +114,9 @@ struct Voice {
   bend: f64,
   sounding: bool,
   started: u64,
-  level: f64,
-  fade_step: f64,
+  envelope: Envelope,
+  /// how much of the way the bend moves to where it was sent each sample
+  bend_step: f64,
   /// the gliding pitch
   pitch: f64,
   /// how far the pitch has moved from the input's to the note's under `glide_notes_only`
@@ -119,8 +132,8 @@ impl Voice {
       bend: 0.0,
       sounding: false,
       started: 0,
-      level: 0.0,
-      fade_step: 1.0 - (-1.0 / (FADE_SECONDS * sample_rate)).exp(),
+      envelope: Envelope::default(),
+      bend_step: 1.0 - (-1.0 / (FADE_SECONDS * sample_rate)).exp(),
       pitch: input_pitch,
       note_blend: 0.0,
     }
@@ -134,13 +147,13 @@ impl Voice {
     sample_rate: f64,
     input: &[Ring; 2],
   ) -> [f32; 2] {
-    if !self.sounding && self.level <= SILENT {
+    if !self.sounding && self.envelope.is_silent() {
       return [0.0; 2];
     }
     let goal = match self.note {
       Some(note) => {
         // bends arrive in steps, which would be heard
-        self.bend += self.fade_step * (bend + self.tuning - self.bend);
+        self.bend += self.bend_step * (bend + self.tuning - self.bend);
         note_pitch(f64::from(note.key) + self.bend, sample_rate)
       }
       None => input_pitch,
@@ -157,9 +170,12 @@ impl Voice {
     } else {
       self.pitch
     };
-    self.level += self.fade_step * (f64::from(u8::from(self.sounding)) - self.level);
-    // the fade is applied to what the voice reads and again to what it gives
-    let gain = (self.level * self.level) as f32;
+    let adsr = if settings.gate {
+      &settings.envelope
+    } else {
+      &FADE
+    };
+    let gain = self.envelope.tick(self.sounding, adsr, sample_rate) as f32;
     let shape = Shape {
       pitch: settings.pitch,
       formant: settings.formant,
@@ -203,6 +219,7 @@ impl Shifter {
       down: Vec::with_capacity(MAX_DOWN),
       bends: [0.0; CHANNELS],
       mode: Mode::Off,
+      gate: false,
       clock: 0,
       detune: Detune::new(sample_rate),
       stereo: Stereo::new(sample_rate),
@@ -232,7 +249,7 @@ impl Shifter {
     }
     for voice in &mut self.voices {
       voice.engine.reset();
-      voice.level = 0.0;
+      voice.envelope = Envelope::default();
     }
     self.detune.reset();
     self.stereo.reset();
@@ -240,7 +257,7 @@ impl Shifter {
     self.release_all();
   }
 
-  /// drops every note and leaves the first voice following the input
+  /// drops every note. outside the gate modes the first voice is left following the input
   fn release_all(&mut self) {
     self.waiting.clear();
     self.down.clear();
@@ -248,8 +265,12 @@ impl Shifter {
       voice.note = None;
       voice.sounding = false;
     }
-    self.voices[0].sounding = true;
-    self.follower = Some(0);
+    self.follower = None;
+    if !self.gate {
+      self.voices[0].sounding = true;
+      self.voices[0].envelope.trigger();
+      self.follower = Some(0);
+    }
   }
 
   pub(crate) fn note_on(&mut self, note: Note) {
@@ -292,13 +313,14 @@ impl Shifter {
     // a bend sent ahead of the note is where the note starts, not somewhere it slides to
     voice.tuning = 0.0;
     voice.bend = bend;
-    if !voice.sounding && voice.level <= SILENT {
+    if !voice.sounding && voice.envelope.is_silent() {
       // a voice coming from silence has no pitch to glide from
       voice.pitch = note_pitch(f64::from(note.key) + bend, self.sample_rate);
       voice.engine.reset();
     }
     voice.note = Some(note);
     voice.sounding = true;
+    voice.envelope.trigger();
     voice.started = self.clock;
   }
 
@@ -325,7 +347,7 @@ impl Shifter {
       return;
     }
     self.voices[index].note = None;
-    if self.voices.iter().all(|voice| voice.note.is_none()) {
+    if !self.gate && self.voices.iter().all(|voice| voice.note.is_none()) {
       // the last voice playing goes back to following the input
       self.follower = Some(index);
     } else {
@@ -354,8 +376,9 @@ impl Shifter {
 
   /// the effect alone, with no latency against the input
   pub(crate) fn process(&mut self, frame: [f32; 2], settings: &Settings) -> [f32; 2] {
-    if settings.mode != self.mode {
+    if settings.mode != self.mode || settings.gate != self.gate {
       self.mode = settings.mode;
+      self.gate = settings.gate;
       self.release_all();
     }
 
@@ -442,6 +465,13 @@ mod tests {
     glide: 0.0,
     glide_notes_only: false,
     mode: Mode::Poly,
+    gate: false,
+    envelope: Adsr {
+      attack: 0.01,
+      decay: 0.05,
+      sustain: 0.5,
+      release: 0.1,
+    },
     latch: false,
     detect: Range::Mid,
   };
@@ -634,6 +664,36 @@ mod tests {
     let absent = power_at(&output, C4);
     assert!(power_at(&output, A3) > 100.0 * absent, "A3 is missing");
     assert!(power_at(&output, E4) > 100.0 * absent, "E4 is missing");
+  }
+
+  /// gated, there is silence without a note and after one's release has run out
+  #[test]
+  fn gate_sounds_only_notes() {
+    let gated = Settings {
+      gate: true,
+      ..NEUTRAL
+    };
+    let loudest = |signal: &[f32]| signal.iter().fold(0f32, |peak, x| peak.max(x.abs()));
+    let mut shifter = shifter_in(&gated);
+    assert_eq!(loudest(&run(&mut shifter, &vowel(), &gated)), 0.0);
+
+    shifter.note_on(key(57));
+    let output = run(&mut shifter, &vowel(), &gated);
+    assert_near(
+      pitch_hz(&output),
+      A3,
+      0.005 * A3,
+      "fundamental of the held note",
+    );
+
+    shifter.note_off(key(57));
+    let output = run(&mut shifter, &vowel(), &gated);
+    let released = (gated.envelope.release * f64::from(RATE)) as usize;
+    assert!(
+      loudest(&output[..released / 2]) > 0.01,
+      "the release was cut short"
+    );
+    assert_eq!(loudest(&output[released + 1..]), 0.0);
   }
 
   fn key(key: u8) -> Note {

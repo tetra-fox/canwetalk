@@ -5,10 +5,12 @@ use std::sync::Arc;
 use nice_plug::midi::{Channel, Key};
 use nice_plug::prelude::*;
 
+use crate::envelope::Adsr;
 use crate::pitch::Range;
 use crate::shifter::{Mode, Note, Settings, Shifter};
 
 mod effects;
+mod envelope;
 mod grains;
 mod pitch;
 mod ring;
@@ -34,6 +36,11 @@ enum MidiMode {
   Off,
   Mono,
   Poly,
+  /// as Mono, but nothing sounds without a note and notes follow the envelope
+  #[name = "Mono Gate"]
+  MonoGate,
+  #[name = "Poly Gate"]
+  PolyGate,
 }
 
 /// the span of pitches the detector looks for
@@ -66,6 +73,14 @@ struct CanWeTalkParams {
   glide_notes_only: BoolParam,
   #[id = "midi"]
   midi: EnumParam<MidiMode>,
+  #[id = "attack"]
+  attack: FloatParam,
+  #[id = "decay"]
+  decay: FloatParam,
+  #[id = "sustain"]
+  sustain: FloatParam,
+  #[id = "release"]
+  release: FloatParam,
   #[id = "latch"]
   latch: BoolParam,
   #[id = "bend_range"]
@@ -97,6 +112,16 @@ impl Default for CanWeTalkParams {
         .with_value_to_string(formatters::v2s_f32_percentage(0))
         .with_string_to_value(formatters::s2v_f32_percentage())
     };
+    let milliseconds = |name, default| {
+      let range = FloatRange::Skewed {
+        min: 0.0,
+        max: 10_000.0,
+        factor: FloatRange::skew_factor(-2.5),
+      };
+      FloatParam::new(name, default, range)
+        .with_unit(" ms")
+        .with_value_to_string(formatters::v2s_f32_rounded(0))
+    };
     Self {
       pitch: semitones("Pitch"),
       formant: semitones("Formant"),
@@ -108,6 +133,10 @@ impl Default for CanWeTalkParams {
       glide: percent("Glide", 0.0),
       glide_notes_only: BoolParam::new("Glide Notes Only", false),
       midi: EnumParam::new("MIDI", MidiMode::Poly),
+      attack: milliseconds("Attack", 5.0),
+      decay: milliseconds("Decay", 200.0),
+      sustain: percent("Sustain", 1.0),
+      release: milliseconds("Release", 200.0),
       latch: BoolParam::new("Latch", false),
       // 48 is what MPE controllers send over unless told otherwise
       bend_range: IntParam::new("MPE Bend Range", 48, IntRange::Linear { min: 1, max: 96 })
@@ -196,8 +225,15 @@ impl Plugin for CanWeTalk {
       glide_notes_only: params.glide_notes_only.value(),
       mode: match params.midi.value() {
         MidiMode::Off => Mode::Off,
-        MidiMode::Mono => Mode::Mono,
-        MidiMode::Poly => Mode::Poly,
+        MidiMode::Mono | MidiMode::MonoGate => Mode::Mono,
+        MidiMode::Poly | MidiMode::PolyGate => Mode::Poly,
+      },
+      gate: matches!(params.midi.value(), MidiMode::MonoGate | MidiMode::PolyGate),
+      envelope: Adsr {
+        attack: f64::from(params.attack.value() / 1000.0),
+        decay: f64::from(params.decay.value() / 1000.0),
+        sustain: f64::from(params.sustain.value()),
+        release: f64::from(params.release.value() / 1000.0),
       },
       latch: params.latch.value(),
       detect: match params.detect.value() {
