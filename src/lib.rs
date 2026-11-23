@@ -1033,8 +1033,8 @@ mod tests {
     ];
     for rate in [48_000.0, 96_000.0, 192_000.0] {
       for (hz, detect) in [(110.0, 1.0), (45.0, 2.0)] {
-        for notes in [0, 1, 8, 16] {
-          let name = format!("{}k {hz}Hz {notes}n", rate / 1000.0);
+        for (notes, formant) in [(0, 0.0), (1, 0.0), (8, 0.0), (16, 0.0), (16, 3.0)] {
+          let name = format!("{}k {hz}Hz {notes}n{formant}", rate / 1000.0);
           if !name.contains(&only) {
             continue;
           }
@@ -1042,7 +1042,7 @@ mod tests {
           let input = vowel_sampled_at(rate, seconds * rate as usize, |_| hz);
           let take = Take {
             played: keys[..notes].iter().map(|&key| on(500, 0, key)).collect(),
-            set: vec![(0, "detect", detect)],
+            set: vec![(0, "detect", detect), (0, "formant", formant)],
             ..Take::new(rate, input.iter().map(|x| [0.1 * x; 2]).collect())
           };
           let size = std::env::var("PROBE_SIZE").map_or(512, |size| size.parse().expect("a size"));
@@ -1058,7 +1058,7 @@ mod tests {
             .collect();
           shares.sort_by(f64::total_cmp);
           if std::env::var("PROBE_QUICK").is_ok() {
-            println!("{name:18} {:6.2}% at the least", shares[0]);
+            println!("{name:20} {:6.2}% at the least", shares[0]);
             continue;
           }
           // the slowest buffer, each taken at its fastest of a few runs, which leaves out
@@ -1089,7 +1089,7 @@ mod tests {
             }
           }
           println!(
-            "{name:18} {:6.2}% ({:.2} to {:.2})  worst sample {sample:7.1} us  \
+            "{name:20} {:6.2}% ({:.2} to {:.2})  worst sample {sample:7.1} us  \
              worst 64 {buffer:7.1} us  mean {per_sample:6.0} ns/sample, {alone:6.0} alone",
             shares[2], shares[0], shares[4]
           );
