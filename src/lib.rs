@@ -7,7 +7,7 @@ use nice_plug::prelude::*;
 
 use crate::notes::Note;
 use crate::params::CanWeTalkParams;
-use crate::shifter::{BLOCK, Shifter};
+use crate::shifter::{BLOCK, Settings, Shifter};
 
 mod effects;
 mod envelope;
@@ -36,6 +36,8 @@ pub struct CanWeTalk {
   params: Arc<CanWeTalkParams>,
   shifter: Shifter,
   sample_rate: f32,
+  /// the settings for each sample of a block, kept only for the room it has for them
+  settings: Vec<Settings>,
 }
 
 impl Default for CanWeTalk {
@@ -47,6 +49,7 @@ impl Default for CanWeTalk {
       shifter: Shifter::new(sample_rate, params.detect.value()),
       params,
       sample_rate,
+      settings: Vec::with_capacity(BLOCK),
     }
   }
 }
@@ -124,13 +127,11 @@ impl Plugin for CanWeTalk {
       // a block goes up to the next sample that has something played at it
       let played = next_event.map_or(samples, |event| event.timing() as usize);
       let count = BLOCK.min(samples.min(played) - start);
-      let settings: [_; BLOCK] = std::array::from_fn(|index| {
-        if (1..count).contains(&index) {
-          self.params.settings(&block, start + index)
-        } else {
-          first
-        }
-      });
+      self.settings.clear();
+      self.settings.push(first);
+      for index in start + 1..start + count {
+        self.settings.push(self.params.settings(&block, index));
+      }
 
       let mut dry = [[0.0; 2]; BLOCK];
       for (index, dry) in dry[..count].iter_mut().enumerate() {
@@ -146,7 +147,7 @@ impl Plugin for CanWeTalk {
         }
       }
       let mut wet = dry;
-      self.shifter.process(&mut wet[..count], &settings[..count]);
+      self.shifter.process(&mut wet[..count], &self.settings);
       for (index, (dry, wet)) in dry.iter().zip(wet).take(count).enumerate() {
         let mix = self.params.mix.smoothed.next();
         for ((channel, dry), wet) in channels.iter_mut().zip(dry).zip(wet) {
@@ -1078,6 +1079,7 @@ mod tests {
           let buffer = worst(64, &mut spans);
           let per_sample = spans.iter().sum::<f64>() / spans.len() as f64 / 64.0 * 1e9;
           let sample = worst(1, &mut spans);
+          let alone = spans.iter().sum::<f64>() / spans.len() as f64 * 1e9;
           if std::env::var("PROBE_TOP").is_ok() {
             let mut top: Vec<(usize, f64)> = spans.iter().copied().enumerate().collect();
             top.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -1087,7 +1089,7 @@ mod tests {
           }
           println!(
             "{name:18} {:6.2}% ({:.2} to {:.2})  worst sample {sample:7.1} us  \
-             worst 64 {buffer:7.1} us  mean {per_sample:6.0} ns/sample",
+             worst 64 {buffer:7.1} us  mean {per_sample:6.0} ns/sample, {alone:6.0} alone",
             shares[2], shares[0], shares[4]
           );
         }
