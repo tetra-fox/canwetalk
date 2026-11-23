@@ -39,6 +39,10 @@ pub(crate) struct Shape {
   pub(crate) smooth: f64,
 }
 
+/// samples a grain has to sound in a block for what it reads to be taken as runs of the
+/// input. fewer are sooner read one by one
+const SHORTEST_RUN: usize = 8;
+
 /// what a voice wants of its grains at one sample
 #[derive(Clone, Copy)]
 pub(crate) struct Wanted {
@@ -362,7 +366,7 @@ impl Grain {
       };
       *level = raised_cosine(quarters) as f32;
     }
-    if self.slope == 0.0 {
+    if self.slope == 0.0 && sounded >= SHORTEST_RUN {
       // at the input's own speed every read is as far behind as the first, and each of the
       // samples they go by is a run of the input
       let (whole, part) = split(scratch.delays[0]);
