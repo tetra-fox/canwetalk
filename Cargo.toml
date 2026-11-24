@@ -43,10 +43,10 @@ skeuo = { path = "crates/skeuo" }
 # one is left out: it cannot build skeuo's shaders, which read a depth texture by texel
 wgpu = { workspace = true, features = ["dx12", "metal", "vulkan"] }
 
-# tells the window manager the shape of the editor's own window when no host has it. baseview
-# is on the same version
+# tells the window manager the shape of the editor's own window when no host has it, and
+# reads the display's scale before there is a window. baseview is on the same version
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["resource_manager"] }
 
 # puts the editor's finished picture in its window as plain pixels
 [target.'cfg(not(target_os = "windows"))'.dependencies]
@@ -55,7 +55,7 @@ softbuffer = { version = "0.4", default-features = false, features = ["x11", "x1
 # on windows that is one call, and softbuffer keeps a thread of its own going for it for as
 # long as the process lives, which a plugin that can be unloaded cannot have
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]

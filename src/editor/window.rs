@@ -17,7 +17,7 @@ use nice_plug::prelude::*;
 use skeuo::glam::Vec2;
 use skeuo::{FlatRenderer, Place, Renderer};
 
-use super::interaction::{Action, Button, Edit, Event, Interaction, Key, Menu, Moment, SCALES};
+use super::interaction::{Action, Button, Edit, Event, Interaction, Key, Menu, Moment};
 use super::panel::{
   HEIGHT, Panel, Picture, READOUT_LETTERS, WIDTH, fitted, point_at, readout_shows,
 };
@@ -336,7 +336,11 @@ impl Window {
       for action in &actions {
         match action {
           Action::Set(control, value) => state.sent.set(Control::ALL[*control], *value),
-          Action::Scale(scale) => state.wanted_scale = Some(*scale),
+          Action::Scale(scale) => {
+            state.wanted_scale = Some(*scale);
+            // the user's own choice of size, which is what is remembered
+            self.params.editor_scale.store(*scale, Ordering::Relaxed);
+          }
           _ => {}
         }
       }
@@ -563,10 +567,6 @@ impl WindowHandler for Window {
     (self.shared.display_scale).store(new_size.scale_factor.to_bits(), Ordering::Relaxed);
     // kept for the state to take in, which a handler further up may have just now
     self.sized.set(Some(new_size));
-    // the size is remembered as the scale the panel is drawn at in it
-    let [_, _, width, _] = fitted([new_size.physical.width, new_size.physical.height]);
-    let scale = (f64::from(width) / new_size.scale_factor) as f32 / WIDTH;
-    (self.params.editor_scale).store(scale.clamp(SCALES[0], SCALES[1]), Ordering::Relaxed);
     self.redraw();
     Ok(())
   }
@@ -680,6 +680,7 @@ fn hint_shape(
   use wgpu::rwh::{HasWindowHandle, RawWindowHandle};
   use x11rb::properties::{AspectRatio, WmSizeHints};
 
+  use super::interaction::SCALES;
   use super::sized;
 
   let RawWindowHandle::Xlib(window) = context.window_handle()?.as_raw() else {

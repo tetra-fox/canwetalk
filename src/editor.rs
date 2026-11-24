@@ -104,6 +104,61 @@ fn shaped(
   NativeSize::new(width, (u64::from(width) * down / across) as u32)
 }
 
+/// the scale a size from the host is the user's choice of, with the size in the host's units
+/// at so many pixels to a point. none if it is the size the host was last told, which is
+/// the host saying it back, or one the panel is not drawn as small or as large as
+fn chosen(given: NativeSize<u32>, told: NativeSize<u32>, display_scale: f64) -> Option<f32> {
+  if given == told {
+    return None;
+  }
+  let points = given.cast::<f64>().to_logical(display_scale);
+  let scale = (points.width / f64::from(WIDTH)).min(points.height / f64::from(HEIGHT)) as f32;
+  // the least and the most in whole pixels come out a little to either side of themselves
+  let near = 0.01;
+  (SCALES[0] - near..=SCALES[1] + near)
+    .contains(&scale)
+    .then(|| scale.clamp(SCALES[0], SCALES[1]))
+}
+
+/// how many pixels the display has to a point, as well as that can be told with no window
+/// open on it. a host asks the editor's size before it gives it a window to be in, and on
+/// windows takes the answer in pixels: of the window the editor is to go in if there is
+/// one, and else of the system
+#[cfg(target_os = "windows")]
+fn display_scale(parent: Option<&ParentWindowHandle>) -> f64 {
+  use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
+
+  // SAFETY: neither call asks anything of what it is given. both answer for a program that
+  // is not aware of the display's scale with the 96 it is drawn at
+  let dpi = unsafe {
+    match parent {
+      Some(ParentWindowHandle::Win32Hwnd(window)) => GetDpiForWindow(window.get() as _),
+      _ => GetDpiForSystem(),
+    }
+  };
+  f64::from(dpi) / 96.0
+}
+
+/// how many pixels the display has to a point, as well as that can be told with no window
+/// open on it. a host asks the editor's size before it gives it a window to be in, and on
+/// x11 takes the answer in pixels. it is the setting baseview sizes its windows by
+#[cfg(target_os = "linux")]
+fn display_scale() -> f64 {
+  let dpi = x11rb::connect(None).ok().and_then(|(connection, _)| {
+    let settings = x11rb::resource_manager::new_from_default(&connection).ok()?;
+    settings.get_value::<u32>("Xft.dpi", "").ok().flatten()
+  });
+  // with no server to ask or nothing set, baseview has one pixel to a point as well
+  dpi.map_or(1.0, |dpi| f64::from(dpi) / 96.0)
+}
+
+/// the size the host is told the editor has, in the host's units
+fn reported(params: &CanWeTalkParams, shared: &Shared) -> NativeSize<u32> {
+  let scale = f64::from_bits(shared.display_scale.load(Ordering::Relaxed));
+  let size = sized(params.editor_scale.load(Ordering::Relaxed));
+  NativeSize::from_size(size.into(), scale)
+}
+
 /// the window's size in the screen's own points at so many times the panel's
 const fn sized(scale: f32) -> LogicalSize<f32> {
   LogicalSize::new(WIDTH * scale, HEIGHT * scale)
@@ -127,7 +182,8 @@ enum ToWindow {
 
 /// what the open window and the host's side of the editor both reach
 struct Shared {
-  /// the display's scale factor as the bits of an f64, for the size the host is told
+  /// the display's scale factor as the bits of an f64, for the size the host is told: the
+  /// last window's, and before any window what the system says
   display_scale: AtomicU64,
   /// whether a value is being typed, which is when keys the host offers are taken
   typing: AtomicBool,
@@ -135,11 +191,17 @@ struct Shared {
 
 impl Editor {
   pub(crate) fn new(params: Arc<CanWeTalkParams>) -> Self {
+    #[cfg(target_os = "windows")]
+    let display_scale = display_scale(None);
+    #[cfg(target_os = "linux")]
+    let display_scale = display_scale();
+    // sizes go to and from the host in points there
+    #[cfg(target_os = "macos")]
+    let display_scale = 1.0_f64;
     Self {
       params,
       shared: Arc::new(Shared {
-        // until a window has opened and found the display's own
-        display_scale: AtomicU64::new(1.0_f64.to_bits()),
+        display_scale: AtomicU64::new(display_scale.to_bits()),
         typing: AtomicBool::new(false),
       }),
     }
@@ -162,17 +224,31 @@ impl nice_plug::editor::Editor for Editor {
         .with_callbacks(HostCallbacks(host.callbacks))
         .with_main_thread(MainThreadCaller(host.main_thread_caller))
     });
+    // baseview 0.4.2 makes a child window at the scale of the window it goes in, but in a
+    // host that is aware of each monitor's scale the older way it reports the scale the host
+    // gave, 1 if it gave none, and takes the first one the host gives later as a change:
+    // the window is made that many times larger again (`WindowSharedState::init` and
+    // `scale_factor`, and `WindowHandle::suggest_scale_factor`, in its `platform/win`). so
+    // it is given the parent's scale as the host's from the start
+    // TODO: pass the host's own on alone once baseview reports the scale it made the window at
+    #[cfg(target_os = "windows")]
+    let fallback_scale_factor = {
+      let scale = display_scale(parent.as_ref());
+      (self.shared.display_scale).store(scale.to_bits(), Ordering::Relaxed);
+      fallback_scale_factor.or(Some(scale))
+    };
+    // with no window to go in it is the window manager's to size, which is held to the sizes
+    // the panel is drawn at. in a host's window it takes the size the host gives it
+    let top_level = parent.is_none() && !wait_for_parent;
     let settings = WindowSettings::new()
       .with_title("CanWeTalk")
       .with_size(sized(self.params.editor_scale.load(Ordering::Relaxed)))
-      .with_min_size::<LogicalSize<f32>>(Some(sized(SCALES[0])))
-      .with_max_size::<LogicalSize<f32>>(Some(sized(SCALES[1])))
+      .with_min_size::<LogicalSize<f32>>(top_level.then(|| sized(SCALES[0])))
+      .with_max_size::<LogicalSize<f32>>(top_level.then(|| sized(SCALES[1])))
       .with_parent(parent.as_ref())
       .with_wait_for_parent(wait_for_parent)
       .with_fallback_scale_factor(fallback_scale_factor);
     let (to_window, from_host) = mpsc::channel();
-    // with no window to go in it is the window manager's to size
-    let top_level = parent.is_none() && !wait_for_parent;
     let (params, shared) = (Arc::clone(&self.params), Arc::clone(&self.shared));
     let window = baseview::Window::create_with_host(
       settings,
@@ -184,6 +260,7 @@ impl nice_plug::editor::Editor for Editor {
     Ok(SpawnedEditor {
       handle: Handle {
         waker: window.waker(),
+        params: Arc::clone(&self.params),
         shared: Arc::clone(&self.shared),
         to_window,
       },
@@ -192,9 +269,7 @@ impl nice_plug::editor::Editor for Editor {
   }
 
   fn size(&self) -> NativeSize<u32> {
-    let scale = f64::from_bits(self.shared.display_scale.load(Ordering::Relaxed));
-    let size = sized(self.params.editor_scale.load(Ordering::Relaxed));
-    NativeSize::from_size(size.into(), scale)
+    reported(&self.params, &self.shared)
   }
 
   fn resize_hint(&self) -> ResizeHint {
@@ -205,6 +280,7 @@ impl nice_plug::editor::Editor for Editor {
 /// the host's side of an open window
 pub struct Handle {
   waker: WindowWaker,
+  params: Arc<CanWeTalkParams>,
   shared: Arc<Shared>,
   to_window: mpsc::Sender<ToWindow>,
 }
@@ -252,6 +328,12 @@ impl EditorHandle for Handle {
     new_size: NativeSize<u32>,
     window: &baseview::Window,
   ) -> Result<(), baseview::Error> {
+    // a size the host comes up with is the user's doing, at the host's own frame, and is
+    // what the editor opens at from then on. the window's settling as it opens is not
+    let told = reported(&self.params, &self.shared);
+    if let Some(scale) = chosen(new_size, told, window.size().scale_factor) {
+      self.params.editor_scale.store(scale, Ordering::Relaxed);
+    }
     window.resize(new_size)
   }
 
@@ -353,6 +435,41 @@ impl baseview::host::HostMainThreadCaller for MainThreadCaller {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// the size the host is told for a scale, at so many pixels to a point
+  fn told(scale: f32, display_scale: f64) -> NativeSize<u32> {
+    NativeSize::from_size(sized(scale).into(), display_scale)
+  }
+
+  #[test]
+  fn only_a_size_of_the_hosts_own_that_the_panel_can_have_is_the_users_choice() {
+    for display_scale in [1.0, 1.25, 1.5, 2.0] {
+      for scale in [SCALES[0], 1.0, 1.1, 2.0, SCALES[1]] {
+        // the host saying back what it was told changes nothing, whatever that rounds to
+        let same = told(scale, display_scale);
+        assert_eq!(chosen(same, same, display_scale), None);
+        // any other size the panel is drawn at is taken, as the scale it is
+        let other = chosen(same, told(1.3, display_scale), display_scale).expect("a choice");
+        assert!((other - scale).abs() < 0.005, "{other} for {scale}");
+        assert!((SCALES[0]..=SCALES[1]).contains(&other));
+      }
+      // a view smaller or larger than the panel is ever drawn is not one to remember
+      let was = told(1.0, display_scale);
+      assert_eq!(chosen(told(0.6, display_scale), was, display_scale), None);
+      assert_eq!(chosen(told(3.5, display_scale), was, display_scale), None);
+    }
+    // a size that is not the panel's shape is the scale of the panel that fits in it
+    let wide = NativeSize::from_size(LogicalSize::new(900.0, 250.0).into(), 1.5);
+    assert_eq!(chosen(wide, told(2.0, 1.5), 1.5), Some(1.0));
+  }
+
+  #[test]
+  fn the_size_live_gives_a_view_it_sized_for_one_pixel_to_a_point_is_not_remembered() {
+    // live made its window from a size reported at one pixel to a point and gives it to the
+    // view, whose display has one and a half: two thirds of the panel, smaller than it goes
+    let given = told(1.0, 1.0);
+    assert_eq!(chosen(given, told(1.0, 1.5), 1.5), None);
+  }
 
   /// the sizes a host may ask about at one and a half pixels to a point, from the window as
   /// it opens
