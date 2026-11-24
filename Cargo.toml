@@ -33,8 +33,6 @@ standalone = ["nice-plug/standalone"]
 [dependencies]
 # fades and filters decay into denormals on silence, which the wrapper flushes to zero
 nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
-# the editor's window, whose handles the wrapper is given
-baseview = "0.4.2"
 controls.workspace = true
 controls-window.workspace = true
 skeuo = { path = "crates/skeuo" }

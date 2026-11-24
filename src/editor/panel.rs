@@ -202,7 +202,7 @@ impl Lettering {
 
 /// the panel as skeuo draws it: its meshes, each made once, and the scene of the frame last
 /// laid out
-pub(super) struct Panel {
+pub struct Panel {
   params: Arc<CanWeTalkParams>,
   renderer: Renderer,
   /// the scene last laid out, which is what the pointer is on. none until the first is

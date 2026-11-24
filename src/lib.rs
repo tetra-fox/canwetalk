@@ -88,7 +88,9 @@ impl Plugin for CanWeTalk {
   }
 
   fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
-    Some(editor::Editor::new(self.params.clone()))
+    editor::editor(self.params.clone())
+      .inspect_err(|error| nice_error!("the plugin has no editor: {error}"))
+      .ok()
   }
 
   fn activate(
