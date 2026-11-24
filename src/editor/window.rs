@@ -13,19 +13,19 @@ use baseview::{
   EventStatus, HandlerError, MouseButton, MouseEvent, ScrollDelta, TimerHandle, WindowContext,
   WindowEvent, WindowHandler, WindowSize,
 };
+use controls::sent::Sent;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
 use skeuo::glam::Vec2;
 use skeuo::{FlatRenderer, Place, Renderer};
 
-use super::interaction::{Action, Button, Edit, Event, Interaction, Key, Menu, Moment};
 use super::panel::{
   HEIGHT, Panel, Picture, READOUT_LETTERS, WIDTH, fitted, point_at, readout_shows,
 };
 use super::screen::Screen;
-use super::sent::Sent;
 use super::{Control, Shared, ToWindow};
 use crate::params::CanWeTalkParams;
+use controls::interaction::{Action, Button, Edit, Event, Interaction, Key, Menu, Moment};
 
 /// how often the panel is told that time has passed, and what the window shows is checked
 /// against what it should
@@ -219,8 +219,8 @@ impl State {
   fn values(&mut self, params: &CanWeTalkParams) -> [f32; 3] {
     Control::ALL.map(|control| {
       let value = control.param(params).unmodulated_normalized_value();
-      self.sent.look(control, value);
-      self.sent.shown(control, value)
+      self.sent.look(control as usize, value);
+      self.sent.shown(control as usize, value)
     })
   }
 
@@ -323,7 +323,7 @@ impl Window {
         panel,
         picture,
         interaction,
-        sent: Sent::new(values),
+        sent: Sent::new(&values),
         pointer: Vec2::ZERO,
         on_window: Vec2::ZERO,
         display_scale: size.scale_factor,
@@ -395,7 +395,7 @@ impl Window {
       let actions = state.interaction.handle(event, moment);
       for action in &actions {
         match action {
-          Action::Set(control, value) => state.sent.set(Control::ALL[*control], *value),
+          Action::Set(control, value) => state.sent.set(*control, *value),
           Action::Scale(scale) => {
             state.wanted_scale = Some(*scale);
             // the user's own choice of size, which is what is remembered
@@ -834,8 +834,8 @@ fn hint_shape(
   use wgpu::rwh::{HasWindowHandle, RawWindowHandle};
   use x11rb::properties::{AspectRatio, WmSizeHints};
 
-  use super::interaction::SCALES;
   use super::sized;
+  use controls::interaction::SCALES;
 
   let RawWindowHandle::Xlib(window) = context.window_handle()?.as_raw() else {
     return Err("the window is not an x11 one".into());
@@ -906,7 +906,7 @@ fn keys(event: &keyboard_types::KeyboardEvent) -> Vec<Key> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::editor::interaction::Item;
+  use controls::interaction::Item;
 
   /// a frame of a window of the panel's own size, with nothing typed or chosen
   fn frame(values: [f32; 3]) -> Frame {
@@ -990,13 +990,13 @@ mod tests {
   fn a_value_of_the_editors_own_coming_back_is_no_new_frame_and_the_hosts_is() {
     // what the panel shows of the pitch as its parameter is looked at, the way the window
     // does before it decides whether to draw
-    let mut sent = Sent::new([0.5, 0.5, 1.0]);
+    let mut sent = Sent::new(&[0.5, 0.5, 1.0]);
     let now = |sent: &mut Sent, parameter: f32| {
-      sent.look(Control::Pitch, parameter);
-      frame([sent.shown(Control::Pitch, parameter), 0.5, 1.0])
+      sent.look(Control::Pitch as usize, parameter);
+      frame([sent.shown(Control::Pitch as usize, parameter), 0.5, 1.0])
     };
     // the editor sets 0.6 and draws it, with the parameter still where it was
-    sent.set(Control::Pitch, 0.6);
+    sent.set(Control::Pitch as usize, 0.6);
     let shown = now(&mut sent, 0.5);
     assert_eq!(shown.values[0], 0.6);
     // the parameter gets there: the same picture, whether or not the wrapper reports it

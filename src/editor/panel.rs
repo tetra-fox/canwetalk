@@ -9,8 +9,8 @@ use skeuo::parts;
 use skeuo::{Color, Flat, Lamp, Light, Look, Material, Mesh, Object, Scene};
 
 use super::Control;
-use super::interaction::{Edit, Interaction, Item, Menu, Target};
 use crate::params::CanWeTalkParams;
+use controls::interaction::{Edit, Interaction, Item, Menu, Target};
 
 pub(super) const WIDTH: f32 = 500.0;
 pub(super) const HEIGHT: f32 = 250.0;

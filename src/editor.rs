@@ -1,10 +1,8 @@
 //! the plugin's window: a lit panel drawn by skeuo on a baseview window, with the knobs
 //! turned and their values typed by what the pointer and the keys do on it
 
-mod interaction;
 mod panel;
 mod screen;
-mod sent;
 mod window;
 
 use std::error::Error;
@@ -19,10 +17,10 @@ use nice_plug::editor::dpi::NativeSize;
 use nice_plug::editor::{EditorHandle, HostMethods, SpawnedEditor};
 use nice_plug::prelude::*;
 
-use self::interaction::{Dial, Key, SCALES};
 use self::panel::{HEIGHT, WIDTH};
 use self::window::{Guarded, Window};
 use crate::params::CanWeTalkParams;
+use controls::interaction::{Dial, Key, SCALES};
 
 /// the knobs on the panel, left to right
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

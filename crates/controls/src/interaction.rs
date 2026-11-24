@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 /// a place on the panel, across and down in its points
-pub(super) type Point = [f32; 2];
+pub type Point = [f32; 2];
 
 /// how far a control turns for each point the pointer is dragged up, as a part of its whole
 /// turn
@@ -25,16 +25,17 @@ const DOUBLE_REACH: f32 = 4.0;
 /// a turn of the wheel this long after the last belongs to a new gesture
 const WHEEL_REST: Duration = Duration::from_millis(400);
 /// the window is no smaller and no larger than this many times its own size
-pub(super) const SCALES: [f32; 2] = [0.75, 3.0];
+pub const SCALES: [f32; 2] = [0.75, 3.0];
 
 /// what there is to know of one control. its value is a part of its whole turn, from zero to
 /// one, and its plain value is that in the units it is read and written in
-pub(super) struct Dial {
+pub struct Dial {
   /// the value a reset gives it
   pub default: f32,
   /// the coarse step it moves by, in plain units: dragged or wheeled without the fine key it
   /// lands on whole steps only. none turns smoothly
   pub step: Option<f32>,
+  /// a value in plain units
   pub plain: Box<dyn Fn(f32) -> f32>,
   /// a plain value as a part of the turn. one past either end comes out as that end
   pub turn: Box<dyn Fn(f32) -> f32>,
@@ -45,6 +46,15 @@ pub(super) struct Dial {
 }
 
 type Read = Box<dyn Fn(&str) -> Option<f32>>;
+
+impl std::fmt::Debug for Dial {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("Dial")
+      .field("default", &self.default)
+      .field("step", &self.step)
+      .finish_non_exhaustive()
+  }
+}
 
 impl Dial {
   /// the nearest value that is a whole number of steps, or the value itself for a control
@@ -94,11 +104,14 @@ impl Dial {
 
 /// what a point of the panel belongs to
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Target {
+pub enum Target {
+  /// the knob of the control at this place among the panel's
   Knob(usize),
+  /// the window that control's value is written in
   Readout(usize),
   /// the menu, between and around its rows
   Menu,
+  /// a row of the menu
   Item(Item),
   /// what the window is pulled larger and smaller by
   Grip,
@@ -106,77 +119,117 @@ pub(super) enum Target {
 
 /// the rows of the menu, top to bottom
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Item {
+pub enum Item {
+  /// types the control's value
   Edit,
+  /// puts the control at its default
   Reset,
+  /// puts the control's value on the clipboard
   Copy,
+  /// sets the control to the value on the clipboard
   Paste,
 }
 
 impl Item {
-  pub(super) const ALL: [Self; 4] = [Self::Edit, Self::Reset, Self::Copy, Self::Paste];
+  /// every row, top to bottom
+  pub const ALL: [Self; 4] = [Self::Edit, Self::Reset, Self::Copy, Self::Paste];
 }
 
+/// a button of the pointer that means something to a panel
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Button {
+pub enum Button {
+  /// turns, presses and picks
   Left,
+  /// asks for a control's menu
   Right,
 }
 
+/// a key as a value being typed takes it. the caret's moves take the selection along from
+/// where it began when `extend` is set
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Key {
+pub enum Key {
+  /// a letter to type
   Letter(char),
+  /// sets what was typed
   Enter,
+  /// gives up what was typed
   Escape,
+  /// takes out the letter before the caret, or what is selected
   Backspace,
+  /// takes out the letter after the caret, or what is selected
   Delete,
-  /// the caret's moves, which with `extend` take the selection along from where it began
+  /// the caret one letter back
   Left {
+    /// whether the selection goes along
     extend: bool,
   },
+  /// the caret one letter on
   Right {
+    /// whether the selection goes along
     extend: bool,
   },
+  /// the caret to the start
   Home {
+    /// whether the selection goes along
     extend: bool,
   },
+  /// the caret to the end
   End {
+    /// whether the selection goes along
     extend: bool,
   },
   /// leaves the field for the next, which sets what was typed
   Tab,
+  /// selects all that was typed
   SelectAll,
+  /// puts what is selected on the clipboard
   Copy,
+  /// the same, and takes it out
   Cut,
+  /// types the clipboard's text
   Paste,
 }
 
 /// places are in the panel's points apart from `window`, and `over` is what is drawn there
 #[derive(Clone, Debug)]
-pub(super) enum Event {
+pub enum Event {
+  /// the pointer moved
   Move {
+    /// where to
     at: Point,
     /// the same place in the window's own points from its top left corner, which stays put
     /// when the window changes size
     window: Point,
+    /// what is drawn there
     over: Option<Target>,
+    /// whether the key that slows a control down is held
     fine: bool,
   },
+  /// a button went down
   Press {
+    /// which
     button: Button,
+    /// where the pointer is
     at: Point,
+    /// the same place in the window's own points, as in [`Event::Move`]
     window: Point,
+    /// what is drawn there
     over: Option<Target>,
     /// whether the key that makes a click a reset is held
     reset: bool,
   },
+  /// a button came up
   Release(Button),
   /// the wheel turned by so many lines, away from the user counting up
   Wheel {
+    /// what is drawn under the pointer
     over: Option<Target>,
+    /// how far, a part of a line for a wheel that turns smoothly
     lines: f32,
+    /// whether the key that slows a control down is held
     fine: bool,
   },
+  /// a key went down while the panel takes keys
   Key(Key),
   /// the clipboard's text, in answer to [`Action::WantClipboard`]. none if it has no text
   Clipboard(Option<String>),
@@ -188,11 +241,14 @@ pub(super) enum Event {
   Closed,
 }
 
+/// what is to be done about an event, by whoever has the host and the window
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Action {
+pub enum Action {
   /// the host is told a gesture on the control begins, then its values, then that it ends
   Begin(usize),
+  /// the control is set to a value
   Set(usize, f32),
+  /// the gesture on the control is over
   End(usize),
   /// the window takes the keys
   Focus,
@@ -208,8 +264,10 @@ pub(super) enum Action {
 
 /// a value being typed
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Edit {
+pub struct Edit {
+  /// the control it is for
   pub control: usize,
+  /// what has been typed
   pub text: String,
   /// how many letters are before the caret
   pub caret: usize,
@@ -220,7 +278,7 @@ pub(super) struct Edit {
 
 impl Edit {
   /// the places of the letters that are selected
-  pub(super) fn selected(&self) -> Range<usize> {
+  pub fn selected(&self) -> Range<usize> {
     self.anchor.min(self.caret)..self.anchor.max(self.caret)
   }
 
@@ -286,11 +344,14 @@ enum Paste {
   Value(usize),
 }
 
+/// the menu of a control, while it is up
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Menu {
+pub struct Menu {
+  /// the control it is for
   pub control: usize,
   /// where on the picture it was asked for
   pub at: Point,
+  /// the row the pointer is on
   pub hovered: Option<Item>,
 }
 
@@ -321,8 +382,9 @@ enum State {
 }
 
 /// what the panel is like at the time an event comes in
-#[derive(Clone, Copy)]
-pub(super) struct Moment<'a> {
+#[derive(Clone, Copy, Debug)]
+pub struct Moment<'a> {
+  /// when the event came
   pub now: Instant,
   /// where each control stands
   pub values: &'a [f32],
@@ -330,7 +392,9 @@ pub(super) struct Moment<'a> {
   pub scale: f32,
 }
 
-pub(super) struct Interaction {
+/// the state of a panel's controls: what is being dragged, typed or picked from the menu
+#[derive(Debug)]
+pub struct Interaction {
   dials: Vec<Dial>,
   /// the panel's width and height in its points
   size: Point,
@@ -350,7 +414,7 @@ impl Interaction {
   /// the behaviour of a panel `size` across and down with the controls the dials describe. a
   /// value is typed in a readout with room for `room` letters, of those that `shows` says it
   /// has
-  pub(super) fn new(dials: Vec<Dial>, size: Point, room: usize, shows: fn(char) -> bool) -> Self {
+  pub fn new(dials: Vec<Dial>, size: Point, room: usize, shows: fn(char) -> bool) -> Self {
     Self {
       dials,
       size,
@@ -363,14 +427,16 @@ impl Interaction {
     }
   }
 
-  pub(super) fn edit(&self) -> Option<&Edit> {
+  /// the value being typed, if one is
+  pub fn edit(&self) -> Option<&Edit> {
     match &self.state {
       State::Edit(edit) => Some(edit),
       _ => None,
     }
   }
 
-  pub(super) fn menu(&self) -> Option<&Menu> {
+  /// the menu, if it is up
+  pub fn menu(&self) -> Option<&Menu> {
     match &self.state {
       State::Menu(menu) => Some(menu),
       _ => None,
@@ -378,11 +444,12 @@ impl Interaction {
   }
 
   /// whether keys mean something to the panel right now
-  pub(super) fn takes_keys(&self) -> bool {
+  pub fn takes_keys(&self) -> bool {
     matches!(self.state, State::Edit(_) | State::Menu(_))
   }
 
-  pub(super) fn handle(&mut self, event: Event, moment: Moment) -> Vec<Action> {
+  /// takes an event in, and gives what is to be done about it, in order
+  pub fn handle(&mut self, event: Event, moment: Moment) -> Vec<Action> {
     let mut actions = Vec::new();
     match event {
       Event::Move {
