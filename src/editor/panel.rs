@@ -48,11 +48,6 @@ const STRIP_UP: f32 = 1.5;
 const LAMP: Vec2 = Vec2::new(WIDTH - 34.0, STRIP_Y);
 const LAMP_SIZE: f32 = 9.0;
 const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.45, 0.08);
-/// whether a readout has a letter for something typed into it
-pub(super) fn readout_shows(letter: char) -> bool {
-  letter == ' ' || parts::lettered(letter)
-}
-
 impl Control {
   /// the kind of knob it is: the two shifts match, and the mix is smaller and set apart
   fn knob(self) -> parts::Knob {

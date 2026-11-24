@@ -6,13 +6,12 @@ mod panel;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use controls::furniture::{GripLook, MenuLook};
 use controls::interaction::Readout;
 use controls_window::nice_plug::{Bound, NotOurs};
 use controls_window::{Remembered, Settings};
 use nice_plug::prelude::*;
 
-use self::panel::{HEIGHT, READOUT_LETTERS, WIDTH, readout_shows};
+use self::panel::{HEIGHT, READOUT_LETTERS, WIDTH};
 use crate::params::CanWeTalkParams;
 
 /// the plugin's panel as the wrapper has it
@@ -50,21 +49,15 @@ impl Control {
 /// the editor of a plugin with these parameters. the size the user gives its window is kept
 /// with them
 pub(crate) fn editor(params: Arc<CanWeTalkParams>) -> Result<Editor, NotOurs> {
-  let settings = Settings {
-    title: "CanWeTalk".to_owned(),
-    size: [WIDTH, HEIGHT],
-    // the window is no smaller and no larger than this many times the panel's size
-    scales: [0.75, 3.0],
-    menu: MenuLook::default(),
-    grip: GripLook::default(),
-  };
-  // every readout is the same window in the panel, with room for as many letters
-  let readout = Readout {
-    room: READOUT_LETTERS,
-    shows: readout_shows,
-  };
-  let bound =
-    Control::ALL.map(|control| Bound::new(control.param(&params), control.step(), readout));
+  let mut settings = Settings::new("CanWeTalk", [WIDTH, HEIGHT]);
+  // the window is no smaller and no larger than this many times the panel's size
+  settings.scales = [0.75, 3.0];
+  let bound = Control::ALL.map(|control| {
+    // every readout is the same window in the panel, with room for as many letters
+    let mut bound = Bound::new(control.param(&params), Readout::new(READOUT_LETTERS));
+    bound.step = control.step();
+    bound
+  });
   let (get, set) = (Arc::clone(&params), Arc::clone(&params));
   let remembered = Remembered {
     get: Box::new(move || get.editor_scale.load(Ordering::Relaxed)),
