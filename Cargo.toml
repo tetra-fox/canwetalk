@@ -14,7 +14,17 @@ members = ["crates/skeuo", "xtask"]
 wgpu = { version = "27", default-features = false, features = ["std", "wgsl"] }
 
 [lib]
-crate-type = ["cdylib"]
+# the plugin hosts load, and a library for the program below to build on
+crate-type = ["cdylib", "lib"]
+
+# the plugin as its own program, for looking at the editor without a host: `just editor`
+[[bin]]
+name = "canwetalk"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[features]
+standalone = ["nice-plug/standalone"]
 
 [dependencies]
 # fades and filters decay into denormals on silence, which the wrapper flushes to zero

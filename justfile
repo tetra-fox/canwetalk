@@ -9,6 +9,10 @@ bundle:
 bundle-windows:
     cargo xtask bundle canwetalk --release --target x86_64-pc-windows-gnu
 
+# open the editor without a host, silent unless given a backend: `just editor --backend jack`
+editor *args="--backend dummy":
+    cargo run --features standalone --bin canwetalk -- {{ args }}
+
 test:
     cargo test
 

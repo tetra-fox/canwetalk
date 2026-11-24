@@ -38,9 +38,27 @@
               just
               # links the x86_64-pc-windows-gnu build
               pkgsCross.mingw-msvcrt-x86_64.stdenv.cc
+              # finds the audio libraries below for `just editor`
+              pkg-config
+            ];
+
+            # what the plugin as its own program plays through
+            buildInputs = with pkgs; [
+              alsa-lib
+              libjack2
             ];
 
             env = {
+              # the editor's window and its graphics are loaded by name when it opens
+              LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+                with pkgs;
+                [
+                  vulkan-loader
+                  libx11
+                  libxcb
+                  libxkbcommon
+                ]
+              );
               CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "x86_64-w64-mingw32-gcc";
               # rust's std for this target links libpthread, which the mingw compiler does not ship
               CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-L native=${pkgs.pkgsCross.mingw-msvcrt-x86_64.windows.pthreads}/lib";
