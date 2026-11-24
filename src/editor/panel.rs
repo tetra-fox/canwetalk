@@ -1,5 +1,6 @@
 //! what the panel is made of and where everything on it goes
 
+use std::f32::consts::{FRAC_PI_2, PI};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -17,6 +18,10 @@ pub(super) const HEIGHT: f32 = 250.0;
 /// how far a point slides across the picture for each unit of its height: seen a little
 /// from in front
 const LEAN: Vec2 = Vec2::new(0.0, -0.3);
+/// how wide the rack ear at each end of the plate is
+const EAR: f32 = 32.0;
+/// the names of the groups of knobs, along the top
+const HEADING_Y: f32 = 13.0;
 /// the knobs' centers down the panel
 const KNOB_Y: f32 = 94.0;
 /// the names under the knobs, and under those the windows their values show in
@@ -45,18 +50,21 @@ const READOUT_COLOR: Vec3 = Vec3::new(1.0, 0.66, 0.14);
 const STRIP_Y: f32 = 221.0;
 const STRIP_UP: f32 = 1.5;
 /// the lamp at the end of the strip, and how wide it is
-const LAMP: Vec2 = Vec2::new(WIDTH - 34.0, STRIP_Y);
-const LAMP_SIZE: f32 = 9.0;
+const LAMP: Vec2 = Vec2::new(WIDTH - 54.0, STRIP_Y);
+const LAMP_SIZE: f32 = 11.0;
 const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.45, 0.08);
 impl Control {
   /// the kind of knob it is: the two shifts match, and the mix is smaller and set apart
   fn knob(self) -> parts::Knob {
     match self {
-      Self::Pitch | Self::Formant => parts::Knob::skirted(38.0, 30.0),
+      Self::Pitch | Self::Formant => parts::Knob {
+        skirt: 0.2,
+        ..parts::Knob::skirted(36.0, 30.0)
+      },
       Self::Mix => parts::Knob {
         skirt: 0.0,
         top: parts::Top::Flat,
-        ..parts::Knob::knurled(27.0, 26.0)
+        ..parts::Knob::knurled(26.0, 26.0)
       },
     }
   }
@@ -89,9 +97,9 @@ impl Control {
   /// the knob's center across the panel
   fn x(self) -> f32 {
     match self {
-      Self::Pitch => 96.0,
-      Self::Formant => 236.0,
-      Self::Mix => 384.0,
+      Self::Pitch => 102.0,
+      Self::Formant => 240.0,
+      Self::Mix => 374.0,
     }
   }
 }
@@ -122,6 +130,15 @@ impl Drawn {
     });
     self.targets.push(target);
   }
+}
+
+/// a flat mesh leaned over to the right the way slanted letters are: `slope` further across
+/// for each point further up the panel
+fn slanted(mut mesh: Mesh, slope: f32) -> Mesh {
+  for vertex in &mut mesh.vertices {
+    vertex.position[0] -= vertex.position[1] * slope;
+  }
+  mesh
 }
 
 /// what a window shows, as meshes
@@ -219,58 +236,103 @@ impl Panel {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
     };
     let face = Vec3::new(0.05, 0.30, 0.66);
+    // less of a mirror than bare metal and with less of a shine, so that the dye shows
+    let anodized = Material {
+      metal: 0.3,
+      specular: 0.28,
+      wear: 0.7,
+      ..Material::brushed(face)
+    };
     let ink = Material::matte(Vec3::splat(0.92));
+    let faint = Material::matte(Vec3::splat(0.55));
+    let red = Material::matte(Vec3::new(0.85, 0.07, 0.05));
     let black = Vec3::new(0.03, 0.03, 0.035);
     let hole = Material::matte(Vec3::splat(0.012));
+    let chrome = Material::chrome(Vec3::splat(0.8));
+    // the far side of anything cut into the plate, which the light reaches
+    let lip = Material::matte(face.lerp(Vec3::ONE, 0.5));
     let (middle, across) = (WIDTH / 2.0, HEIGHT / 2.0);
 
-    // a brushed and anodized plate in a dark rim
+    // a brushed and anodized plate, with a low rim along each edge that slopes down to it
     put(
       parts::plate(WIDTH, HEIGHT, 6.0),
       0.0,
       0.0,
       0.0,
-      // less of a mirror than bare metal, so that the dye shows
-      Material {
-        metal: 0.3,
-        ..Material::brushed(face)
-      },
+      anodized,
       None,
     );
-    put(
-      parts::frame(WIDTH, HEIGHT, 7.0, 7.0, 10.0),
-      middle,
-      across,
-      0.0,
-      Material::glossy(black),
-      None,
-    );
-    // a black strip along the bottom with the plugin's name on it, and what it is at the other
-    // end
-    put(
-      parts::slab(WIDTH - 20.0, 34.0, STRIP_UP, 4.0),
-      middle,
-      STRIP_Y,
-      0.0,
-      Material::glossy(black),
-      None,
-    );
-    put(
-      parts::legend("CANWETALK", 13.0, 2.6),
-      92.0,
-      STRIP_Y,
-      STRIP_UP,
-      ink,
-      None,
-    );
-    put(
-      parts::legend("PITCH + FORMANT SHIFTER", 6.0, 1.1),
-      WIDTH - 136.0,
-      STRIP_Y,
-      STRIP_UP,
-      Material::matte(Vec3::splat(0.55)),
-      None,
-    );
+    let rim = |half: f32| {
+      let outline = [[0.0, 0.0], [0.0, 1.3], [0.9, 1.3], [2.6, 0.0]].map(Vec2::from);
+      Mesh::extruded(&outline, |_| half, 1.0)
+    };
+    for (half, x, y, turn) in [
+      (middle, middle, 0.0, 0.0),
+      (middle, middle, HEIGHT, PI),
+      (across, 0.0, across, -FRAC_PI_2),
+      (across, WIDTH, across, FRAC_PI_2),
+    ] {
+      let turned = rim(half).transformed(Mat4::from_rotation_z(turn));
+      put(turned, x, y, 0.0, anodized, None);
+    }
+
+    // a rack ear at each end, marked off by a groove, with a screw through a long hole near
+    // its top and its bottom, each screw's cross left at another angle
+    for x in [EAR, WIDTH - EAR] {
+      for (from, to, up, material) in [(0.5, 1.2, 0.1, lip), (-0.5, 0.5, 0.2, hole)] {
+        let groove = Mesh::cuboid(Vec3::new(from, 5.0, 0.0), Vec3::new(to, HEIGHT - 5.0, up));
+        put(groove, x, 0.0, 0.0, material, None);
+      }
+    }
+    for (x, y, turn) in [
+      (EAR / 2.0, 30.0, 0.4),
+      (EAR / 2.0, HEIGHT - 30.0, 1.3),
+      (WIDTH - EAR / 2.0, 30.0, 2.3),
+      (WIDTH - EAR / 2.0, HEIGHT - 30.0, 0.9),
+    ] {
+      put(parts::slot(16.0, 9.0), x + 0.5, y + 0.5, 0.0, lip, None);
+      put(parts::slot(16.0, 9.0), x, y, 0.05, hole, None);
+      let washer = Material::satin(Vec3::splat(0.05));
+      put(parts::bezel(2.0, 6.8, 1.3), x, y, 0.0, washer, None);
+      let turned = Mat4::from_rotation_z(turn);
+      put(parts::screw_head(4.6), x, y, 0.5, chrome, None);
+      let cross = parts::screw_cross(4.6).transformed(turned);
+      put(cross, x, y, 0.5, hole, None);
+    }
+
+    // each group of knobs has its name over it, between two rules that turn down at their
+    // far ends
+    for (name, from, to) in [("SHIFT", 42.0, 300.0), ("OUTPUT", 324.0, 424.0)] {
+      let at = (from + to) / 2.0;
+      put(parts::legend(name, 5.5, 1.0), at, HEADING_Y, 0.0, ink, None);
+      let clear = parts::legend_width(name.len(), 5.5) / 2.0 + 6.0;
+      for (near, far) in [(at - clear, from), (at + clear, to)] {
+        let rule = Mesh::cuboid(
+          Vec3::new(near.min(far), HEADING_Y - 0.4, 0.0),
+          Vec3::new(near.max(far), HEADING_Y + 0.4, 0.25),
+        );
+        put(rule, 0.0, 0.0, 0.0, ink, None);
+        let drop = Mesh::cuboid(
+          Vec3::new(far - 0.4, HEADING_Y - 0.4, 0.0),
+          Vec3::new(far + 0.4, HEADING_Y + 6.0, 0.25),
+        );
+        put(drop, 0.0, 0.0, 0.0, ink, None);
+      }
+    }
+    // slots that let the air out, beside the last knob
+    for slot in 0..5 {
+      let x = WIDTH - EAR - 28.0 + slot as f32 * 5.0;
+      put(
+        parts::slot(2.6, 76.0),
+        x + 0.4,
+        KNOB_Y + 0.4,
+        0.0,
+        lip,
+        None,
+      );
+      put(parts::slot(2.6, 76.0), x, KNOB_Y, 0.05, hole, None);
+    }
+
     for control in Control::ALL {
       let (x, radius) = (control.x(), control.knob().radius);
       // each knob stands in a polished ring, with a scale of marks around it and figures
@@ -280,7 +342,7 @@ impl Panel {
         x,
         KNOB_Y,
         0.0,
-        Material::chrome(Vec3::splat(0.8)),
+        chrome,
         None,
       );
       let (marks, long_every) = control.marks();
@@ -331,6 +393,74 @@ impl Panel {
         Some(Target::Readout(control as usize)),
       );
     }
+
+    // a black strip between the ears along the bottom. the plugin's name is on it in
+    // slanted letters over a red stroke, then what it is, a maker's plate riveted on, and
+    // the lamp in a polished ring
+    put(
+      parts::slab(WIDTH - 2.0 * EAR - 8.0, 34.0, STRIP_UP, 4.0),
+      middle,
+      STRIP_Y,
+      0.0,
+      Material::glossy(black),
+      None,
+    );
+    let name = slanted(parts::legend("CANWETALK", 13.0, 2.6), 0.2);
+    put(name, 106.0, STRIP_Y - 1.5, STRIP_UP, ink, None);
+    let stroke = Mesh::cuboid(Vec3::new(-58.0, -0.7, 0.0), Vec3::new(58.0, 0.7, 0.25));
+    put(stroke, 103.5, STRIP_Y + 10.0, STRIP_UP, red, None);
+    for (line, y, tall) in [
+      ("PROFESSIONAL", -4.5, 4.4),
+      ("PITCH + FORMANT SHIFTER", 4.0, 5.0),
+    ] {
+      let weight = tall * 0.19;
+      put(
+        parts::legend(line, tall, weight),
+        230.0,
+        STRIP_Y + y,
+        STRIP_UP,
+        faint,
+        None,
+      );
+    }
+    let plate = Vec3::new(338.0, STRIP_Y, STRIP_UP);
+    put(
+      parts::slab(76.0, 20.0, 0.9, 1.5),
+      plate.x,
+      plate.y,
+      plate.z,
+      Material::brushed(Vec3::splat(0.72)),
+      None,
+    );
+    for (line, y) in [("MODEL CWT-3", -4.2), ("SERIAL NO 004217", 4.2)] {
+      let stamped = Material::matte(Vec3::splat(0.06));
+      put(
+        parts::legend(line, 3.8, 0.75),
+        plate.x,
+        plate.y + y,
+        plate.z + 0.9,
+        stamped,
+        None,
+      );
+    }
+    for side in [-1.0, 1.0] {
+      put(
+        parts::screw_head(1.3),
+        plate.x + side * 34.0,
+        plate.y,
+        plate.z + 0.9,
+        chrome,
+        None,
+      );
+    }
+    put(
+      parts::legend("EFFECT", 4.2, 0.8),
+      LAMP.x - 30.0,
+      STRIP_Y,
+      STRIP_UP,
+      faint,
+      None,
+    );
     put(
       parts::led_seat(LAMP_SIZE),
       LAMP.x,
@@ -339,24 +469,14 @@ impl Panel {
       hole,
       None,
     );
-    // a screw in a dark seat in each corner of the plate above the strip, each with its slot
-    // left at another angle
-    for (x, y, turn) in [
-      (20.0, 20.0, 0.5),
-      (WIDTH - 20.0, 20.0, 2.1),
-      (20.0, 186.0, 1.2),
-      (WIDTH - 20.0, 186.0, 2.8),
-    ] {
-      put(parts::screw_seat(4.5, 1.6), x, y, 0.0, hole, None);
-      put(
-        parts::screw(4.5).transformed(Mat4::from_rotation_z(turn)),
-        x,
-        y,
-        0.0,
-        Material::chrome(Vec3::splat(0.6)),
-        None,
-      );
-    }
+    put(
+      parts::bezel(LAMP_SIZE * 0.56 + 0.4, LAMP_SIZE * 0.56 + 3.2, 2.0),
+      LAMP.x,
+      LAMP.y,
+      STRIP_UP,
+      chrome,
+      None,
+    );
 
     let knobs = Control::ALL.map(|control| {
       let knob = control.knob();
@@ -390,12 +510,9 @@ impl Panel {
       let turn = controls[index].value;
       let transform = parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
       let materials = [
-        // black plastic light enough for its shape to show under the light
         Material {
-          specular: 0.5,
-          shininess: 28.0,
-          reflect: 0.35,
-          ..Material::matte(Vec3::new(0.075, 0.075, 0.08))
+          reflect: 0.9,
+          ..Material::glossy(Vec3::new(0.06, 0.06, 0.065))
         },
         Material {
           specular: 1.0,
@@ -430,12 +547,14 @@ impl Panel {
       },
       look: Look {
         soften: 0.25,
+        vignette: 0.4,
         ..Look::default()
       },
       objects: drawn.objects,
       lamps: vec![Lamp {
         at: LAMP.extend(STRIP_UP + LAMP_SIZE),
-        color: LAMP_COLOR * wet,
+        // strong enough to show on the black strip, which gives little of any light back
+        color: LAMP_COLOR * wet * 2.5,
         reach: LAMP_SIZE * 4.0,
       }],
     };
