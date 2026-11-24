@@ -275,20 +275,12 @@ impl Panel {
       let (x, radius) = (control.x(), control.knob().radius);
       // each knob stands in a polished ring, with a scale of marks around it and figures
       // outside them
-      let ring = [
-        [radius + 6.5, 0.0],
-        [radius + 6.5, 1.6],
-        [radius + 5.2, 2.8],
-        [radius + 2.0, 2.8],
-        [radius + 0.9, 1.6],
-        [radius + 0.9, 0.0],
-      ];
       put(
-        Mesh::lathe(&ring, 96, true),
+        parts::bezel(radius + 0.9, radius + 8.5, 3.4),
         x,
         KNOB_Y,
         0.0,
-        Material::chrome(Vec3::splat(0.72)),
+        Material::chrome(Vec3::splat(0.8)),
         None,
       );
       let (marks, long_every) = control.marks();
@@ -296,8 +288,8 @@ impl Panel {
         parts::ticks(
           marks,
           parts::KNOB_SWEEP,
-          radius + 9.5,
-          radius + 12.5,
+          radius + 11.5,
+          radius + 14.5,
           long_every,
         ),
         x,
@@ -310,7 +302,7 @@ impl Panel {
       for (index, figure) in figures.iter().enumerate() {
         let turn = index as f32 / (figures.len() - 1) as f32;
         let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
-        let out = radius + 23.5;
+        let out = radius + 25.0;
         put(
           parts::legend(figure, 6.5, 0.95),
           x + out * sin,
