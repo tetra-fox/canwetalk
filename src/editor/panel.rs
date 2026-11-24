@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use controls::flat::Flat;
-use controls::interaction::{Edit, Target};
+use controls::interaction::{Edit, Reading, Target};
 use controls_window::{Gpu, Skin, View, wgpu};
 use nice_plug::prelude::Param;
 use skeuo::glam::{Mat4, Vec2, Vec3};
@@ -400,13 +400,13 @@ impl Panel {
 
   /// the scene of the panel with each control at its value, in the order of
   /// [`Control::ALL`], and whatever is being typed, with what each of its objects is
-  fn scene(&mut self, values: &[f32], edit: Option<&Edit>) -> (Scene, Vec<Option<Target>>) {
+  fn scene(&mut self, controls: &[Reading], edit: Option<&Edit>) -> (Scene, Vec<Option<Target>>) {
     let params = Arc::clone(&self.params);
     // the scene owns this frame's objects, so the ones that never move are copied into it
     let mut drawn = self.fixed.clone();
     for (index, control) in Control::ALL.into_iter().enumerate() {
       let param = control.param(&params);
-      let turn = values[index];
+      let turn = controls[index].value;
       let transform = parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
       let materials = [
         // black plastic light enough for its shape to show under the light
@@ -430,7 +430,7 @@ impl Panel {
       self.readout(&mut drawn, index, control, (&value, param.unit()), edit);
     }
     // the lamp is as bright as the mix is wet, and dark when nothing of the shift is heard
-    let wet = values[Control::Mix as usize];
+    let wet = controls[Control::Mix as usize].value;
     drawn.put(
       &self.lamp,
       LAMP.extend(STRIP_UP),
@@ -512,7 +512,7 @@ impl Panel {
 
 impl Skin for Panel {
   fn prepare(&mut self, gpu: &Gpu, view: &View, _over: &mut Flat) {
-    let (scene, targets) = self.scene(view.values, view.edit);
+    let (scene, targets) = self.scene(view.controls, view.edit);
     (self.renderer).prepare(gpu.device, gpu.queue, &scene, view.pixels);
     (self.scene, self.targets) = (Some(scene), targets);
   }
