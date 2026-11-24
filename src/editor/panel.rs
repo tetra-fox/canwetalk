@@ -110,8 +110,8 @@ fn grip_shapes(flat: &mut Flat, scale: f32) {
     let inward = (f32::from(nth) * 3.5 + 0.5) / scale;
     let clear = 1.5 / scale;
     flat.line(
-      corner - Vec2::new(inward, clear),
-      corner - Vec2::new(clear, inward),
+      (corner - Vec2::new(inward, clear)).into(),
+      (corner - Vec2::new(clear, inward)).into(),
       GRIP_WEIGHT / scale,
       GRIP_INK,
     );
@@ -160,20 +160,24 @@ fn menu_at(corner: Vec2, at: Vec2) -> Option<Target> {
 /// the menu as flat shapes, with lines as wide as `pixel`, which is one of the window's
 fn menu_shapes(flat: &mut Flat, menu: &Menu, pixel: f32) {
   let corner = menu_corner(Vec2::from(menu.at));
-  flat.rect(corner, corner + MENU_SIZE, MENU_LINE);
+  flat.rect(corner.into(), (corner + MENU_SIZE).into(), MENU_LINE);
   let line = Vec2::splat(pixel);
-  flat.rect(corner + line, corner + MENU_SIZE - line, MENU_GROUND);
+  flat.rect(
+    (corner + line).into(),
+    (corner + MENU_SIZE - line).into(),
+    MENU_GROUND,
+  );
   for (item, row) in Item::ALL.into_iter().zip(0..) {
     let top_left = corner + Vec2::new(MENU_EDGE, MENU_EDGE + menu_row_down(row));
     let marked = menu.hovered == Some(item);
     if marked {
-      flat.rect(top_left, top_left + MENU_ROW, MENU_MARK);
+      flat.rect(top_left.into(), (top_left + MENU_ROW).into(), MENU_MARK);
     }
     let letters = top_left + Vec2::new(MENU_INSET, (MENU_ROW.y - MENU_LETTERS) / 2.0);
     flat.legend(
       label(item),
       // onto the middles of pixels, where the upright and level strokes are sharpest
-      ((letters / pixel).floor() + 0.5) * pixel,
+      (((letters / pixel).floor() + 0.5) * pixel).into(),
       MENU_LETTERS,
       MENU_WEIGHT,
       if marked { MENU_MARKED_INK } else { MENU_INK },
@@ -181,7 +185,11 @@ fn menu_shapes(flat: &mut Flat, menu: &Menu, pixel: f32) {
     // a line across the middle of the room before each pair of rows after the first
     if row > 0 && row % 2 == 0 {
       let across = top_left + Vec2::new(0.0, -MENU_DIVIDE / 2.0);
-      flat.rect(across, across + Vec2::new(MENU_ROW.x, pixel), MENU_LINE);
+      flat.rect(
+        across.into(),
+        (across + Vec2::new(MENU_ROW.x, pixel)).into(),
+        MENU_LINE,
+      );
     }
   }
 }
