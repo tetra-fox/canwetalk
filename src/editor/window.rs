@@ -2,9 +2,10 @@
 //! the panel is told
 
 use std::cell::{Cell, RefCell, RefMut};
-use std::sync::Arc;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use baseview::dpi::LogicalSize;
@@ -95,6 +96,39 @@ struct State {
   shown: Option<Frame>,
   /// how many times the panel's size the window is to become, once for each frame at most
   wanted_scale: Option<f32>,
+  /// the first thing the graphics device reported going wrong once the window was open,
+  /// which wgpu would otherwise panic over
+  fault: Arc<OnceLock<String>>,
+  /// whether drawing has been given up for as long as this window is open. the window
+  /// keeps the last picture it had
+  stopped: bool,
+}
+
+/// gives up drawing, and says why the once
+fn stop(stopped: &mut bool, why: impl std::fmt::Display) {
+  if !std::mem::replace(stopped, true) {
+    nice_error!("the editor has stopped drawing: {why}");
+  }
+}
+
+/// what building something with the device brought up, if anything went wrong with it.
+/// wgpu reports a shader or pipeline it cannot build, and memory it cannot get, to whoever
+/// is listening for each kind, and panics if nobody is
+fn built<T>(device: &wgpu::Device, build: impl FnOnce() -> T) -> Result<T, wgpu::Error> {
+  let kinds = [
+    wgpu::ErrorFilter::Validation,
+    wgpu::ErrorFilter::OutOfMemory,
+    wgpu::ErrorFilter::Internal,
+  ];
+  for kind in kinds {
+    device.push_error_scope(kind);
+  }
+  let built = build();
+  let mut wrong = None;
+  for _ in kinds {
+    wrong = pollster::block_on(device.pop_error_scope()).or(wrong);
+  }
+  wrong.map_or(Ok(built), Err)
 }
 
 /// everything a frame shows that can change from one to the next
@@ -216,8 +250,9 @@ impl Window {
     #[cfg(not(target_os = "linux"))]
     let _ = top_level;
 
-    // direct3d 12 is started only where nothing else can draw: under wine it runs on vulkan
-    // anyway, and wine's shader compiler cannot build the renderer's shaders for it
+    // direct3d 12 is started only where nothing else can draw. under wine it runs on vulkan
+    // anyway, and wine's shader compiler cannot build any shader with a sampler as naga
+    // writes it for direct3d, so there the editor does not open without vulkan
     let adapter = match adapter_of(wgpu::Backends::VULKAN | wgpu::Backends::METAL) {
       Ok(adapter) => adapter,
       Err(first) => adapter_of(wgpu::Backends::DX12).map_err(|second| {
@@ -230,11 +265,34 @@ impl Window {
       required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
       ..Default::default()
     }))?;
+    // the editor opens only if the device can build everything it is drawn with. what goes
+    // wrong after that is kept for the next frame to find, and drawing stops there
+    let (renderer, flat) = built(&device, || {
+      (
+        Renderer::new(&device, FORMAT),
+        FlatRenderer::new(&device, FORMAT),
+      )
+    })?;
+    let fault = Arc::new(OnceLock::new());
+    device.on_uncaptured_error(Arc::new({
+      let fault = Arc::clone(&fault);
+      move |error: wgpu::Error| {
+        // only the first is kept: the rest follow from it
+        let _ = fault.set(error.to_string());
+      }
+    }));
+    device.set_device_lost_callback({
+      let fault = Arc::clone(&fault);
+      move |reason, message| {
+        // the same, and a device let go of as the window closes is lost to nobody
+        let _ = fault.set(format!(
+          "the graphics device was lost: {reason:?} {message}"
+        ));
+      }
+    });
     let screen = Screen::new(&context)?;
     let window = [size.physical.width, size.physical.height];
 
-    let renderer = Renderer::new(&device, FORMAT);
-    let flat = FlatRenderer::new(&device, FORMAT);
     let dials = Control::ALL.map(|control| control.dial(&params)).into();
     let interaction = Interaction::new(dials, [WIDTH, HEIGHT], READOUT_LETTERS, readout_shows);
     let mut panel = Panel::new();
@@ -271,6 +329,8 @@ impl Window {
         display_scale: size.scale_factor,
         shown: None,
         wanted_scale: None,
+        fault,
+        stopped: false,
       }),
     })
   }
@@ -312,7 +372,7 @@ impl Window {
       return;
     };
     // a window with no size has nothing to draw
-    let asks = state.stale(&self.params) && !state.window.contains(&0);
+    let asks = !state.stopped && state.stale(&self.params) && !state.window.contains(&0);
     drop(state);
     if asks {
       self.redraw();
@@ -422,8 +482,22 @@ impl WindowHandler for Window {
     let Some(mut state) = self.state() else {
       return Ok(());
     };
-    // a window with no size, as a minimized one has, has nothing to draw
-    if state.window.contains(&0) {
+    let State { fault, stopped, .. } = &mut *state;
+    if let Some(fault) = fault.get() {
+      stop(stopped, fault);
+    }
+    // the system wants the window painted and the panel is as it was last drawn, or is no
+    // longer drawn at all: the last picture goes back
+    if state.stopped || !state.stale(&self.params) {
+      if let Err(error) = state.screen.again() {
+        stop(&mut state.stopped, error);
+      }
+      return Ok(());
+    }
+    // a window with no size, as a minimized one has, has nothing to draw, and one larger
+    // than the device can draw on in one piece is left as it is
+    let most = state.device.limits().max_texture_dimension_2d;
+    if state.window.iter().any(|&side| side == 0 || side > most) {
       return Ok(());
     }
     let (values, window, scale) = (state.values(&self.params), state.window, state.scale());
@@ -438,6 +512,8 @@ impl WindowHandler for Window {
       picture,
       interaction,
       shown,
+      fault,
+      stopped,
       ..
     } = &mut *state;
     let drawn_on = match canvas {
@@ -511,20 +587,28 @@ impl WindowHandler for Window {
       submission_index: Some(submitted),
       timeout: Some(DRAWN_WITHIN),
     });
+    if let Some(fault) = fault.get() {
+      stop(stopped, fault);
+      return Ok(());
+    }
     let read = match (waited, when_mapped.try_recv()) {
       (Ok(_), Ok(Ok(()))) => &drawn_on.read,
-      // the editor's window closes on this error. the buffer may still be on its way to being
-      // read, and is not drawn on again before then
+      // the buffer may still be on its way to being read, and is not drawn on again
       (waited, mapped) => {
         *canvas = None;
-        return Err(HandlerError::from_boxed(
-          format!("the frame could not be read back: {waited:?}, {mapped:?}").into(),
-        ));
+        stop(
+          stopped,
+          format_args!("the frame could not be read back: {waited:?}, {mapped:?}"),
+        );
+        return Ok(());
       }
     };
     let put = screen.show(window, drawn_on.row, &read.slice(..).get_mapped_range());
     read.unmap();
-    put?;
+    if let Err(error) = put {
+      stop(stopped, error);
+      return Ok(());
+    }
     *shown = Some(Frame {
       values,
       window,
@@ -657,6 +741,76 @@ impl Window {
       }
       _ => {}
     }
+  }
+}
+
+/// the window as baseview has it: every call into it stops at a panic.
+///
+/// a panic out of these would unwind into baseview's window procedure on windows, which is
+/// an `extern` function, and that ends the host's whole process. it is caught here, and
+/// from then on the window does nothing: its state may be half changed, so nothing looks
+/// at it again. wgpu itself panics when the device is lost while it is waited on
+/// (`Device::poll` in its `backend/wgpu_core.rs`), and any fault of the editor's own ends
+/// here as well
+pub(super) struct Guarded {
+  window: Window,
+  broken: Cell<bool>,
+}
+
+impl Guarded {
+  /// the window, if making it neither fails nor panics
+  pub(super) fn new(
+    make: impl FnOnce() -> Result<Window, HandlerError>,
+  ) -> Result<Self, HandlerError> {
+    let window = catch_unwind(AssertUnwindSafe(make))
+      .map_err(|panic| HandlerError::from_boxed(said(&*panic).into()))??;
+    Ok(Self {
+      window,
+      broken: Cell::new(false),
+    })
+  }
+
+  fn run<T>(&self, otherwise: T, work: impl FnOnce(&Window) -> T) -> T {
+    if self.broken.get() {
+      return otherwise;
+    }
+    // nothing of the window's is looked at again after a panic
+    catch_unwind(AssertUnwindSafe(|| work(&self.window))).unwrap_or_else(|panic| {
+      self.broken.set(true);
+      nice_error!("the editor has stopped at a panic: {}", said(&*panic));
+      otherwise
+    })
+  }
+}
+
+/// what a panic was raised with, where that was words
+fn said(panic: &(dyn std::any::Any + Send)) -> String {
+  let said = panic.downcast_ref::<&str>().copied();
+  said
+    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+    .unwrap_or("a panic with no message")
+    .to_owned()
+}
+
+impl WindowHandler for Guarded {
+  fn draw(&self) -> Result<(), HandlerError> {
+    self.run(Ok(()), Window::draw)
+  }
+
+  fn poll(&self) {
+    self.run((), Window::poll);
+  }
+
+  fn resized(&self, new_size: WindowSize) -> Result<(), HandlerError> {
+    self.run(Ok(()), |window| window.resized(new_size))
+  }
+
+  fn on_event(&self, event: baseview::Event) -> EventStatus {
+    self.run(EventStatus::Ignored, |window| window.on_event(event))
+  }
+
+  fn on_timer(&self, timer: &TimerHandle) {
+    self.run((), |window| window.on_timer(timer));
   }
 }
 

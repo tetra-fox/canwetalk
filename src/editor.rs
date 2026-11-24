@@ -21,7 +21,7 @@ use nice_plug::prelude::*;
 
 use self::interaction::{Dial, Key, SCALES};
 use self::panel::{HEIGHT, WIDTH};
-use self::window::Window;
+use self::window::{Guarded, Window};
 use crate::params::CanWeTalkParams;
 
 /// the knobs on the panel, left to right
@@ -252,8 +252,10 @@ impl nice_plug::editor::Editor for Editor {
     let (params, shared) = (Arc::clone(&self.params), Arc::clone(&self.shared));
     let window = baseview::Window::create_with_host(
       settings,
-      move |context| -> Result<Window, HandlerError> {
-        Window::new(context, gui_context, params, shared, from_host, top_level)
+      move |context| -> Result<Guarded, HandlerError> {
+        Guarded::new(|| Window::new(context, gui_context, params, shared, from_host, top_level))
+          // baseview hands on an error of the system's in place of this one
+          .inspect_err(|error| nice_error!("the editor could not open: {error}"))
       },
       host,
     )?;
