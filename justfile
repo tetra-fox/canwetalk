@@ -13,6 +13,10 @@ bundle-windows:
 editor *args="--backend dummy":
     cargo run --features standalone --bin canwetalk -- {{ args }}
 
+# open the example panel that is drawn with flat shapes alone, which needs no plugin
+flat:
+    cargo run -p controls-window --example flat
+
 test:
     cargo test
 

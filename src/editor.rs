@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use controls::furniture::{GripLook, MenuLook};
 use controls::interaction::Readout;
 use controls_window::nice_plug::{Bound, NotOurs};
-use controls_window::{Panel, Remembered};
+use controls_window::{Remembered, Settings};
 use nice_plug::prelude::*;
 
 use self::panel::{HEIGHT, READOUT_LETTERS, WIDTH, readout_shows};
@@ -50,7 +50,7 @@ impl Control {
 /// the editor of a plugin with these parameters. the size the user gives its window is kept
 /// with them
 pub(crate) fn editor(params: Arc<CanWeTalkParams>) -> Result<Editor, NotOurs> {
-  let panel = Panel {
+  let settings = Settings {
     title: "CanWeTalk".to_owned(),
     size: [WIDTH, HEIGHT],
     // the window is no smaller and no larger than this many times the panel's size
@@ -72,7 +72,7 @@ pub(crate) fn editor(params: Arc<CanWeTalkParams>) -> Result<Editor, NotOurs> {
     get: Box::new(move || get.editor_scale.load(Ordering::Relaxed)),
     set: Box::new(move |scale| set.editor_scale.store(scale, Ordering::Relaxed)),
   };
-  Editor::new(params, panel, bound.into(), remembered, move |gpu| {
+  Editor::new(params, settings, bound.into(), remembered, move |gpu| {
     panel::Panel::new(gpu, Arc::clone(&drawn))
   })
 }
