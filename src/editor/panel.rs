@@ -3,15 +3,16 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use controls::flat::Flat;
+use controls::interaction::{Edit, Target};
+use controls_window::{Gpu, Skin, View, wgpu};
 use nice_plug::prelude::Param;
 use skeuo::glam::{Mat4, Vec2, Vec3};
 use skeuo::parts;
-use skeuo::{Flat, Lamp, Light, Look, Material, Mesh, Object, Scene};
+use skeuo::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 
 use super::Control;
 use crate::params::CanWeTalkParams;
-use controls::furniture::{GripLook, MenuLook};
-use controls::interaction::{Edit, Interaction, Target};
 
 pub(super) const WIDTH: f32 = 500.0;
 pub(super) const HEIGHT: f32 = 250.0;
@@ -130,34 +131,6 @@ impl Drawn {
   }
 }
 
-/// the panel as it is drawn: the scene with what each of its objects is, in the same order,
-/// and flat over the scene the grip, and the menu if it is up
-pub(super) struct Picture {
-  pub scene: Scene,
-  targets: Vec<Option<Target>>,
-  /// what is drawn flat over the scene
-  pub over: Flat,
-  /// where the menu's corner is
-  menu: Option<Vec2>,
-  /// how many times the panel's size it is shown at
-  scale: f32,
-}
-
-impl Picture {
-  /// what is drawn at a point of the panel. the menu is in front of everything, and the
-  /// grip in front of everything on the panel
-  pub(super) fn target_at(&self, at: Vec2) -> Option<Target> {
-    (self.menu)
-      .and_then(|corner| MenuLook::default().target_at(corner.into(), at.into()))
-      .or_else(|| {
-        (GripLook::default())
-          .holds(at.into(), [WIDTH, HEIGHT], self.scale)
-          .then_some(Target::Grip)
-      })
-      .or_else(|| self.scene.pick(at).and_then(|object| self.targets[object]))
-  }
-}
-
 /// what a window shows, as meshes
 struct Lettering {
   /// the figures, the unit and the selection it was made from
@@ -227,8 +200,15 @@ impl Lettering {
   }
 }
 
-/// the meshes of the panel, each made once
+/// the panel as skeuo draws it: its meshes, each made once, and the scene of the frame last
+/// laid out
 pub(super) struct Panel {
+  params: Arc<CanWeTalkParams>,
+  renderer: Renderer,
+  /// the scene last laid out, which is what the pointer is on. none until the first is
+  scene: Option<Scene>,
+  /// what each of the scene's objects is, in the same order
+  targets: Vec<Option<Target>>,
   /// everything that never moves or changes
   fixed: Drawn,
   /// for each control its knob, the face let into it and the line painted on it
@@ -241,7 +221,7 @@ pub(super) struct Panel {
 }
 
 impl Panel {
-  pub(super) fn new() -> Self {
+  pub(super) fn new(gpu: &Gpu, params: Arc<CanWeTalkParams>) -> Self {
     let mut fixed = Drawn::default();
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material, target| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
@@ -399,6 +379,10 @@ impl Panel {
       [knob.body(), knob.cap(0.74), knob.line()].map(Arc::new)
     });
     Self {
+      params,
+      renderer: Renderer::new(gpu.device, gpu.format),
+      scene: None,
+      targets: Vec::new(),
       fixed,
       knobs,
       lamp: Arc::new(parts::led(LAMP_SIZE)),
@@ -414,20 +398,14 @@ impl Panel {
     }
   }
 
-  /// the panel with each control at its value, in the order of [`Control::ALL`], and
-  /// whatever is being typed or chosen
-  pub(super) fn picture(
-    &mut self,
-    params: &CanWeTalkParams,
-    values: [f32; 3],
-    interaction: &Interaction,
-    pixel: f32,
-    scale: f32,
-  ) -> Picture {
+  /// the scene of the panel with each control at its value, in the order of
+  /// [`Control::ALL`], and whatever is being typed, with what each of its objects is
+  fn scene(&mut self, values: &[f32], edit: Option<&Edit>) -> (Scene, Vec<Option<Target>>) {
+    let params = Arc::clone(&self.params);
     // the scene owns this frame's objects, so the ones that never move are copied into it
     let mut drawn = self.fixed.clone();
     for (index, control) in Control::ALL.into_iter().enumerate() {
-      let param = control.param(params);
+      let param = control.param(&params);
       let turn = values[index];
       let transform = parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
       let materials = [
@@ -447,7 +425,7 @@ impl Panel {
       for (mesh, material) in self.knobs[index].iter().zip(materials) {
         drawn.place(mesh, transform, material, Some(Target::Control(index)));
       }
-      let edit = interaction.edit().filter(|edit| edit.control == index);
+      let edit = edit.filter(|edit| edit.control == index);
       let value = param.normalized_value_to_string(turn, false);
       self.readout(&mut drawn, index, control, (&value, param.unit()), edit);
     }
@@ -459,39 +437,28 @@ impl Panel {
       parts::led_material(LAMP_COLOR, wet, LAMP_SIZE),
       None,
     );
-    let menu = interaction.menu();
-    let mut over = Flat::default();
-    GripLook::default().shapes(&mut over, [WIDTH, HEIGHT], scale);
-    if let Some(menu) = menu {
-      MenuLook::default().shapes(&mut over, menu, [WIDTH, HEIGHT], pixel);
-    }
-    Picture {
-      over,
-      scale,
-      menu: menu.map(|menu| MenuLook::default().corner(menu.at, [WIDTH, HEIGHT]).into()),
-      scene: Scene {
-        size: Vec2::new(WIDTH, HEIGHT),
-        heights: [-8.0, 48.0],
-        lean: LEAN,
-        // under a wide soft light
-        light: Light {
-          ambient: Vec3::splat(0.26),
-          softness: 3.0,
-          ..Light::default()
-        },
-        look: Look {
-          soften: 0.25,
-          ..Look::default()
-        },
-        objects: drawn.objects,
-        lamps: vec![Lamp {
-          at: LAMP.extend(STRIP_UP + LAMP_SIZE),
-          color: LAMP_COLOR * wet,
-          reach: LAMP_SIZE * 4.0,
-        }],
+    let scene = Scene {
+      size: Vec2::new(WIDTH, HEIGHT),
+      heights: [-8.0, 48.0],
+      lean: LEAN,
+      // under a wide soft light
+      light: Light {
+        ambient: Vec3::splat(0.26),
+        softness: 3.0,
+        ..Light::default()
       },
-      targets: drawn.targets,
-    }
+      look: Look {
+        soften: 0.25,
+        ..Look::default()
+      },
+      objects: drawn.objects,
+      lamps: vec![Lamp {
+        at: LAMP.extend(STRIP_UP + LAMP_SIZE),
+        color: LAMP_COLOR * wet,
+        reach: LAMP_SIZE * 4.0,
+      }],
+    };
+    (scene, drawn.targets)
   }
 
   /// a control's window: dark glass with its value and unit lit on it. while the value is
@@ -540,6 +507,30 @@ impl Panel {
       drawn.put(&self.caret, figures_at + Vec3::X * across, lit, target);
     }
     self.readouts[index] = Some(lettering);
+  }
+}
+
+impl Skin for Panel {
+  fn prepare(&mut self, gpu: &Gpu, view: &View, _over: &mut Flat) {
+    let (scene, targets) = self.scene(view.values, view.edit);
+    (self.renderer).prepare(gpu.device, gpu.queue, &scene, view.pixels);
+    (self.scene, self.targets) = (Some(scene), targets);
+  }
+
+  fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, place: [u32; 4]) {
+    let [x, y, width, height] = place.map(|side| side as f32);
+    let on = Place {
+      x,
+      y,
+      width,
+      height,
+    };
+    self.renderer.render(encoder, target, on, place);
+  }
+
+  fn target_at(&self, at: [f32; 2]) -> Option<Target> {
+    let object = self.scene.as_ref()?.pick(at.into())?;
+    self.targets[object]
   }
 }
 

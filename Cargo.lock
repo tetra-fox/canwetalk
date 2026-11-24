@@ -351,17 +351,11 @@ dependencies = [
 name = "canwetalk"
 version = "0.1.0"
 dependencies = [
- "arboard",
  "baseview",
  "controls",
- "keyboard-types",
+ "controls-window",
  "nice-plug",
- "pollster",
  "skeuo",
- "softbuffer",
- "wgpu",
- "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]
@@ -515,6 +509,24 @@ dependencies = [
 [[package]]
 name = "controls"
 version = "0.1.0"
+
+[[package]]
+name = "controls-window"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "baseview",
+ "bytemuck",
+ "controls",
+ "keyboard-types",
+ "naga",
+ "pollster",
+ "softbuffer",
+ "tracing",
+ "wgpu",
+ "windows-sys 0.61.2",
+ "x11rb",
+]
 
 [[package]]
 name = "core-foundation"

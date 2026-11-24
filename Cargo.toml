@@ -8,11 +8,13 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [workspace]
-members = ["crates/controls", "crates/skeuo", "xtask"]
+members = ["crates/controls", "crates/controls-window", "crates/skeuo", "xtask"]
 
 [workspace.dependencies]
 # the one place the crate of unstyled controls is named: everything else writes `controls`
 controls = { path = "crates/controls" }
+# and the one place its window is: everything else writes `controls_window`
+controls-window = { path = "crates/controls-window" }
 wgpu = { version = "27", default-features = false, features = ["std", "wgsl"] }
 
 [lib]
@@ -31,34 +33,11 @@ standalone = ["nice-plug/standalone"]
 [dependencies]
 # fades and filters decay into denormals on silence, which the wrapper flushes to zero
 nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
-# the editor's window, which it draws on and takes its input from
+# the editor's window, whose handles the wrapper is given
 baseview = "0.4.2"
-# the system's clipboard, which baseview only writes and only on macos. without its default
-# features it carries text alone
-arboard = { version = "3", default-features = false }
-# the keys baseview reports, in the version it reports them with
-keyboard-types = "0.8"
-# waits for the graphics adapter and device while the window opens
-pollster = "0.4"
 controls.workspace = true
+controls-window.workspace = true
 skeuo = { path = "crates/skeuo" }
-# the editor makes the device skeuo draws with, so it picks the backends. the gl
-# one is left out: it cannot build skeuo's shaders, which read a depth texture by texel
-wgpu = { workspace = true, features = ["dx12", "metal", "vulkan"] }
-
-# tells the window manager the shape of the editor's own window when no host has it, and
-# reads the display's scale before there is a window. baseview is on the same version
-[target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["resource_manager"] }
-
-# puts the editor's finished picture in its window as plain pixels
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen"] }
-
-# on windows that is one call, and softbuffer keeps a thread of its own going for it for as
-# long as the process lives, which a plugin that can be unloaded cannot have
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]

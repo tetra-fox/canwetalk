@@ -2,26 +2,24 @@
 //! turned and their values typed by what the pointer and the keys do on it
 
 mod panel;
-mod screen;
-mod window;
 
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::Ordering;
 
+use baseview::HandlerError;
 use baseview::dpi::LogicalSize;
-use baseview::{HandlerError, WindowSettings, WindowWaker};
+use controls::fit::{chosen, shaped};
+use controls::furniture::{GripLook, MenuLook};
+use controls::interaction::{Dial, Feel, Key, Readout};
+use controls_window::{Opening, Remembered, Shared, Tell};
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::NativeSize;
 use nice_plug::editor::{EditorHandle, HostMethods, SpawnedEditor};
 use nice_plug::prelude::*;
 
-use self::panel::{HEIGHT, WIDTH};
-use self::window::{Guarded, Window};
+use self::panel::{HEIGHT, Panel, READOUT_LETTERS, WIDTH, readout_shows};
 use crate::params::CanWeTalkParams;
-use controls::fit::{chosen, shaped};
-use controls::interaction::{Dial, Feel, Key};
 
 /// the knobs on the panel, left to right
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +46,26 @@ impl Control {
     match self {
       Self::Pitch | Self::Formant => Some(1.0),
       Self::Mix => None,
+    }
+  }
+
+  /// the control's parameter as the window has it: what the control does, and the
+  /// parameter's ways to the host
+  fn bound(self, params: &Arc<CanWeTalkParams>, gui: &Arc<GuiContext>) -> controls_window::Param {
+    let (value, begin, set, end) = (
+      (Arc::clone(params), Arc::clone(gui)),
+      (Arc::clone(params), Arc::clone(gui)),
+      (Arc::clone(params), Arc::clone(gui)),
+      (Arc::clone(params), Arc::clone(gui)),
+    );
+    controls_window::Param {
+      dial: self.dial(params),
+      value: Box::new(move || self.param(&value.0).unmodulated_normalized_value()),
+      begin: Box::new(move || (begin.1.param_setter()).begin_set_parameter(self.param(&begin.0))),
+      set: Box::new(move |to| {
+        (set.1.param_setter()).set_parameter_normalized(self.param(&set.0), to);
+      }),
+      end: Box::new(move || (end.1.param_setter()).end_set_parameter(self.param(&end.0))),
     }
   }
 
@@ -93,43 +111,9 @@ fn per_point(display_scale: f64) -> f64 {
   }
 }
 
-/// how many pixels the display has to a point, as well as that can be told with no window
-/// open on it. a host asks the editor's size before it gives it a window to be in, and on
-/// windows takes the answer in pixels: of the window the editor is to go in if there is
-/// one, and else of the system
-#[cfg(target_os = "windows")]
-fn display_scale(parent: Option<&ParentWindowHandle>) -> f64 {
-  use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
-
-  // SAFETY: neither call asks anything of what it is given. both answer for a program that
-  // is not aware of the display's scale with the 96 it is drawn at
-  let dpi = unsafe {
-    match parent {
-      Some(ParentWindowHandle::Win32Hwnd(window)) => GetDpiForWindow(window.get() as _),
-      _ => GetDpiForSystem(),
-    }
-  };
-  f64::from(dpi) / 96.0
-}
-
-/// how many pixels the display has to a point, as well as that can be told with no window
-/// open on it. a host asks the editor's size before it gives it a window to be in, and on
-/// x11 takes the answer in pixels. it is the setting baseview sizes its windows by
-#[cfg(target_os = "linux")]
-fn display_scale() -> f64 {
-  let dpi = x11rb::connect(None).ok().and_then(|(connection, _)| {
-    let settings = x11rb::resource_manager::new_from_default(&connection).ok()?;
-    settings.get_value::<u32>("Xft.dpi", "").ok().flatten()
-  });
-  // with no server to ask or nothing set, baseview has one pixel to a point as well
-  dpi.map_or(1.0, |dpi| f64::from(dpi) / 96.0)
-}
-
 /// the size the host is told the editor has, in the host's units
-fn reported(params: &CanWeTalkParams, shared: &Shared) -> NativeSize<u32> {
-  let scale = f64::from_bits(shared.display_scale.load(Ordering::Relaxed));
-  let size = sized(params.editor_scale.load(Ordering::Relaxed));
-  NativeSize::from_size(size.into(), scale)
+fn reported(remembered: &Remembered, shared: &Shared) -> NativeSize<u32> {
+  NativeSize::from_size(sized((remembered.get)()).into(), shared.display_scale())
 }
 
 /// the window's size in the screen's own points at so many times the panel's
@@ -139,44 +123,21 @@ const fn sized(scale: f32) -> LogicalSize<f32> {
 
 pub struct Editor {
   params: Arc<CanWeTalkParams>,
+  /// the scale the user chose for the window, which is kept with the plugin's state
+  remembered: Arc<Remembered>,
   shared: Arc<Shared>,
-}
-
-/// what the host's side of the editor tells the open window, from the host's thread to the
-/// window's
-enum ToWindow {
-  /// a key the host offered while a value is typed
-  Key(Key),
-  /// the window has been shown, or put in another window
-  Shown,
-  /// every parameter may have changed
-  State,
-}
-
-/// what the open window and the host's side of the editor both reach
-struct Shared {
-  /// the display's scale factor as the bits of an f64, for the size the host is told: the
-  /// last window's, and before any window what the system says
-  display_scale: AtomicU64,
-  /// whether a value is being typed, which is when keys the host offers are taken
-  typing: AtomicBool,
 }
 
 impl Editor {
   pub(crate) fn new(params: Arc<CanWeTalkParams>) -> Self {
-    #[cfg(target_os = "windows")]
-    let display_scale = display_scale(None);
-    #[cfg(target_os = "linux")]
-    let display_scale = display_scale();
-    // sizes go to and from the host in points there
-    #[cfg(target_os = "macos")]
-    let display_scale = 1.0_f64;
+    let (get, set) = (Arc::clone(&params), Arc::clone(&params));
     Self {
       params,
-      shared: Arc::new(Shared {
-        display_scale: AtomicU64::new(display_scale.to_bits()),
-        typing: AtomicBool::new(false),
+      remembered: Arc::new(Remembered {
+        get: Box::new(move || get.editor_scale.load(Ordering::Relaxed)),
+        set: Box::new(move |scale| set.editor_scale.store(scale, Ordering::Relaxed)),
       }),
+      shared: Arc::default(),
     }
   }
 }
@@ -197,54 +158,46 @@ impl nice_plug::editor::Editor for Editor {
         .with_callbacks(HostCallbacks(host.callbacks))
         .with_main_thread(MainThreadCaller(host.main_thread_caller))
     });
-    // baseview 0.4.2 makes a child window at the scale of the window it goes in, but in a
-    // host that is aware of each monitor's scale the older way it reports the scale the host
-    // gave, 1 if it gave none, and takes the first one the host gives later as a change:
-    // the window is made that many times larger again (`WindowSharedState::init` and
-    // `scale_factor`, and `WindowHandle::suggest_scale_factor`, in its `platform/win`). so
-    // it is given the parent's scale as the host's from the start
-    // TODO: pass the host's own on alone once baseview reports the scale it made the window at
-    #[cfg(target_os = "windows")]
-    let fallback_scale_factor = {
-      let scale = display_scale(parent.as_ref());
-      (self.shared.display_scale).store(scale.to_bits(), Ordering::Relaxed);
-      fallback_scale_factor.or(Some(scale))
-    };
-    // with no window to go in it is the window manager's to size, which is held to the sizes
-    // the panel is drawn at. in a host's window it takes the size the host gives it
-    let top_level = parent.is_none() && !wait_for_parent;
-    let settings = WindowSettings::new()
-      .with_title("CanWeTalk")
-      .with_size(sized(self.params.editor_scale.load(Ordering::Relaxed)))
-      .with_min_size::<LogicalSize<f32>>(top_level.then(|| sized(SCALES[0])))
-      .with_max_size::<LogicalSize<f32>>(top_level.then(|| sized(SCALES[1])))
-      .with_parent(parent.as_ref())
-      .with_wait_for_parent(wait_for_parent)
-      .with_fallback_scale_factor(fallback_scale_factor);
-    let (to_window, from_host) = mpsc::channel();
-    let (params, shared) = (Arc::clone(&self.params), Arc::clone(&self.shared));
-    let window = baseview::Window::create_with_host(
-      settings,
-      move |context| -> Result<Guarded, HandlerError> {
-        Guarded::new(|| Window::new(context, gui_context, params, shared, from_host, top_level))
-          // baseview hands on an error of the system's in place of this one
-          .inspect_err(|error| nice_error!("the editor could not open: {error}"))
+    let panel = controls_window::Panel {
+      title: "CanWeTalk".to_owned(),
+      size: [WIDTH, HEIGHT],
+      scales: SCALES,
+      readout: Readout {
+        room: READOUT_LETTERS,
+        shows: readout_shows,
       },
+      menu: MenuLook::default(),
+      grip: GripLook::default(),
+    };
+    let gui = Arc::new(gui_context);
+    let bound = Control::ALL.map(|control| control.bound(&self.params, &gui));
+    let opening = Opening {
+      parent: parent.as_ref(),
+      wait_for_parent,
+      host_scale: fallback_scale_factor,
       host,
+    };
+    let params = Arc::clone(&self.params);
+    let opened = controls_window::open(
+      panel,
+      bound.into(),
+      Arc::clone(&self.remembered),
+      Arc::clone(&self.shared),
+      opening,
+      move |gpu| Panel::new(gpu, params),
     )?;
     Ok(SpawnedEditor {
       handle: Handle {
-        waker: window.waker(),
-        params: Arc::clone(&self.params),
+        tell: opened.tell,
+        remembered: Arc::clone(&self.remembered),
         shared: Arc::clone(&self.shared),
-        to_window,
       },
-      window,
+      window: opened.window,
     })
   }
 
   fn size(&self) -> NativeSize<u32> {
-    reported(&self.params, &self.shared)
+    reported(&self.remembered, &self.shared)
   }
 
   fn resize_hint(&self) -> ResizeHint {
@@ -254,19 +207,9 @@ impl nice_plug::editor::Editor for Editor {
 
 /// the host's side of an open window
 pub struct Handle {
-  waker: WindowWaker,
-  params: Arc<CanWeTalkParams>,
+  tell: Tell,
+  remembered: Arc<Remembered>,
   shared: Arc<Shared>,
-  to_window: mpsc::Sender<ToWindow>,
-}
-
-impl Handle {
-  fn tell(&self, told: ToWindow) {
-    // a window that has closed has nothing left to tell
-    if self.to_window.send(told).is_ok() {
-      self.waker.request_poll();
-    }
-  }
 }
 
 impl EditorHandle for Handle {
@@ -283,14 +226,13 @@ impl EditorHandle for Handle {
     window: &baseview::Window,
   ) -> Result<(), baseview::Error> {
     let parented = window.set_parent(&parent);
-    self.tell(ToWindow::Shown);
+    self.tell.shown();
     parented
   }
 
   fn show(&self, window: &baseview::Window) -> Result<(), baseview::Error> {
     let shown = window.show();
-    // whatever was drawn before it could be seen is drawn again
-    self.tell(ToWindow::Shown);
+    self.tell.shown();
     shown
   }
 
@@ -305,11 +247,11 @@ impl EditorHandle for Handle {
   ) -> Result<(), baseview::Error> {
     // a size the host comes up with is the user's doing, at the host's own frame, and is
     // what the editor opens at from then on. the window's settling as it opens is not
-    let told = reported(&self.params, &self.shared);
+    let told = reported(&self.remembered, &self.shared);
     let (given, told) = ([new_size.width, new_size.height], [told.width, told.height]);
     let per_point = per_point(window.size().scale_factor);
     if let Some(scale) = chosen(given, told, per_point, [WIDTH, HEIGHT], SCALES) {
-      self.params.editor_scale.store(scale, Ordering::Relaxed);
+      (self.remembered.set)(scale);
     }
     window.resize(new_size)
   }
@@ -352,7 +294,7 @@ impl EditorHandle for Handle {
     is_down: bool,
     modifiers: Modifiers,
   ) -> bool {
-    if !self.shared.typing.load(Ordering::Relaxed) {
+    if !self.shared.typing() {
       return false;
     }
     let extend = modifiers.contains(Modifiers::SHIFT);
@@ -370,20 +312,18 @@ impl EditorHandle for Handle {
       _ => None,
     };
     if is_down && let Some(key) = key {
-      self.tell(ToWindow::Key(key));
+      self.tell.key(key);
     }
     // every key is kept from the host while a value is typed, and so is its release
     true
   }
 
   fn state_changed(&self) {
-    self.tell(ToWindow::State);
+    self.tell.state_changed();
   }
 
   fn param_value_changed(&self, _id: &str, _normalized_value: f32) {
-    // the window looks at the parameters itself, and at once when it is woken. it does so
-    // every so often anyway, so a report that never comes costs only that wait
-    self.waker.request_poll();
+    self.tell.param_changed();
   }
 
   fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
