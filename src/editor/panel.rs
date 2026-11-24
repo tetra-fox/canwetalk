@@ -6,34 +6,15 @@ use std::sync::Arc;
 use nice_plug::prelude::Param;
 use skeuo::glam::{Mat4, Vec2, Vec3};
 use skeuo::parts;
-use skeuo::{Color, Flat, Lamp, Light, Look, Material, Mesh, Object, Scene};
+use skeuo::{Flat, Lamp, Light, Look, Material, Mesh, Object, Scene};
 
 use super::Control;
 use crate::params::CanWeTalkParams;
-use controls::interaction::{Edit, Interaction, Item, Menu, Target};
+use controls::furniture::{GripLook, MenuLook};
+use controls::interaction::{Edit, Interaction, Target};
 
 pub(super) const WIDTH: f32 = 500.0;
 pub(super) const HEIGHT: f32 = 250.0;
-/// the part of a window so many pixels wide and tall that the panel is drawn on, as its left,
-/// top, width and height: the largest of the panel's own shape that fits, in the middle. a
-/// window of that shape is all of it, and one of any other has room left over at two sides
-pub(super) fn fitted(window: [u32; 2]) -> [u32; 4] {
-  let [wide, tall] = window.map(u64::from);
-  let (across, down) = (WIDTH as u64, HEIGHT as u64);
-  let (width, height) = if wide * down <= tall * across {
-    (wide, wide * down / across)
-  } else {
-    (tall * across / down, tall)
-  };
-  [(wide - width) / 2, (tall - height) / 2, width, height].map(|side| side as u32)
-}
-
-/// the point of the panel that is at a pixel of the window, with the panel drawn on `place`
-pub(super) fn point_at(place: [u32; 4], pixel: Vec2) -> Vec2 {
-  let [left, top, width, height] = place.map(|side| side as f32);
-  (pixel - Vec2::new(left, top)) / Vec2::new(width, height) * Vec2::new(WIDTH, HEIGHT)
-}
-
 /// how far a point slides across the picture for each unit of its height: seen a little
 /// from in front
 const LEAN: Vec2 = Vec2::new(0.0, -0.3);
@@ -68,130 +49,9 @@ const STRIP_UP: f32 = 1.5;
 const LAMP: Vec2 = Vec2::new(WIDTH - 34.0, STRIP_Y);
 const LAMP_SIZE: f32 = 9.0;
 const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.45, 0.08);
-/// the menu: a flat list drawn over the picture, with a row for each item
-const MENU_ROW: Vec2 = Vec2::new(84.0, 13.0);
-/// the edge around the rows, and the room between every two pairs of rows that a line
-/// across divides them in
-const MENU_EDGE: f32 = 3.0;
-const MENU_DIVIDE: f32 = 5.0;
-const MENU_SIZE: Vec2 = Vec2::new(
-  MENU_ROW.x + 2.0 * MENU_EDGE,
-  menu_row_down(Item::ALL.len() - 1) + MENU_ROW.y + 2.0 * MENU_EDGE,
-);
-/// the menu's letters: how tall, how wide their strokes, and how far in from a row's left
-const MENU_LETTERS: f32 = 6.0;
-const MENU_WEIGHT: f32 = 1.0;
-const MENU_INSET: f32 = 6.0;
-const MENU_GROUND: Color = [0.075, 0.075, 0.085, 0.97];
-const MENU_LINE: Color = [0.4, 0.4, 0.43, 1.0];
-const MENU_INK: Color = [0.9, 0.9, 0.9, 1.0];
-const MENU_MARK: Color = [0.95, 0.62, 0.14, 1.0];
-const MENU_MARKED_INK: Color = [0.06, 0.05, 0.04, 1.0];
-
-/// the grip the window is pulled larger and smaller by, drawn flat in its far corner: how
-/// wide and tall the corner it takes up is, and how wide its lines are. these are in the
-/// screen's points and not the panel's, so that it is the same size however large the
-/// window is
-const GRIP: f32 = 13.0;
-const GRIP_WEIGHT: f32 = 1.2;
-const GRIP_INK: Color = [1.0, 1.0, 1.0, 0.5];
-
-/// whether a point of a panel shown at so many times its size is on the grip
-fn on_grip(at: Vec2, scale: f32) -> bool {
-  let corner = Vec2::new(WIDTH, HEIGHT);
-  at.cmpgt(corner - GRIP / scale).all() && at.cmple(corner).all()
-}
-
-/// the grip: three lines slanting across the corner, each shorter than the last toward it
-fn grip_shapes(flat: &mut Flat, scale: f32) {
-  let corner = Vec2::new(WIDTH, HEIGHT);
-  for nth in 1..=3u8 {
-    // from the foot of the window to its side, the same way in from the corner on both
-    let inward = (f32::from(nth) * 3.5 + 0.5) / scale;
-    let clear = 1.5 / scale;
-    flat.line(
-      (corner - Vec2::new(inward, clear)).into(),
-      (corner - Vec2::new(clear, inward)).into(),
-      GRIP_WEIGHT / scale,
-      GRIP_INK,
-    );
-  }
-}
-
-/// how far down from the first row's top a row's top is
-const fn menu_row_down(row: usize) -> f32 {
-  row as f32 * MENU_ROW.y + (row / 2) as f32 * MENU_DIVIDE
-}
-
 /// whether a readout has a letter for something typed into it
 pub(super) fn readout_shows(letter: char) -> bool {
   letter == ' ' || parts::lettered(letter)
-}
-
-fn label(item: Item) -> &'static str {
-  match item {
-    Item::Edit => "EDIT VALUE",
-    Item::Reset => "RESET",
-    Item::Copy => "COPY VALUE",
-    Item::Paste => "PASTE VALUE",
-  }
-}
-
-/// where the menu's top left corner goes when it is asked for at a point: at the point, or
-/// with the menu to the other side of the point where it would run off the panel
-fn menu_corner(at: Vec2) -> Vec2 {
-  let fits = (at + MENU_SIZE).cmple(Vec2::new(WIDTH, HEIGHT));
-  Vec2::select(fits, at, at - MENU_SIZE)
-}
-
-/// what of a menu with its corner at a place is at a point, if any of it is
-fn menu_at(corner: Vec2, at: Vec2) -> Option<Target> {
-  let within = at - corner;
-  if !(within.cmpge(Vec2::ZERO).all() && within.cmplt(MENU_SIZE).all()) {
-    return None;
-  }
-  let row = (Item::ALL.into_iter().zip(0..)).find(|&(_, row)| {
-    let down = within.y - MENU_EDGE - menu_row_down(row);
-    (0.0..MENU_ROW.y).contains(&down) && (MENU_EDGE..MENU_EDGE + MENU_ROW.x).contains(&within.x)
-  });
-  Some(row.map_or(Target::Menu, |(item, _)| Target::Item(item)))
-}
-
-/// the menu as flat shapes, with lines as wide as `pixel`, which is one of the window's
-fn menu_shapes(flat: &mut Flat, menu: &Menu, pixel: f32) {
-  let corner = menu_corner(Vec2::from(menu.at));
-  flat.rect(corner.into(), (corner + MENU_SIZE).into(), MENU_LINE);
-  let line = Vec2::splat(pixel);
-  flat.rect(
-    (corner + line).into(),
-    (corner + MENU_SIZE - line).into(),
-    MENU_GROUND,
-  );
-  for (item, row) in Item::ALL.into_iter().zip(0..) {
-    let top_left = corner + Vec2::new(MENU_EDGE, MENU_EDGE + menu_row_down(row));
-    let marked = menu.hovered == Some(item);
-    if marked {
-      flat.rect(top_left.into(), (top_left + MENU_ROW).into(), MENU_MARK);
-    }
-    let letters = top_left + Vec2::new(MENU_INSET, (MENU_ROW.y - MENU_LETTERS) / 2.0);
-    flat.legend(
-      label(item),
-      // onto the middles of pixels, where the upright and level strokes are sharpest
-      (((letters / pixel).floor() + 0.5) * pixel).into(),
-      MENU_LETTERS,
-      MENU_WEIGHT,
-      if marked { MENU_MARKED_INK } else { MENU_INK },
-    );
-    // a line across the middle of the room before each pair of rows after the first
-    if row > 0 && row % 2 == 0 {
-      let across = top_left + Vec2::new(0.0, -MENU_DIVIDE / 2.0);
-      flat.rect(
-        across.into(),
-        (across + Vec2::new(MENU_ROW.x, pixel)).into(),
-        MENU_LINE,
-      );
-    }
-  }
 }
 
 impl Control {
@@ -288,8 +148,12 @@ impl Picture {
   /// grip in front of everything on the panel
   pub(super) fn target_at(&self, at: Vec2) -> Option<Target> {
     (self.menu)
-      .and_then(|corner| menu_at(corner, at))
-      .or_else(|| on_grip(at, self.scale).then_some(Target::Grip))
+      .and_then(|corner| MenuLook::default().target_at(corner.into(), at.into()))
+      .or_else(|| {
+        (GripLook::default())
+          .holds(at.into(), [WIDTH, HEIGHT], self.scale)
+          .then_some(Target::Grip)
+      })
       .or_else(|| self.scene.pick(at).and_then(|object| self.targets[object]))
   }
 }
@@ -597,14 +461,14 @@ impl Panel {
     );
     let menu = interaction.menu();
     let mut over = Flat::default();
-    grip_shapes(&mut over, scale);
+    GripLook::default().shapes(&mut over, [WIDTH, HEIGHT], scale);
     if let Some(menu) = menu {
-      menu_shapes(&mut over, menu, pixel);
+      MenuLook::default().shapes(&mut over, menu, [WIDTH, HEIGHT], pixel);
     }
     Picture {
       over,
       scale,
-      menu: menu.map(|menu| menu_corner(Vec2::from(menu.at))),
+      menu: menu.map(|menu| MenuLook::default().corner(menu.at, [WIDTH, HEIGHT]).into()),
       scene: Scene {
         size: Vec2::new(WIDTH, HEIGHT),
         heights: [-8.0, 48.0],
@@ -682,128 +546,6 @@ impl Panel {
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn the_menu_opens_at_the_pointer_and_turns_from_the_panels_edges() {
-    let panel = Vec2::new(WIDTH, HEIGHT);
-    // on open panel, and over a knob or a readout all the same, its corner is the pointer
-    for at in [
-      Vec2::new(150.0, 150.0),
-      Vec2::new(Control::Pitch.x(), KNOB_Y),
-      Vec2::new(Control::Mix.x(), WINDOW_Y - 20.0),
-      Vec2::ZERO,
-      panel - MENU_SIZE,
-    ] {
-      assert_eq!(menu_corner(at), at);
-    }
-    // where it would run off the right or the foot it lies to the other side of the pointer
-    let right = Vec2::new(WIDTH - 10.0, 100.0);
-    assert_eq!(menu_corner(right), right - Vec2::X * MENU_SIZE.x);
-    let foot = Vec2::new(100.0, HEIGHT - 10.0);
-    assert_eq!(menu_corner(foot), foot - Vec2::Y * MENU_SIZE.y);
-    assert_eq!(menu_corner(panel), panel - MENU_SIZE);
-    // and wherever it is asked for all of it is on the panel
-    for x in 0..=WIDTH as u16 {
-      for y in 0..=HEIGHT as u16 {
-        let corner = menu_corner(Vec2::new(f32::from(x), f32::from(y)));
-        assert!(
-          corner.cmpge(Vec2::ZERO).all() && (corner + MENU_SIZE).cmple(panel).all(),
-          "asked for at {x} {y}, the menu at {corner} is off the panel"
-        );
-      }
-    }
-  }
-
-  #[test]
-  fn a_point_of_the_menu_is_a_row_the_plate_or_not_the_menu() {
-    let corner = Vec2::new(100.0, 50.0);
-    let row = |row: usize| corner + Vec2::new(MENU_SIZE.x / 2.0, MENU_EDGE + menu_row_down(row));
-    for (item, at) in Item::ALL.into_iter().zip(0..) {
-      // from its first line of points to its last
-      assert_eq!(menu_at(corner, row(at)), Some(Target::Item(item)));
-      let last = row(at) + Vec2::Y * (MENU_ROW.y - 0.01);
-      assert_eq!(menu_at(corner, last), Some(Target::Item(item)));
-    }
-    // the edge around the rows and the room between the pairs are the menu and no row
-    assert_eq!(menu_at(corner, corner + 1.0), Some(Target::Menu));
-    assert_eq!(menu_at(corner, row(2) - Vec2::Y * 2.0), Some(Target::Menu));
-    assert_eq!(
-      menu_at(corner, row(0) - Vec2::X * (MENU_ROW.x / 2.0 + 1.0)),
-      Some(Target::Menu)
-    );
-    // and past its sides is not the menu
-    assert_eq!(menu_at(corner, corner - 0.5), None);
-    assert_eq!(menu_at(corner, corner + MENU_SIZE), None);
-    assert_eq!(
-      menu_at(corner, corner + MENU_SIZE - 0.01),
-      Some(Target::Menu)
-    );
-  }
-
-  #[test]
-  fn the_grip_is_the_windows_far_corner_and_as_large_on_the_screen_at_any_size() {
-    let corner = Vec2::new(WIDTH, HEIGHT);
-    for scale in [0.75, 1.0, 3.0] {
-      // so many of the screen's points in from the corner, whatever that is of the panel's
-      let inside = corner - (GRIP - 0.5) / scale;
-      let outside = corner - (GRIP + 0.5) / scale;
-      assert!(on_grip(inside, scale) && on_grip(corner, scale), "{scale}");
-      assert!(!on_grip(outside, scale), "{scale}");
-      assert!(!on_grip(Vec2::new(inside.x, outside.y), scale), "{scale}");
-      assert!(!on_grip(Vec2::new(outside.x, inside.y), scale), "{scale}");
-    }
-  }
-
-  #[test]
-  fn the_panel_is_fitted_into_a_window_of_any_shape_at_its_own() {
-    // a window of the panel's shape is all the panel's
-    assert_eq!(fitted([750, 375]), [0, 0, 750, 375]);
-    assert_eq!(fitted([500, 250]), [0, 0, 500, 250]);
-    // one too wide has the room left over at its sides, and one too tall above and below
-    assert_eq!(fitted([1100, 375]), [175, 0, 750, 375]);
-    assert_eq!(fitted([750, 640]), [0, 132, 750, 375]);
-    assert_eq!(fitted([1908, 1077]), [0, 61, 1908, 954]);
-    // odd sizes round down, and what is left over is never more than a pixel off the middle
-    assert_eq!(fitted([751, 375]), [0, 0, 750, 375]);
-    assert_eq!(fitted([750, 376]), [0, 0, 750, 375]);
-    assert_eq!(fitted([3, 100]), [0, 49, 3, 1]);
-    for window in [[640, 480], [333, 777], [2250, 1125], [1, 1], [0, 0]] {
-      let [left, top, width, height] = fitted(window);
-      assert!(
-        left + width <= window[0] && top + height <= window[1],
-        "{window:?}"
-      );
-      // the panel's shape, to within the pixel that rounding takes
-      assert!(width.abs_diff(height * 2) <= 1, "{window:?}");
-      // and as large as fits: one of the two reaches from side to side
-      assert!(width == window[0] || height == window[1], "{window:?}");
-    }
-  }
-
-  #[test]
-  fn the_pointer_is_on_the_panel_where_the_panel_is_drawn() {
-    // a wide window with the panel in its middle at one and a half pixels to a point
-    let place = fitted([1100, 375]);
-    assert_eq!(point_at(place, Vec2::new(175.0, 0.0)), Vec2::ZERO);
-    assert_eq!(
-      point_at(place, Vec2::new(925.0, 375.0)),
-      Vec2::new(WIDTH, HEIGHT)
-    );
-    assert_eq!(
-      point_at(place, Vec2::new(550.0, 187.5)),
-      Vec2::new(250.0, 125.0)
-    );
-    // on the room left over it is off the panel, where nothing is picked
-    assert!(point_at(place, Vec2::new(100.0, 100.0)).x < 0.0);
-    assert!(point_at(place, Vec2::new(1000.0, 100.0)).x > WIDTH);
-    // and in a tall one
-    let place = fitted([750, 640]);
-    assert_eq!(
-      point_at(place, Vec2::new(375.0, 132.0)),
-      Vec2::new(250.0, 0.0)
-    );
-    assert!(point_at(place, Vec2::new(375.0, 100.0)).y < 0.0);
-  }
 
   #[test]
   fn the_longest_value_fits_its_window() {

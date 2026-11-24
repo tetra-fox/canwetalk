@@ -20,6 +20,7 @@ use nice_plug::prelude::*;
 use self::panel::{HEIGHT, WIDTH};
 use self::window::{Guarded, Window};
 use crate::params::CanWeTalkParams;
+use controls::fit::{chosen, shaped};
 use controls::interaction::{Dial, Key, SCALES};
 
 /// the knobs on the panel, left to right
@@ -78,44 +79,14 @@ const RESIZE: ResizeHint = ResizeHint {
   ..ResizeHint::RESIZABLE.with_min_max_logical_size(Some(sized(SCALES[0])), Some(sized(SCALES[1])))
 };
 
-/// the size of the panel's shape nearest one a host asks about, all in the same units: as
-/// wide as asked if the width is what has changed more from the size the window has, and
-/// else as tall as asked, and neither smaller than the least nor larger than the most.
-///
-/// nice-plug's own [`ResizeHint::adjust_size`] always takes the height and gives the width
-/// from it, under which a window pulled by its side alone does not move
-fn shaped(
-  asked: NativeSize<u32>,
-  current: NativeSize<u32>,
-  [least, most]: [NativeSize<u32>; 2],
-) -> NativeSize<u32> {
-  let (across, down) = (WIDTH as u64, HEIGHT as u64);
-  // each change as a part of the panel's own side, cross multiplied
-  let wider = u64::from(asked.width.abs_diff(current.width)) * down;
-  let taller = u64::from(asked.height.abs_diff(current.height)) * across;
-  let width = if wider >= taller {
-    asked.width
+/// how many of the host's units go to a point. sizes pass to and from the host in pixels,
+/// apart from on macos, where they are in points
+fn per_point(display_scale: f64) -> f64 {
+  if cfg!(target_os = "macos") {
+    1.0
   } else {
-    (u64::from(asked.height) * across / down) as u32
-  };
-  let width = width.clamp(least.width, most.width);
-  NativeSize::new(width, (u64::from(width) * down / across) as u32)
-}
-
-/// the scale a size from the host is the user's choice of, with the size in the host's units
-/// at so many pixels to a point. none if it is the size the host was last told, which is
-/// the host saying it back, or one the panel is not drawn as small or as large as
-fn chosen(given: NativeSize<u32>, told: NativeSize<u32>, display_scale: f64) -> Option<f32> {
-  if given == told {
-    return None;
+    display_scale
   }
-  let points = given.cast::<f64>().to_logical(display_scale);
-  let scale = (points.width / f64::from(WIDTH)).min(points.height / f64::from(HEIGHT)) as f32;
-  // the least and the most in whole pixels come out a little to either side of themselves
-  let near = 0.01;
-  (SCALES[0] - near..=SCALES[1] + near)
-    .contains(&scale)
-    .then(|| scale.clamp(SCALES[0], SCALES[1]))
 }
 
 /// how many pixels the display has to a point, as well as that can be told with no window
@@ -331,7 +302,9 @@ impl EditorHandle for Handle {
     // a size the host comes up with is the user's doing, at the host's own frame, and is
     // what the editor opens at from then on. the window's settling as it opens is not
     let told = reported(&self.params, &self.shared);
-    if let Some(scale) = chosen(new_size, told, window.size().scale_factor) {
+    let (given, told) = ([new_size.width, new_size.height], [told.width, told.height]);
+    let per_point = per_point(window.size().scale_factor);
+    if let Some(scale) = chosen(given, told, per_point, [WIDTH, HEIGHT], SCALES) {
       self.params.editor_scale.store(scale, Ordering::Relaxed);
     }
     window.resize(new_size)
@@ -344,12 +317,17 @@ impl EditorHandle for Handle {
   ) -> Option<NativeSize<u32>> {
     let now = window.size();
     let current = NativeSize::from_logical_or_physical(now.logical, now.physical);
-    let limit = |scale: f32| NativeSize::from_size(sized(scale).into(), now.scale_factor);
-    Some(shaped(
-      new_size,
-      current,
+    let limit = |scale: f32| {
+      let limit = NativeSize::<u32>::from_size(sized(scale).into(), now.scale_factor);
+      [limit.width, limit.height]
+    };
+    let [width, height] = shaped(
+      [new_size.width, new_size.height],
+      [current.width, current.height],
       [limit(SCALES[0]), limit(SCALES[1])],
-    ))
+      [WIDTH, HEIGHT],
+    );
+    Some(NativeSize::new(width, height))
   }
 
   fn host_main_thread_callback(&self, window: &baseview::Window) {
@@ -429,77 +407,5 @@ struct MainThreadCaller(Box<dyn nice_plug::editor::HostMainThreadCaller>);
 impl baseview::host::HostMainThreadCaller for MainThreadCaller {
   fn call_main_thread(&mut self) {
     self.0.call_main_thread();
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  /// the size the host is told for a scale, at so many pixels to a point
-  fn told(scale: f32, display_scale: f64) -> NativeSize<u32> {
-    NativeSize::from_size(sized(scale).into(), display_scale)
-  }
-
-  #[test]
-  fn only_a_size_of_the_hosts_own_that_the_panel_can_have_is_the_users_choice() {
-    for display_scale in [1.0, 1.25, 1.5, 2.0] {
-      for scale in [SCALES[0], 1.0, 1.1, 2.0, SCALES[1]] {
-        // the host saying back what it was told changes nothing, whatever that rounds to
-        let same = told(scale, display_scale);
-        assert_eq!(chosen(same, same, display_scale), None);
-        // any other size the panel is drawn at is taken, as the scale it is
-        let other = chosen(same, told(1.3, display_scale), display_scale).expect("a choice");
-        assert!((other - scale).abs() < 0.005, "{other} for {scale}");
-        assert!((SCALES[0]..=SCALES[1]).contains(&other));
-      }
-      // a view smaller or larger than the panel is ever drawn is not one to remember
-      let was = told(1.0, display_scale);
-      assert_eq!(chosen(told(0.6, display_scale), was, display_scale), None);
-      assert_eq!(chosen(told(3.5, display_scale), was, display_scale), None);
-    }
-    // a size that is not the panel's shape is the scale of the panel that fits in it
-    let wide = NativeSize::from_size(LogicalSize::new(900.0, 250.0).into(), 1.5);
-    assert_eq!(chosen(wide, told(2.0, 1.5), 1.5), Some(1.0));
-  }
-
-  #[test]
-  fn the_size_live_gives_a_view_it_sized_for_one_pixel_to_a_point_is_not_remembered() {
-    // live made its window from a size reported at one pixel to a point and gives it to the
-    // view, whose display has one and a half: two thirds of the panel, smaller than it goes
-    let given = told(1.0, 1.0);
-    assert_eq!(chosen(given, told(1.0, 1.5), 1.5), None);
-  }
-
-  /// the sizes a host may ask about at one and a half pixels to a point, from the window as
-  /// it opens
-  fn asked(width: u32, height: u32) -> (u32, u32) {
-    let limits = [NativeSize::new(563, 281), NativeSize::new(2250, 1125)];
-    let shaped = shaped(
-      NativeSize::new(width, height),
-      NativeSize::new(750, 375),
-      limits,
-    );
-    (shaped.width, shaped.height)
-  }
-
-  #[test]
-  fn a_size_a_host_asks_about_is_answered_with_the_panels_shape() {
-    // the shape itself is left alone
-    assert_eq!(asked(750, 375), (750, 375));
-    assert_eq!(asked(1000, 500), (1000, 500));
-    // pulled by its side the window follows the width, and by its foot the height
-    assert_eq!(asked(900, 375), (900, 450));
-    assert_eq!(asked(600, 375), (600, 300));
-    assert_eq!(asked(750, 450), (900, 450));
-    assert_eq!(asked(750, 300), (600, 300));
-    // by its corner, whichever side has gone further for its length
-    assert_eq!(asked(900, 500), (1000, 500));
-    assert_eq!(asked(1000, 400), (1000, 500));
-    // and no smaller or larger than the window is let be
-    assert_eq!(asked(100, 375), (563, 281));
-    assert_eq!(asked(750, 50), (563, 281));
-    assert_eq!(asked(5000, 375), (2250, 1125));
-    assert_eq!(asked(750, 3000), (2250, 1125));
   }
 }

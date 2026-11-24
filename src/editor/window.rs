@@ -13,15 +13,14 @@ use baseview::{
   EventStatus, HandlerError, MouseButton, MouseEvent, ScrollDelta, TimerHandle, WindowContext,
   WindowEvent, WindowHandler, WindowSize,
 };
+use controls::fit::{fitted, point_at};
 use controls::sent::Sent;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::*;
 use skeuo::glam::Vec2;
 use skeuo::{FlatRenderer, Place, Renderer};
 
-use super::panel::{
-  HEIGHT, Panel, Picture, READOUT_LETTERS, WIDTH, fitted, point_at, readout_shows,
-};
+use super::panel::{HEIGHT, Panel, Picture, READOUT_LETTERS, WIDTH, readout_shows};
 use super::screen::Screen;
 use super::{Control, Shared, ToWindow};
 use crate::params::CanWeTalkParams;
@@ -210,7 +209,7 @@ fn due(
 impl State {
   /// how many times its own size the panel is drawn at
   fn scale(&self) -> f32 {
-    let [_, _, width, _] = fitted(self.window);
+    let [_, _, width, _] = fitted(self.window, [WIDTH, HEIGHT]);
     (f64::from(width) / self.display_scale) as f32 / WIDTH
   }
 
@@ -297,7 +296,7 @@ impl Window {
     let interaction = Interaction::new(dials, [WIDTH, HEIGHT], READOUT_LETTERS, readout_shows);
     let mut panel = Panel::new();
     let values = Control::ALL.map(|control| control.param(&params).unmodulated_normalized_value());
-    let [_, _, width, _] = fitted(window);
+    let [_, _, width, _] = fitted(window, [WIDTH, HEIGHT]);
     let pixel = WIDTH / width as f32;
     let scale = (f64::from(width) / size.scale_factor) as f32 / WIDTH;
     let picture = panel.picture(&params, values, &interaction, pixel, scale);
@@ -522,7 +521,7 @@ impl WindowHandler for Window {
     };
 
     // the panel goes on as much of the window as has its shape
-    let [left, top, width, height] = fitted(window);
+    let [left, top, width, height] = fitted(window, [WIDTH, HEIGHT]);
     let pixel = WIDTH / width as f32;
     *picture = panel.picture(&self.params, values, interaction, pixel, scale);
     renderer.prepare(device, queue, &picture.scene, [width, height]);
@@ -700,7 +699,8 @@ impl Window {
         modifiers,
       } => self.handle(|state| {
         let pixel = Vec2::new(position.x as f32, position.y as f32);
-        let at = point_at(fitted(state.window), pixel);
+        let place = fitted(state.window, [WIDTH, HEIGHT]);
+        let at = Vec2::from(point_at(place, pixel.into(), [WIDTH, HEIGHT]));
         state.pointer = at;
         state.on_window = pixel / state.display_scale as f32;
         Event::Move {
