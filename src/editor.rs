@@ -55,14 +55,16 @@ pub(crate) fn editor(params: Arc<CanWeTalkParams>) -> Result<Editor, NotOurs> {
     size: [WIDTH, HEIGHT],
     // the window is no smaller and no larger than this many times the panel's size
     scales: [0.75, 3.0],
-    readout: Readout {
-      room: READOUT_LETTERS,
-      shows: readout_shows,
-    },
     menu: MenuLook::default(),
     grip: GripLook::default(),
   };
-  let bound = Control::ALL.map(|control| Bound::new(control.param(&params), control.step()));
+  // every readout is the same window in the panel, with room for as many letters
+  let readout = Readout {
+    room: READOUT_LETTERS,
+    shows: readout_shows,
+  };
+  let bound =
+    Control::ALL.map(|control| Bound::new(control.param(&params), control.step(), readout));
   let (get, set) = (Arc::clone(&params), Arc::clone(&params));
   let remembered = Remembered {
     get: Box::new(move || get.editor_scale.load(Ordering::Relaxed)),
