@@ -76,6 +76,8 @@ struct State {
   sent: Sent,
   /// where the pointer last was, in the panel's points
   pointer: Vec2,
+  /// and the same in the window's own points
+  on_window: Vec2,
   /// the display's scale factor, which the window's size in pixels is that much more than
   /// its size in the screen's points
   display_scale: f64,
@@ -254,6 +256,7 @@ impl Window {
         interaction,
         sent: Sent::new(values),
         pointer: Vec2::ZERO,
+        on_window: Vec2::ZERO,
         display_scale: size.scale_factor,
         unfitted: false,
         shown: None,
@@ -620,13 +623,13 @@ impl Window {
         position,
         modifiers,
       } => self.handle(|state| {
-        let at = point_at(
-          fitted(state.window()),
-          Vec2::new(position.x as f32, position.y as f32),
-        );
+        let pixel = Vec2::new(position.x as f32, position.y as f32);
+        let at = point_at(fitted(state.window()), pixel);
         state.pointer = at;
+        state.on_window = pixel / state.display_scale as f32;
         Event::Move {
           at: at.into(),
+          window: state.on_window.into(),
           // only the menu shows what the pointer is over
           over: (state.interaction.menu()).and_then(|_| state.picture.target_at(at)),
           fine: fine(modifiers),
@@ -639,6 +642,7 @@ impl Window {
         self.handle(|state| Event::Press {
           button,
           at: state.pointer.into(),
+          window: state.on_window.into(),
           over: state.picture.target_at(state.pointer),
           reset: modifiers.ctrl() || modifiers.meta(),
         });

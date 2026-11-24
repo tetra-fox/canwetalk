@@ -151,17 +151,21 @@ pub(super) enum Key {
   Paste,
 }
 
-/// places are in the panel's points, and `over` is what is drawn there
+/// places are in the panel's points apart from `window`, and `over` is what is drawn there
 #[derive(Clone, Debug)]
 pub(super) enum Event {
   Move {
     at: Point,
+    /// the same place in the window's own points from its top left corner, which stays put
+    /// when the window changes size
+    window: Point,
     over: Option<Target>,
     fine: bool,
   },
   Press {
     button: Button,
     at: Point,
+    window: Point,
     over: Option<Target>,
     /// whether the key that makes a click a reset is held
     reset: bool,
@@ -305,11 +309,10 @@ enum State {
     fine: bool,
     begun: bool,
   },
-  /// the left button went down on the grip. `hold` is how far the window's far corner was
-  /// from the pointer then, across and down in the screen's own points, `from` the scale
-  /// the window had, and `scale` the one last asked for
+  /// the left button went down on the grip. `grab` is where the pointer was then in the
+  /// window's own points, `from` the scale the window had, and `scale` the one last asked for
   Resize {
-    hold: Point,
+    grab: Point,
     from: f32,
     scale: f32,
   },
@@ -382,16 +385,22 @@ impl Interaction {
   pub(super) fn handle(&mut self, event: Event, moment: Moment) -> Vec<Action> {
     let mut actions = Vec::new();
     match event {
-      Event::Move { at, over, fine } => self.moved(at, over, fine, moment, &mut actions),
+      Event::Move {
+        at,
+        window,
+        over,
+        fine,
+      } => self.moved(at, window, over, fine, &mut actions),
       Event::Press {
         button,
         at,
+        window,
         over,
         reset,
       } => {
         self.rest_wheel(&mut actions);
         match button {
-          Button::Left => self.pressed_left(at, over, reset, moment, &mut actions),
+          Button::Left => self.pressed_left(at, window, over, reset, moment, &mut actions),
           Button::Right => self.pressed_right(at, over, &mut actions),
         }
       }
@@ -439,9 +448,9 @@ impl Interaction {
   fn moved(
     &mut self,
     at: Point,
+    window: Point,
     over: Option<Target>,
     now_fine: bool,
-    moment: Moment,
     actions: &mut Vec<Action>,
   ) {
     match &mut self.state {
@@ -480,10 +489,12 @@ impl Interaction {
         }
         actions.push(Action::Set(*control, shown));
       }
-      State::Resize { hold, from, scale } => {
-        // the corner goes where the pointer takes it across or down, whichever way the
-        // pointer has gone further since it took hold, and the panel's shape gives the other
-        let reach = |axis: usize| (at[axis] * moment.scale + hold[axis]) / self.size[axis];
+      State::Resize { grab, from, scale } => {
+        // the corner goes as far as the pointer has gone since it took hold, across or down,
+        // whichever is further, and the panel's shape gives the other. it is measured in the
+        // window's own points and not the panel's, which shift as the window changes size,
+        // so a window that has caught up with the pointer asks for no other size
+        let reach = |axis: usize| *from + (window[axis] - grab[axis]) / self.size[axis];
         let (across, down) = (reach(0), reach(1));
         let further = if (across - *from).abs() >= (down - *from).abs() {
           across
@@ -513,6 +524,7 @@ impl Interaction {
   fn pressed_left(
     &mut self,
     at: Point,
+    window: Point,
     over: Option<Target>,
     reset: bool,
     moment: Moment,
@@ -585,7 +597,7 @@ impl Interaction {
       Some(Target::Grip) if double => actions.push(Action::Scale(1.0)),
       Some(Target::Grip) => {
         self.state = State::Resize {
-          hold: [0, 1].map(|axis| (self.size[axis] - at[axis]) * scale),
+          grab: window,
           from: scale,
           scale,
         };
@@ -873,27 +885,38 @@ mod tests {
       self.after(Duration::from_millis(10), event)
     }
 
+    /// a place on the panel, and where that is in the window at the bench's scale
+    fn place(&self, at: Point) -> (Point, Point) {
+      (at, at.map(|across| across * self.scale))
+    }
+
     fn press(&mut self, over: Option<Target>, y: f32) -> Vec<Action> {
+      let (at, window) = self.place([100.0, y]);
       self.send(Event::Press {
         button: Button::Left,
-        at: [100.0, y],
+        at,
+        window,
         over,
         reset: false,
       })
     }
 
     fn right(&mut self, over: Option<Target>) -> Vec<Action> {
+      let (at, window) = self.place([100.0, 100.0]);
       self.send(Event::Press {
         button: Button::Right,
-        at: [100.0, 100.0],
+        at,
+        window,
         over,
         reset: false,
       })
     }
 
     fn drag(&mut self, y: f32, fine: bool) -> Vec<Action> {
+      let (at, window) = self.place([100.0, y]);
       self.send(Event::Move {
-        at: [100.0, y],
+        at,
+        window,
         over: None,
         fine,
       })
@@ -1099,21 +1122,24 @@ mod tests {
   /// the grip, in the far corner of the bench's panel, ten points in from both edges
   const GRIP: Point = [SIZE[0] - 10.0, SIZE[1] - 10.0];
 
+  /// the pointer moved to a place in the window
   fn pull(bench: &mut Bench, to: Point) -> Vec<Action> {
-    // the window's points are the panel's times its scale, so the same place on the screen
-    // is fewer of the panel's points the larger the window has become
+    // the same place in the window is fewer of the panel's points the larger it has become
     let at = to.map(|across| across / bench.scale);
     bench.send(Event::Move {
       at,
+      window: to,
       over: None,
       fine: false,
     })
   }
 
   fn grab(bench: &mut Bench) -> Vec<Action> {
+    let (at, window) = bench.place(GRIP);
     bench.send(Event::Press {
       button: Button::Left,
-      at: GRIP,
+      at,
+      window,
       over: Some(Target::Grip),
       reset: false,
     })
@@ -1161,18 +1187,39 @@ mod tests {
   }
 
   #[test]
+  fn a_window_that_has_followed_the_pointer_asks_for_no_other_size() {
+    let mut bench = Bench::new();
+    grab(&mut bench);
+    let to = [GRIP[0] + 51.0, GRIP[1]];
+    assert_eq!(pull(&mut bench, to), [Action::Scale(1.102)]);
+    // the window becomes about that size, but the panel fitted into its whole pixels is a
+    // hair wider or narrower, so the same place in the window is a little way off on the
+    // panel. the host then moves the pointer to where it already is
+    for (scale, off) in [(1.1019999, 0.4), (1.1020001, -0.4), (1.102, 0.0)] {
+      bench.scale = scale;
+      let moved = Event::Move {
+        at: [to[0] / scale + off, to[1] / scale],
+        window: to,
+        over: None,
+        fine: false,
+      };
+      assert_eq!(bench.send(moved), [], "at {scale}");
+    }
+  }
+
+  #[test]
   fn the_grip_held_anywhere_on_it_does_not_jump_the_window() {
     // at a window half as large again, held three points off the grip's middle
     let mut bench = Bench::new();
     bench.scale = 1.5;
-    let held = [GRIP[0] + 3.0, GRIP[1] - 3.0];
+    let (held, on_screen) = bench.place([GRIP[0] + 3.0, GRIP[1] - 3.0]);
     bench.send(Event::Press {
       button: Button::Left,
       at: held,
+      window: on_screen,
       over: Some(Target::Grip),
       reset: false,
     });
-    let on_screen = held.map(|across| across * 1.5);
     assert_eq!(pull(&mut bench, on_screen), []);
     assert_eq!(
       pull(&mut bench, [on_screen[0] + 25.0, on_screen[1]]),
@@ -1255,6 +1302,7 @@ mod tests {
     let actions = bench.send(Event::Press {
       button: Button::Left,
       at: [100.0, 100.0],
+      window: [100.0, 100.0],
       over: Some(Target::Knob(PITCH)),
       reset: true,
     });
@@ -1416,12 +1464,14 @@ mod tests {
     let press = Event::Press {
       button: Button::Left,
       at: [100.0, 100.0],
+      window: [100.0, 100.0],
       over: Some(Target::Knob(PITCH)),
       reset: false,
     };
     interaction.handle(press, moment);
     let moved = Event::Move {
       at: [100.0, 80.0],
+      window: [100.0, 80.0],
       over: None,
       fine: false,
     };
@@ -1713,6 +1763,7 @@ mod tests {
     // the row under the pointer is marked, once for each change
     let over = |over| Event::Move {
       at: [0.0, 0.0],
+      window: [0.0, 0.0],
       over,
       fine: false,
     };
