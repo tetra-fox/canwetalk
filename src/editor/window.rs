@@ -196,12 +196,16 @@ impl Window {
     #[cfg(not(target_os = "linux"))]
     let _ = top_level;
 
-    let instance = wgpu::Instance::default();
-    let surface = instance.create_surface(context.platform_handle())?;
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-      compatible_surface: Some(&surface),
-      ..Default::default()
-    }))?;
+    // direct3d 12 is started only where nothing else can draw: under wine with nvidia's
+    // driver, dropping an instance that started it makes each later swapchain that has shown
+    // a frame take 22 seconds or more to destroy, on the host's thread
+    let others = wgpu::Backends::VULKAN | wgpu::Backends::METAL;
+    let (surface, adapter) = match drawn_with(&context, others) {
+      Ok(found) => found,
+      Err(first) => drawn_with(&context, wgpu::Backends::DX12).map_err(|second| {
+        HandlerError::from_boxed(format!("{first}, and with direct3d 12: {second}").into())
+      })?,
+    };
     // no more is asked of the adapter than the renderer uses, apart from textures as large as
     // the adapter has, for the window's own size
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -658,6 +662,23 @@ impl Window {
       _ => {}
     }
   }
+}
+
+/// a surface on the window and an adapter that can draw on it, with one of some graphics apis
+fn drawn_with(
+  context: &WindowContext,
+  backends: wgpu::Backends,
+) -> Result<(wgpu::Surface<'static>, wgpu::Adapter), HandlerError> {
+  let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    backends,
+    ..Default::default()
+  });
+  let surface = instance.create_surface(context.platform_handle())?;
+  let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    compatible_surface: Some(&surface),
+    ..Default::default()
+  }))?;
+  Ok((surface, adapter))
 }
 
 /// tells the window manager that the window keeps the panel's shape, and how small and large
