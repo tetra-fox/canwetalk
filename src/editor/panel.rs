@@ -6,13 +6,11 @@ use std::sync::Arc;
 use controls::flat::Flat;
 use controls::interaction::{Edit, Reading, Target};
 use controls_window::{Gpu, Skin, View, wgpu};
-use nice_plug::prelude::Param;
 use skeuo::glam::{Mat4, Vec2, Vec3};
 use skeuo::parts;
 use skeuo::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 
 use super::Control;
-use crate::params::CanWeTalkParams;
 
 pub(super) const WIDTH: f32 = 500.0;
 pub(super) const HEIGHT: f32 = 250.0;
@@ -134,7 +132,7 @@ impl Drawn {
 /// what a window shows, as meshes
 struct Lettering {
   /// the figures, the unit and the selection it was made from
-  of: (String, &'static str, Range<usize>),
+  of: (String, String, Range<usize>),
   /// the figures that are not selected, each in its place among them all
   figures: Arc<Mesh>,
   /// how far across from the window's middle the figures' own middle is
@@ -147,7 +145,7 @@ struct Lettering {
 }
 
 impl Lettering {
-  fn new(figures: &str, unit: &'static str, selected: Range<usize>) -> Self {
+  fn new(figures: &str, unit: &str, selected: Range<usize>) -> Self {
     let count = figures.chars().count();
     let wide = parts::legend_width(count, READOUT_TALL).max(0.0);
     // a unit written after a space is a word, which stands off from the figures
@@ -195,7 +193,7 @@ impl Lettering {
         let block = Mesh::cuboid(-half, half + Vec3::Z * 0.15);
         (lettered(&only(true)), Arc::new(block), (from + to) / 2.0)
       }),
-      of: (figures.to_owned(), unit, selected),
+      of: (figures.to_owned(), unit.to_owned(), selected),
     }
   }
 }
@@ -203,7 +201,6 @@ impl Lettering {
 /// the panel as skeuo draws it: its meshes, each made once, and the scene of the frame last
 /// laid out
 pub struct Panel {
-  params: Arc<CanWeTalkParams>,
   renderer: Renderer,
   /// the scene last laid out, which is what the pointer is on. none until the first is
   scene: Option<Scene>,
@@ -221,7 +218,7 @@ pub struct Panel {
 }
 
 impl Panel {
-  pub(super) fn new(gpu: &Gpu, params: Arc<CanWeTalkParams>) -> Self {
+  pub(super) fn new(gpu: &Gpu) -> Self {
     let mut fixed = Drawn::default();
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material, target| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
@@ -379,7 +376,6 @@ impl Panel {
       [knob.body(), knob.cap(0.74), knob.line()].map(Arc::new)
     });
     Self {
-      params,
       renderer: Renderer::new(gpu.device, gpu.format),
       scene: None,
       targets: Vec::new(),
@@ -401,11 +397,9 @@ impl Panel {
   /// the scene of the panel with each control at its value, in the order of
   /// [`Control::ALL`], and whatever is being typed, with what each of its objects is
   fn scene(&mut self, controls: &[Reading], edit: Option<&Edit>) -> (Scene, Vec<Option<Target>>) {
-    let params = Arc::clone(&self.params);
     // the scene owns this frame's objects, so the ones that never move are copied into it
     let mut drawn = self.fixed.clone();
     for (index, control) in Control::ALL.into_iter().enumerate() {
-      let param = control.param(&params);
       let turn = controls[index].value;
       let transform = parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
       let materials = [
@@ -426,8 +420,8 @@ impl Panel {
         drawn.place(mesh, transform, material, Some(Target::Control(index)));
       }
       let edit = edit.filter(|edit| edit.control == index);
-      let value = param.normalized_value_to_string(turn, false);
-      self.readout(&mut drawn, index, control, (&value, param.unit()), edit);
+      let Reading { text, unit, .. } = &controls[index];
+      self.readout(&mut drawn, index, control, (text, unit), edit);
     }
     // the lamp is as bright as the mix is wet, and dark when nothing of the shift is heard
     let wet = controls[Control::Mix as usize].value;
@@ -469,7 +463,7 @@ impl Panel {
     drawn: &mut Drawn,
     index: usize,
     control: Control,
-    value: (&str, &'static str),
+    (figures, unit): (&str, &str),
     edit: Option<&Edit>,
   ) {
     let target = Some(Target::Readout(index));
@@ -485,7 +479,6 @@ impl Panel {
     };
     drawn.put(&self.glass, at, glass, target);
 
-    let (figures, unit) = edit.map_or(value, |edit| (&edit.text, ""));
     let selected = edit.map_or(0..0, Edit::selected);
     let lettering = (self.readouts[index].take())
       .filter(|shown| shown.of.0 == figures && shown.of.1 == unit && shown.of.2 == selected)

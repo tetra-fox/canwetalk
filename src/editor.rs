@@ -63,16 +63,16 @@ pub(crate) fn editor(params: Arc<CanWeTalkParams>) -> Result<Editor, NotOurs> {
     grip: GripLook::default(),
   };
   let bound = Control::ALL.map(|control| Bound::new(control.param(&params), control.step()));
-  let (get, set, drawn) = (
-    Arc::clone(&params),
-    Arc::clone(&params),
-    Arc::clone(&params),
-  );
+  let (get, set) = (Arc::clone(&params), Arc::clone(&params));
   let remembered = Remembered {
     get: Box::new(move || get.editor_scale.load(Ordering::Relaxed)),
     set: Box::new(move |scale| set.editor_scale.store(scale, Ordering::Relaxed)),
   };
-  Editor::new(params, settings, bound.into(), remembered, move |gpu| {
-    panel::Panel::new(gpu, Arc::clone(&drawn))
-  })
+  Editor::new(
+    params,
+    settings,
+    bound.into(),
+    remembered,
+    panel::Panel::new,
+  )
 }
