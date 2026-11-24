@@ -358,6 +358,7 @@ dependencies = [
  "pollster",
  "skeuo",
  "wgpu",
+ "x11rb",
 ]
 
 [[package]]

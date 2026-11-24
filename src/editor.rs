@@ -79,6 +79,30 @@ const RESIZE: ResizeHint = ResizeHint {
   ..ResizeHint::RESIZABLE.with_min_max_logical_size(Some(sized(SCALES[0])), Some(sized(SCALES[1])))
 };
 
+/// the size of the panel's shape nearest one a host asks about, all in the same units: as
+/// wide as asked if the width is what has changed more from the size the window has, and
+/// else as tall as asked, and neither smaller than the least nor larger than the most.
+///
+/// nice-plug's own [`ResizeHint::adjust_size`] always takes the height and gives the width
+/// from it, under which a window pulled by its side alone does not move
+fn shaped(
+  asked: NativeSize<u32>,
+  current: NativeSize<u32>,
+  [least, most]: [NativeSize<u32>; 2],
+) -> NativeSize<u32> {
+  let (across, down) = (WIDTH as u64, HEIGHT as u64);
+  // each change as a part of the panel's own side, cross multiplied
+  let wider = u64::from(asked.width.abs_diff(current.width)) * down;
+  let taller = u64::from(asked.height.abs_diff(current.height)) * across;
+  let width = if wider >= taller {
+    asked.width
+  } else {
+    (u64::from(asked.height) * across / down) as u32
+  };
+  let width = width.clamp(least.width, most.width);
+  NativeSize::new(width, (u64::from(width) * down / across) as u32)
+}
+
 /// the window's size in the screen's own points at so many times the panel's
 const fn sized(scale: f32) -> LogicalSize<f32> {
   LogicalSize::new(WIDTH * scale, HEIGHT * scale)
@@ -89,17 +113,15 @@ pub struct Editor {
   shared: Arc<Shared>,
 }
 
-/// what other threads tell the open window: the host's side of the editor from the host's
-/// thread, and the clipboard's reader from its own
+/// what the host's side of the editor tells the open window, from the host's thread to the
+/// window's
 enum ToWindow {
   /// a key the host offered while a value is typed
   Key(Key),
-  /// a control's parameter has this value now
-  Value(Control, f32),
+  /// the window has been shown, or put in another window
+  Shown,
   /// every parameter may have changed
   State,
-  /// the clipboard's text, or none if it has no text
-  Clipboard(Option<String>),
 }
 
 /// what the open window and the host's side of the editor both reach
@@ -148,20 +170,13 @@ impl nice_plug::editor::Editor for Editor {
       .with_wait_for_parent(wait_for_parent)
       .with_fallback_scale_factor(fallback_scale_factor);
     let (to_window, from_host) = mpsc::channel();
-    let to_reader = to_window.clone();
-    // the names the wrapper reports the controls' parameters by
-    let named = self.params.param_map();
-    let ids = Control::ALL.map(|control| {
-      let ptr = control.param(&self.params).as_ptr();
-      (named.iter().find(|(_, named, _)| *named == ptr))
-        .map(|(id, _, _)| id.clone())
-        .expect("every control's parameter is one of the plugin's")
-    });
+    // with no window to go in it is the window manager's to size
+    let top_level = parent.is_none() && !wait_for_parent;
     let (params, shared) = (Arc::clone(&self.params), Arc::clone(&self.shared));
     let window = baseview::Window::create_with_host(
       settings,
       move |context| -> Result<Window, HandlerError> {
-        Window::new(context, gui_context, params, shared, from_host, to_reader)
+        Window::new(context, gui_context, params, shared, from_host, top_level)
       },
       host,
     )?;
@@ -170,7 +185,6 @@ impl nice_plug::editor::Editor for Editor {
         waker: window.waker(),
         shared: Arc::clone(&self.shared),
         to_window,
-        ids,
       },
       window,
     })
@@ -192,8 +206,6 @@ pub struct Handle {
   waker: WindowWaker,
   shared: Arc<Shared>,
   to_window: mpsc::Sender<ToWindow>,
-  /// the name of each control's parameter, in the order of [`Control::ALL`]
-  ids: [String; 3],
 }
 
 impl Handle {
@@ -218,11 +230,16 @@ impl EditorHandle for Handle {
     parent: ParentWindowHandle,
     window: &baseview::Window,
   ) -> Result<(), baseview::Error> {
-    window.set_parent(&parent)
+    let parented = window.set_parent(&parent);
+    self.tell(ToWindow::Shown);
+    parented
   }
 
   fn show(&self, window: &baseview::Window) -> Result<(), baseview::Error> {
-    window.show()
+    let shown = window.show();
+    // whatever was drawn before it could be seen is drawn again
+    self.tell(ToWindow::Shown);
+    shown
   }
 
   fn hide(&self, window: &baseview::Window) -> Result<(), baseview::Error> {
@@ -244,7 +261,12 @@ impl EditorHandle for Handle {
   ) -> Option<NativeSize<u32>> {
     let now = window.size();
     let current = NativeSize::from_logical_or_physical(now.logical, now.physical);
-    Some(RESIZE.adjust_size(new_size, current, now.scale_factor))
+    let limit = |scale: f32| NativeSize::from_size(sized(scale).into(), now.scale_factor);
+    Some(shaped(
+      new_size,
+      current,
+      [limit(SCALES[0]), limit(SCALES[1])],
+    ))
   }
 
   fn host_main_thread_callback(&self, window: &baseview::Window) {
@@ -293,14 +315,10 @@ impl EditorHandle for Handle {
     self.tell(ToWindow::State);
   }
 
-  fn param_value_changed(&self, id: &str, normalized_value: f32) {
-    // the parameters with no control on the panel change nothing that it shows
-    let control = (Control::ALL.into_iter())
-      .zip(&self.ids)
-      .find(|(_, named)| *named == id);
-    if let Some((control, _)) = control {
-      self.tell(ToWindow::Value(control, normalized_value));
-    }
+  fn param_value_changed(&self, _id: &str, _normalized_value: f32) {
+    // the window looks at the parameters itself, and at once when it is woken. it does so
+    // every so often anyway, so a report that never comes costs only that wait
+    self.waker.request_poll();
   }
 
   fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
@@ -328,5 +346,42 @@ struct MainThreadCaller(Box<dyn nice_plug::editor::HostMainThreadCaller>);
 impl baseview::host::HostMainThreadCaller for MainThreadCaller {
   fn call_main_thread(&mut self) {
     self.0.call_main_thread();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// the sizes a host may ask about at one and a half pixels to a point, from the window as
+  /// it opens
+  fn asked(width: u32, height: u32) -> (u32, u32) {
+    let limits = [NativeSize::new(563, 281), NativeSize::new(2250, 1125)];
+    let shaped = shaped(
+      NativeSize::new(width, height),
+      NativeSize::new(750, 375),
+      limits,
+    );
+    (shaped.width, shaped.height)
+  }
+
+  #[test]
+  fn a_size_a_host_asks_about_is_answered_with_the_panels_shape() {
+    // the shape itself is left alone
+    assert_eq!(asked(750, 375), (750, 375));
+    assert_eq!(asked(1000, 500), (1000, 500));
+    // pulled by its side the window follows the width, and by its foot the height
+    assert_eq!(asked(900, 375), (900, 450));
+    assert_eq!(asked(600, 375), (600, 300));
+    assert_eq!(asked(750, 450), (900, 450));
+    assert_eq!(asked(750, 300), (600, 300));
+    // by its corner, whichever side has gone further for its length
+    assert_eq!(asked(900, 500), (1000, 500));
+    assert_eq!(asked(1000, 400), (1000, 500));
+    // and no smaller or larger than the window is let be
+    assert_eq!(asked(100, 375), (563, 281));
+    assert_eq!(asked(750, 50), (563, 281));
+    assert_eq!(asked(5000, 375), (2250, 1125));
+    assert_eq!(asked(750, 3000), (2250, 1125));
   }
 }

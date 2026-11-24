@@ -43,6 +43,11 @@ skeuo = { path = "crates/skeuo" }
 # one is left out: it cannot build skeuo's shaders, which read a depth texture by texel
 wgpu = { workspace = true, features = ["dx12", "metal", "vulkan"] }
 
+# tells the window manager the shape of the editor's own window when no host has it. baseview
+# is on the same version
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+
 # the audio code is too slow to try out unoptimized
 [profile.dev]
 opt-level = 1

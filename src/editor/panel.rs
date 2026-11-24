@@ -14,6 +14,26 @@ use crate::params::CanWeTalkParams;
 
 pub(super) const WIDTH: f32 = 500.0;
 pub(super) const HEIGHT: f32 = 250.0;
+/// the part of a window so many pixels wide and tall that the panel is drawn on, as its left,
+/// top, width and height: the largest of the panel's own shape that fits, in the middle. a
+/// window of that shape is all of it, and one of any other has room left over at two sides
+pub(super) fn fitted(window: [u32; 2]) -> [u32; 4] {
+  let [wide, tall] = window.map(u64::from);
+  let (across, down) = (WIDTH as u64, HEIGHT as u64);
+  let (width, height) = if wide * down <= tall * across {
+    (wide, wide * down / across)
+  } else {
+    (tall * across / down, tall)
+  };
+  [(wide - width) / 2, (tall - height) / 2, width, height].map(|side| side as u32)
+}
+
+/// the point of the panel that is at a pixel of the window, with the panel drawn on `place`
+pub(super) fn point_at(place: [u32; 4], pixel: Vec2) -> Vec2 {
+  let [left, top, width, height] = place.map(|side| side as f32);
+  (pixel - Vec2::new(left, top)) / Vec2::new(width, height) * Vec2::new(WIDTH, HEIGHT)
+}
+
 /// how far a point slides across the picture for each unit of its height: seen a little
 /// from in front
 const LEAN: Vec2 = Vec2::new(0.0, -0.3);
@@ -724,6 +744,57 @@ mod tests {
       assert!(!on_grip(Vec2::new(inside.x, outside.y), scale), "{scale}");
       assert!(!on_grip(Vec2::new(outside.x, inside.y), scale), "{scale}");
     }
+  }
+
+  #[test]
+  fn the_panel_is_fitted_into_a_window_of_any_shape_at_its_own() {
+    // a window of the panel's shape is all the panel's
+    assert_eq!(fitted([750, 375]), [0, 0, 750, 375]);
+    assert_eq!(fitted([500, 250]), [0, 0, 500, 250]);
+    // one too wide has the room left over at its sides, and one too tall above and below
+    assert_eq!(fitted([1100, 375]), [175, 0, 750, 375]);
+    assert_eq!(fitted([750, 640]), [0, 132, 750, 375]);
+    assert_eq!(fitted([1908, 1077]), [0, 61, 1908, 954]);
+    // odd sizes round down, and what is left over is never more than a pixel off the middle
+    assert_eq!(fitted([751, 375]), [0, 0, 750, 375]);
+    assert_eq!(fitted([750, 376]), [0, 0, 750, 375]);
+    assert_eq!(fitted([3, 100]), [0, 49, 3, 1]);
+    for window in [[640, 480], [333, 777], [2250, 1125], [1, 1], [0, 0]] {
+      let [left, top, width, height] = fitted(window);
+      assert!(
+        left + width <= window[0] && top + height <= window[1],
+        "{window:?}"
+      );
+      // the panel's shape, to within the pixel that rounding takes
+      assert!(width.abs_diff(height * 2) <= 1, "{window:?}");
+      // and as large as fits: one of the two reaches from side to side
+      assert!(width == window[0] || height == window[1], "{window:?}");
+    }
+  }
+
+  #[test]
+  fn the_pointer_is_on_the_panel_where_the_panel_is_drawn() {
+    // a wide window with the panel in its middle at one and a half pixels to a point
+    let place = fitted([1100, 375]);
+    assert_eq!(point_at(place, Vec2::new(175.0, 0.0)), Vec2::ZERO);
+    assert_eq!(
+      point_at(place, Vec2::new(925.0, 375.0)),
+      Vec2::new(WIDTH, HEIGHT)
+    );
+    assert_eq!(
+      point_at(place, Vec2::new(550.0, 187.5)),
+      Vec2::new(250.0, 125.0)
+    );
+    // on the room left over it is off the panel, where nothing is picked
+    assert!(point_at(place, Vec2::new(100.0, 100.0)).x < 0.0);
+    assert!(point_at(place, Vec2::new(1000.0, 100.0)).x > WIDTH);
+    // and in a tall one
+    let place = fitted([750, 640]);
+    assert_eq!(
+      point_at(place, Vec2::new(375.0, 132.0)),
+      Vec2::new(250.0, 0.0)
+    );
+    assert!(point_at(place, Vec2::new(375.0, 100.0)).y < 0.0);
   }
 
   #[test]
