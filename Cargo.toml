@@ -39,7 +39,7 @@ keyboard-types = "0.8"
 # waits for the graphics adapter and device while the window opens
 pollster = "0.4"
 skeuo = { path = "crates/skeuo" }
-# the editor makes the surface and device skeuo draws with, so it picks the backends. the gl
+# the editor makes the device skeuo draws with, so it picks the backends. the gl
 # one is left out: it cannot build skeuo's shaders, which read a depth texture by texel
 wgpu = { workspace = true, features = ["dx12", "metal", "vulkan"] }
 
@@ -47,6 +47,15 @@ wgpu = { workspace = true, features = ["dx12", "metal", "vulkan"] }
 # is on the same version
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
+
+# puts the editor's finished picture in its window as plain pixels
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen"] }
+
+# on windows that is one call, and softbuffer keeps a thread of its own going for it for as
+# long as the process lives, which a plugin that can be unloaded cannot have
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]

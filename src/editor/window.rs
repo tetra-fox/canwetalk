@@ -1,5 +1,5 @@
-//! the open window: the surface the panel is drawn on, and baseview's events turned into
-//! what the panel is told
+//! the open window: the panel drawn and put in it, and baseview's events turned into what
+//! the panel is told
 
 use std::cell::{Cell, RefCell, RefMut};
 use std::sync::Arc;
@@ -21,6 +21,7 @@ use super::interaction::{Action, Button, Edit, Event, Interaction, Key, Menu, Mo
 use super::panel::{
   HEIGHT, Panel, Picture, READOUT_LETTERS, WIDTH, fitted, point_at, readout_shows,
 };
+use super::screen::Screen;
 use super::sent::Sent;
 use super::{Control, Shared, ToWindow};
 use crate::params::CanWeTalkParams;
@@ -35,6 +36,11 @@ const AROUND: wgpu::Color = wgpu::Color {
   b: 0.005,
   a: 1.0,
 };
+/// the picture's pixels as they are drawn and read back: blue first and in srgb, which is
+/// how a window is given them
+const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+/// how long a frame may take the graphics device before it is given up on
+const DRAWN_WITHIN: Duration = Duration::from_secs(1);
 /// how many pixels of a wheel that scrolls by them count as one line
 const PIXELS_PER_LINE: f32 = 20.0;
 
@@ -61,10 +67,13 @@ pub(super) struct Window {
 }
 
 struct State {
-  surface: wgpu::Surface<'static>,
-  config: wgpu::SurfaceConfiguration,
   device: wgpu::Device,
   queue: wgpu::Queue,
+  /// what frames are drawn on, made at the first frame of each size the window takes
+  canvas: Option<Canvas>,
+  screen: Screen,
+  /// the window's width and height in pixels
+  window: [u32; 2],
   renderer: Renderer,
   /// draws what is over the picture
   flat: FlatRenderer,
@@ -81,15 +90,9 @@ struct State {
   /// the display's scale factor, which the window's size in pixels is that much more than
   /// its size in the screen's points
   display_scale: f64,
-  /// whether the surface has yet to be made the size the window now is
-  unfitted: bool,
-  /// what the frame last put on the surface shows. none if the surface has had no frame
-  /// since it was made or made again, or since the window was shown
+  /// what the frame last put in the window shows. none if it has had no frame since it was
+  /// sized or shown
   shown: Option<Frame>,
-  again: Again,
-  /// how many frames in a row could not be drawn, or were drawn on a surface that no longer
-  /// suits the window
-  failed: u32,
   /// how many times the panel's size the window is to become, once for each frame at most
   wanted_scale: Option<f32>,
 }
@@ -107,34 +110,53 @@ struct Frame {
   menu: Option<Menu>,
 }
 
-/// how often in a row the window asks for a frame that then cannot be drawn, before it
-/// leaves off until something happens to it
-const TRIES: u32 = 3;
-
-/// whether the frame on the surface has been put there a second time.
-///
-/// wine draws a child window's vulkan surface into the host's window by copying it at the
-/// moment a frame is presented, which is before the frame is there to copy. so what the
-/// host's window shows is the frame before the last, and nothing at all after the first.
-/// the last frame is presented once more, a tick or two later, when it is there to be copied
-/// TODO: draw each frame once when wine copies a frame after it is shown
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Again {
-  /// a new frame has just been drawn
-  Fresh,
-  /// a tick has passed since, and the same frame is due once more
-  Due,
-  Done,
+/// what a frame is drawn on and read back from, for one size of window. there is no
+/// swapchain on the window: under wine, making one again for each size the window takes
+/// while it is dragged keeps the host's thread in the graphics driver
+struct Canvas {
+  size: [u32; 2],
+  texture: wgpu::Texture,
+  view: wgpu::TextureView,
+  /// the frame's pixels once it is drawn, in rows of `row` bytes
+  read: wgpu::Buffer,
+  row: u32,
 }
 
-/// whether the window asks baseview for a frame of its own accord: when the one on the
-/// surface is not what the panel is like now or is due a second time, as long as there is
-/// a surface to draw on and asking has not come to nothing too often
-fn asks(stale: bool, again: Again, failed: u32, window: [u32; 2]) -> bool {
-  (stale || again == Again::Due) && failed < TRIES && window[0] > 0 && window[1] > 0
+impl Canvas {
+  fn new(device: &wgpu::Device, size: [u32; 2]) -> Self {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("canwetalk canvas"),
+      size: wgpu::Extent3d {
+        width: size[0],
+        height: size[1],
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: FORMAT,
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+      view_formats: &[],
+    });
+    // wgpu copies rows to a buffer at a multiple of so many bytes each
+    let row = (size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let read = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("canwetalk canvas read back"),
+      size: u64::from(row) * u64::from(size[1]),
+      usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+      mapped_at_creation: false,
+    });
+    Self {
+      size,
+      view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+      texture,
+      read,
+      row,
+    }
+  }
 }
 
-/// whether a frame has to be drawn: when none is on the surface, or the one that is shows
+/// whether a frame has to be drawn: when none is in the window, or the one that is shows
 /// anything other than what the panel is like now
 fn due(
   shown: Option<&Frame>,
@@ -152,13 +174,9 @@ fn due(
 }
 
 impl State {
-  fn window(&self) -> [u32; 2] {
-    [self.config.width, self.config.height]
-  }
-
   /// how many times its own size the panel is drawn at
   fn scale(&self) -> f32 {
-    let [_, _, width, _] = fitted(self.window());
+    let [_, _, width, _] = fitted(self.window);
     (f64::from(width) / self.display_scale) as f32 / WIDTH
   }
 
@@ -172,9 +190,9 @@ impl State {
     })
   }
 
-  /// whether what is on the surface is not what the panel is like now
+  /// whether what is in the window is not what the panel is like now
   fn stale(&mut self, params: &CanWeTalkParams) -> bool {
-    let (values, window, scale) = (self.values(params), self.window(), self.scale());
+    let (values, window, scale) = (self.values(params), self.window, self.scale());
     let (edit, menu) = (self.interaction.edit(), self.interaction.menu());
     due(self.shown.as_ref(), values, window, scale, edit, menu)
   }
@@ -198,13 +216,11 @@ impl Window {
     #[cfg(not(target_os = "linux"))]
     let _ = top_level;
 
-    // direct3d 12 is started only where nothing else can draw: under wine with nvidia's
-    // driver, dropping an instance that started it makes each later swapchain that has shown
-    // a frame take 22 seconds or more to destroy, on the host's thread
-    let others = wgpu::Backends::VULKAN | wgpu::Backends::METAL;
-    let (surface, adapter) = match drawn_with(&context, others) {
-      Ok(found) => found,
-      Err(first) => drawn_with(&context, wgpu::Backends::DX12).map_err(|second| {
+    // direct3d 12 is started only where nothing else can draw: under wine it runs on vulkan
+    // anyway, and wine's shader compiler cannot build the renderer's shaders for it
+    let adapter = match adapter_of(wgpu::Backends::VULKAN | wgpu::Backends::METAL) {
+      Ok(adapter) => adapter,
+      Err(first) => adapter_of(wgpu::Backends::DX12).map_err(|second| {
         HandlerError::from_boxed(format!("{first}, and with direct3d 12: {second}").into())
       })?,
     };
@@ -214,22 +230,16 @@ impl Window {
       required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
       ..Default::default()
     }))?;
-    let mut config = surface
-      .get_default_config(&adapter, size.physical.width, size.physical.height)
-      .ok_or_else(|| {
-        HandlerError::from_boxed("the graphics adapter cannot draw on the window".into())
-      })?;
-    // waiting for the display would hold up the host's own thread
-    config.present_mode = wgpu::PresentMode::AutoNoVsync;
-    surface.configure(&device, &config);
+    let screen = Screen::new(&context)?;
+    let window = [size.physical.width, size.physical.height];
 
-    let renderer = Renderer::new(&device, config.format);
-    let flat = FlatRenderer::new(&device, config.format);
+    let renderer = Renderer::new(&device, FORMAT);
+    let flat = FlatRenderer::new(&device, FORMAT);
     let dials = Control::ALL.map(|control| control.dial(&params)).into();
     let interaction = Interaction::new(dials, [WIDTH, HEIGHT], READOUT_LETTERS, readout_shows);
     let mut panel = Panel::new();
     let values = Control::ALL.map(|control| control.param(&params).unmodulated_normalized_value());
-    let [_, _, width, _] = fitted([config.width, config.height]);
+    let [_, _, width, _] = fitted(window);
     let pixel = WIDTH / width as f32;
     let scale = (f64::from(width) / size.scale_factor) as f32 / WIDTH;
     let picture = panel.picture(&params, values, &interaction, pixel, scale);
@@ -245,10 +255,11 @@ impl Window {
       sized: Cell::new(None),
       clipboard: RefCell::new(None),
       state: RefCell::new(State {
-        surface,
-        config,
         device,
         queue,
+        canvas: None,
+        screen,
+        window,
         renderer,
         flat,
         panel,
@@ -258,10 +269,7 @@ impl Window {
         pointer: Vec2::ZERO,
         on_window: Vec2::ZERO,
         display_scale: size.scale_factor,
-        unfitted: false,
         shown: None,
-        again: Again::Done,
-        failed: 0,
         wanted_scale: None,
       }),
     })
@@ -288,29 +296,23 @@ impl Window {
   fn state(&self) -> Option<RefMut<'_, State>> {
     let mut state = self.state.try_borrow_mut().ok()?;
     if let Some(size) = self.sized.take() {
-      // the surface is made to fit when the next frame is drawn, the latest size only
-      state.config.width = size.physical.width;
-      state.config.height = size.physical.height;
+      state.window = [size.physical.width, size.physical.height];
       state.display_scale = size.scale_factor;
-      state.unfitted = true;
-      (state.shown, state.failed) = (None, 0);
+      state.shown = None;
     }
     Some(state)
   }
 
-  /// asks for a frame if the one on the surface is not what the panel is like now. the
+  /// asks for a frame if the one in the window is not what the panel is like now. the
   /// window is told when to draw by what happens to it, and this makes up for anything it
-  /// was not told: a parameter moved with no report of it, or a frame that was lost
+  /// was not told: a parameter moved with no report of it, or a frame put off while a handler
+  /// further up had the state
   fn refresh(&self) {
     let Some(mut state) = self.state() else {
       return;
     };
-    let asks = asks(
-      state.stale(&self.params),
-      state.again,
-      state.failed,
-      state.window(),
-    );
+    // a window with no size has nothing to draw
+    let asks = state.stale(&self.params) && !state.window.contains(&0);
     drop(state);
     if asks {
       self.redraw();
@@ -416,51 +418,27 @@ impl WindowHandler for Window {
     let Some(mut state) = self.state() else {
       return Ok(());
     };
-    // a window with no size, as a minimized one has, has no surface to draw on
-    if state.window().contains(&0) {
+    // a window with no size, as a minimized one has, has nothing to draw
+    if state.window.contains(&0) {
       return Ok(());
     }
-    // a surface made again has nothing on it, so the frame that was is no longer shown
-    if std::mem::take(&mut state.unfitted) {
-      state.surface.configure(&state.device, &state.config);
-      state.shown = None;
-    }
-    let (values, window, scale) = (state.values(&self.params), state.window(), state.scale());
+    let (values, window, scale) = (state.values(&self.params), state.window, state.scale());
     let State {
-      surface,
-      config,
       device,
       queue,
+      canvas,
+      screen,
       renderer,
       flat,
       panel,
       picture,
       interaction,
       shown,
-      again,
-      failed,
       ..
     } = &mut *state;
-    // a frame that cannot be drawn is not asked for again from here, where the asking would
-    // come straight back round: the next tick asks, a few times and then no more until the
-    // window is sized or shown. getting the surface's next image can itself take a second
-    let frame = match surface.get_current_texture() {
-      Ok(frame) => frame,
-      // the surface does not fit the window or is gone, and is made again
-      Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-        surface.configure(device, config);
-        *shown = None;
-        *failed += 1;
-        return Ok(());
-      }
-      Err(wgpu::SurfaceError::Timeout) => {
-        *shown = None;
-        *failed += 1;
-        return Ok(());
-      }
-      Err(error @ (wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other)) => {
-        return Err(error.into());
-      }
+    let drawn_on = match canvas {
+      Some(canvas) if canvas.size == window => canvas,
+      _ => canvas.insert(Canvas::new(device, window)),
     };
 
     // the panel goes on as much of the window as has its shape
@@ -475,7 +453,7 @@ impl WindowHandler for Window {
       picture.scene.size,
       [width, height],
     );
-    let view = (frame.texture).create_view(&wgpu::TextureViewDescriptor::default());
+    let view = &drawn_on.view;
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
       label: Some("canwetalk editor"),
     });
@@ -484,7 +462,7 @@ impl WindowHandler for Window {
       encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("canwetalk around"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &view,
+          view,
           depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
@@ -503,34 +481,53 @@ impl WindowHandler for Window {
       width: width as f32,
       height: height as f32,
     };
-    renderer.render(&mut encoder, &view, place, [left, top, width, height]);
-    flat.render(&mut encoder, &view, place, [left, top, width, height]);
-    queue.submit([encoder.finish()]);
-    let suboptimal = frame.suboptimal;
-    frame.present();
-    let drawn = Frame {
+    renderer.render(&mut encoder, view, place, [left, top, width, height]);
+    flat.render(&mut encoder, view, place, [left, top, width, height]);
+    encoder.copy_texture_to_buffer(
+      drawn_on.texture.as_image_copy(),
+      wgpu::TexelCopyBufferInfo {
+        buffer: &drawn_on.read,
+        layout: wgpu::TexelCopyBufferLayout {
+          offset: 0,
+          bytes_per_row: Some(drawn_on.row),
+          rows_per_image: None,
+        },
+      },
+      drawn_on.texture.size(),
+    );
+    let submitted = queue.submit([encoder.finish()]);
+    // the frame is waited for here, on the window's thread, which is the host's on windows.
+    // the device takes a millisecond or so for it, and the pixels go in the window at once
+    let (mapped, when_mapped) = mpsc::channel();
+    (drawn_on.read.slice(..)).map_async(wgpu::MapMode::Read, move |result| {
+      // the receiver is only gone once the frame has been given up on
+      let _ = mapped.send(result);
+    });
+    let waited = device.poll(wgpu::PollType::Wait {
+      submission_index: Some(submitted),
+      timeout: Some(DRAWN_WITHIN),
+    });
+    let read = match (waited, when_mapped.try_recv()) {
+      (Ok(_), Ok(Ok(()))) => &drawn_on.read,
+      // the editor's window closes on this error. the buffer may still be on its way to being
+      // read, and is not drawn on again before then
+      (waited, mapped) => {
+        *canvas = None;
+        return Err(HandlerError::from_boxed(
+          format!("the frame could not be read back: {waited:?}, {mapped:?}").into(),
+        ));
+      }
+    };
+    let put = screen.show(window, drawn_on.row, &read.slice(..).get_mapped_range());
+    read.unmap();
+    put?;
+    *shown = Some(Frame {
       values,
       window,
       scale,
       edit: interaction.edit().cloned(),
       menu: interaction.menu().copied(),
-    };
-    *again = match again {
-      // the same frame a second time, a tick or more after the first
-      Again::Due if shown.as_ref() == Some(&drawn) => Again::Done,
-      _ if shown.as_ref() == Some(&drawn) => *again,
-      _ => Again::Fresh,
-    };
-    *shown = Some(drawn);
-    if suboptimal && *failed < TRIES {
-      // drawn on as it was, and made to suit the window for the frames after. a surface
-      // made again has nothing on it, so the same frame is drawn on it at the next tick
-      surface.configure(device, config);
-      *shown = None;
-      *failed += 1;
-    } else if !suboptimal {
-      *failed = 0;
-    }
+    });
     Ok(())
   }
 
@@ -540,7 +537,7 @@ impl WindowHandler for Window {
         ToWindow::Key(key) => self.handle(|_| Event::Key(key)),
         ToWindow::Shown => {
           if let Some(mut state) = self.state() {
-            (state.shown, state.failed) = (None, 0);
+            state.shown = None;
           }
         }
         ToWindow::State => {
@@ -606,11 +603,6 @@ impl WindowHandler for Window {
   fn on_timer(&self, timer: &TimerHandle) {
     if timer == self.tick {
       self.handle(|_| Event::Tick);
-      if let Some(mut state) = self.state()
-        && state.again == Again::Fresh
-      {
-        state.again = Again::Due;
-      }
       self.refresh();
     }
   }
@@ -624,7 +616,7 @@ impl Window {
         modifiers,
       } => self.handle(|state| {
         let pixel = Vec2::new(position.x as f32, position.y as f32);
-        let at = point_at(fitted(state.window()), pixel);
+        let at = point_at(fitted(state.window), pixel);
         state.pointer = at;
         state.on_window = pixel / state.display_scale as f32;
         Event::Move {
@@ -668,21 +660,13 @@ impl Window {
   }
 }
 
-/// a surface on the window and an adapter that can draw on it, with one of some graphics apis
-fn drawn_with(
-  context: &WindowContext,
-  backends: wgpu::Backends,
-) -> Result<(wgpu::Surface<'static>, wgpu::Adapter), HandlerError> {
+/// a graphics adapter of one of some apis
+fn adapter_of(backends: wgpu::Backends) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
   let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
     backends,
     ..Default::default()
   });
-  let surface = instance.create_surface(context.platform_handle())?;
-  let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-    compatible_surface: Some(&surface),
-    ..Default::default()
-  }))?;
-  Ok((surface, adapter))
+  pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
 }
 
 /// tells the window manager that the window keeps the panel's shape, and how small and large
@@ -780,7 +764,7 @@ mod tests {
     }
   }
 
-  /// whether a frame is due on a surface showing `shown`, with the panel like `now`
+  /// whether a frame is due in a window showing `shown`, with the panel like `now`
   fn is_due(shown: Option<&Frame>, now: &Frame) -> bool {
     let Frame {
       values,
@@ -802,9 +786,9 @@ mod tests {
   #[test]
   fn a_frame_is_due_when_none_is_shown_or_the_one_shown_is_not_the_panel_as_it_is() {
     let shown = frame([0.5, 0.5, 1.0]);
-    // the same panel on a surface that shows it: nothing to draw, however often it is asked
+    // the same panel in a window that shows it: nothing to draw, however often it is asked
     assert!(!is_due(Some(&shown), &shown));
-    // a surface that has had no frame, as when it has just been made or made again
+    // a window that has had no frame, as when it has just been sized or shown
     assert!(is_due(None, &shown));
     // a control somewhere else, whoever moved it and whether or not anything said so
     assert!(is_due(Some(&shown), &frame([0.5, 0.25, 1.0])));
@@ -845,25 +829,6 @@ mod tests {
     assert!(is_due(Some(&shown), &typed("1")));
     assert!(is_due(Some(&typed("1")), &typed("12")));
     assert!(!is_due(Some(&typed("12")), &typed("12")));
-  }
-
-  #[test]
-  fn the_window_asks_for_a_frame_only_when_one_is_due_and_can_be_drawn() {
-    let window = [750, 375];
-    // nothing changed and the frame put there twice: nothing is asked for, tick after tick
-    assert!(!asks(false, Again::Done, 0, window));
-    // a frame that is not the panel as it is now
-    assert!(asks(true, Again::Done, 0, window));
-    // the frame just drawn waits a tick before it is due again, and is then asked for once
-    assert!(!asks(false, Again::Fresh, 0, window));
-    assert!(asks(false, Again::Due, 0, window));
-    // frames that could not be drawn are asked for again a few times and then no more
-    assert!(asks(true, Again::Done, TRIES - 1, window));
-    assert!(!asks(true, Again::Done, TRIES, window));
-    assert!(!asks(false, Again::Due, TRIES, window));
-    // and a window with no size has nothing to draw on
-    assert!(!asks(true, Again::Done, 0, [0, 375]));
-    assert!(!asks(true, Again::Due, 0, [750, 0]));
   }
 
   #[test]

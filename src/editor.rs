@@ -3,6 +3,7 @@
 
 mod interaction;
 mod panel;
+mod screen;
 mod sent;
 mod window;
 
