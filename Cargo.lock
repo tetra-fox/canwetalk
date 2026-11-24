@@ -2145,6 +2145,7 @@ name = "skeuo"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "controls",
  "glam",
  "naga",
  "png",
