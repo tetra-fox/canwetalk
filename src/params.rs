@@ -36,6 +36,10 @@ pub(crate) struct CanWeTalkParams {
   anchor: BoolParam,
   #[id = "mix"]
   pub(crate) mix: FloatParam,
+  /// how many times its own size the editor's window is, kept with the plugin's state so
+  /// that it opens again at the size it was left at
+  #[persist = "editor-scale"]
+  pub(crate) editor_scale: AtomicF32,
 }
 
 /// what stands for a whole block of samples
@@ -209,6 +213,7 @@ impl Default for CanWeTalkParams {
       detect: EnumParam::new("Detection Range", Range::Mid),
       anchor: BoolParam::new("Anchor Grains", true),
       mix: percent("Mix", 1.0),
+      editor_scale: AtomicF32::new(1.0),
     }
   }
 }

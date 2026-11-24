@@ -1,36 +1,30 @@
-//! the plugin's window: a lit panel drawn by skeuo, and over each of its knobs an unseen
-//! iced_audio knob that takes the mouse
+//! the plugin's window: a lit panel drawn by skeuo on a baseview window, with the knobs
+//! turned and their values typed by what the pointer and the keys do on it
 
+mod interaction;
+mod panel;
+mod sent;
+mod window;
+
+use std::error::Error;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 
-use iced_audio::param::{nice_to_iced, set_nice_param};
-use iced_audio::style::knob as knob_style;
-use iced_audio::{Gesture, Knob};
+use baseview::dpi::LogicalSize;
+use baseview::{HandlerError, WindowSettings, WindowWaker};
+use nice_plug::context::gui::GuiContext;
+use nice_plug::editor::dpi::NativeSize;
+use nice_plug::editor::{EditorHandle, HostMethods, SpawnedEditor};
 use nice_plug::prelude::*;
-use nice_plug_iced::iced::baseview::dpi::LogicalSize;
-use nice_plug_iced::iced::widget::{pin, stack, text};
-use nice_plug_iced::iced::{Color, Element, Length, PollSubNotifier, Task, Theme, poll_events};
-use nice_plug_iced::{
-  IcedEditor, IcedEditorState, IcedNiceContext, IcedNiceSettings, PersistentState, application,
-  create_iced_editor,
-};
-use skeuo::glam::{Mat4, Vec2, Vec3};
-use skeuo::parts;
-use skeuo::{Light, Look, Material, Mesh, Object, Scene};
 
+use self::interaction::{Dial, Key, SCALES};
+use self::panel::{HEIGHT, WIDTH};
+use self::window::Window;
 use crate::params::CanWeTalkParams;
 
-const WIDTH: f32 = 500.0;
-const HEIGHT: f32 = 250.0;
-/// the knobs' centers down the panel, and their size
-const KNOB_Y: f32 = 122.0;
-const KNOB_RADIUS: f32 = 38.0;
-const KNOB_HEIGHT: f32 = 30.0;
-/// how high the section the knobs are on stands off the panel
-const UP: f32 = 2.5;
-
 /// the knobs on the panel, left to right
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
   Pitch,
   Formant,
@@ -48,330 +42,291 @@ impl Control {
     }
   }
 
-  /// the kind of knob it is: the two shifts match, and the mix is set apart
-  fn knob(self) -> parts::Knob {
+  /// the coarse step the control moves by, in its own units: a semitone of the shifts. the
+  /// mix turns smoothly
+  fn step(self) -> Option<f32> {
     match self {
-      Self::Pitch | Self::Formant => parts::Knob::skirted(KNOB_RADIUS, KNOB_HEIGHT),
-      Self::Mix => parts::Knob {
-        skirt: 0.0,
-        top: parts::Top::Flat,
-        ..parts::Knob::knurled(KNOB_RADIUS * 0.8, KNOB_HEIGHT)
-      },
+      Self::Pitch | Self::Formant => Some(1.0),
+      Self::Mix => None,
     }
   }
 
-  /// what is engraved under the knob
-  fn name(self) -> &'static str {
-    match self {
-      Self::Pitch => "PITCH",
-      Self::Formant => "FORMANT",
-      Self::Mix => "MIX",
-    }
-  }
-
-  /// what the two ends of the knob's scale are marked
-  fn ends(self) -> (&'static str, &'static str) {
-    match self {
-      Self::Pitch | Self::Formant => ("-24", "+24"),
-      Self::Mix => ("0", "100"),
-    }
-  }
-
-  /// the knob's center across the panel
-  fn x(self) -> f32 {
-    match self {
-      Self::Pitch => 105.0,
-      Self::Formant => 250.0,
-      Self::Mix => 395.0,
+  /// the control as the panel's behaviour knows it: its step, and its parameter's ways of
+  /// reading and writing a value
+  fn dial(self, params: &Arc<CanWeTalkParams>) -> Dial {
+    // each of the dial's ways keeps the parameters alive for itself
+    let with = |params: &Arc<CanWeTalkParams>| Arc::clone(params);
+    let (plain, turn, write, read) = (with(params), with(params), with(params), with(params));
+    Dial {
+      default: self.param(params).default_normalized_value(),
+      step: self.step(),
+      plain: Box::new(move |value| self.param(&plain).preview_plain(value)),
+      turn: Box::new(move |plain| self.param(&turn).preview_normalized(plain)),
+      write: Box::new(move |value, unit| {
+        self.param(&write).normalized_value_to_string(value, unit)
+      }),
+      read: Box::new(move |text| self.param(&read).string_to_normalized_value(text)),
     }
   }
 }
 
-#[derive(Clone, Debug)]
-enum Message {
-  Turned(Control, Gesture),
-  /// the host moved a parameter, so the panel is drawn again
-  Polled,
+/// how the window may be sized: at the panel's own shape, from the smallest to the largest
+/// it is drawn at
+const RESIZE: ResizeHint = ResizeHint {
+  preserve_aspect_ratio: true,
+  aspect_ratio_width: WIDTH as u32,
+  aspect_ratio_height: HEIGHT as u32,
+  ..ResizeHint::RESIZABLE.with_min_max_logical_size(Some(sized(SCALES[0])), Some(sized(SCALES[1])))
+};
+
+/// the window's size in the screen's own points at so many times the panel's
+const fn sized(scale: f32) -> LogicalSize<f32> {
+  LogicalSize::new(WIDTH * scale, HEIGHT * scale)
 }
 
-struct Editor {
+pub struct Editor {
   params: Arc<CanWeTalkParams>,
-  context: IcedNiceContext,
-  panel: Panel,
+  shared: Arc<Shared>,
 }
 
-pub(crate) fn create(params: Arc<CanWeTalkParams>) -> Option<IcedEditor> {
-  create_iced_editor(
-    IcedEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0),
-    (),
-    PollSubNotifier::new(),
-    IcedNiceSettings::new().with_tile("CanWeTalk"),
-    move |persistent: PersistentState<()>, context| {
-      let params = params.clone();
-      Ok(
-        application(
-          persistent,
-          context,
-          move |_persistent: PersistentState<()>, context| Editor {
-            params: params.clone(),
-            context,
-            panel: panel(),
-          },
-          update,
-          view,
-        )
-        .subscription(|_| poll_events().map(|()| Message::Polled))
-        .run(),
-      )
-    },
-  )
+/// what other threads tell the open window: the host's side of the editor from the host's
+/// thread, and the clipboard's reader from its own
+enum ToWindow {
+  /// a key the host offered while a value is typed
+  Key(Key),
+  /// a control's parameter has this value now
+  Value(Control, f32),
+  /// every parameter may have changed
+  State,
+  /// the clipboard's text, or none if it has no text
+  Clipboard(Option<String>),
 }
 
-/// what the panel is made of: every mesh, the things on it that never move, and for each
-/// control the first of its three meshes, which are its knob, the face let into it and the
-/// line painted on it
-struct Panel {
-  meshes: Arc<[Mesh]>,
-  fixed: Vec<Object>,
-  knobs: [usize; 3],
+/// what the open window and the host's side of the editor both reach
+struct Shared {
+  /// the display's scale factor as the bits of an f64, for the size the host is told
+  display_scale: AtomicU64,
+  /// whether a value is being typed, which is when keys the host offers are taken
+  typing: AtomicBool,
 }
 
-fn panel() -> Panel {
-  let mut meshes = Vec::new();
-  let mut fixed = Vec::new();
-  let mut put = |meshes: &mut Vec<Mesh>, mesh: Mesh, x: f32, y: f32, z: f32, material: Material| {
-    fixed.push(Object {
-      mesh: meshes.len(),
-      transform: Mat4::from_translation(Vec3::new(x, y, z)),
-      material,
+impl Editor {
+  pub(crate) fn new(params: Arc<CanWeTalkParams>) -> Self {
+    Self {
+      params,
+      shared: Arc::new(Shared {
+        // until a window has opened and found the display's own
+        display_scale: AtomicU64::new(1.0_f64.to_bits()),
+        typing: AtomicBool::new(false),
+      }),
+    }
+  }
+}
+
+impl nice_plug::editor::Editor for Editor {
+  type Handle = Handle;
+
+  fn spawn(
+    &self,
+    parent: Option<ParentWindowHandle>,
+    wait_for_parent: bool,
+    fallback_scale_factor: Option<f64>,
+    gui_context: GuiContext,
+    host: Option<HostMethods>,
+  ) -> Result<SpawnedEditor<Handle>, Box<dyn Error>> {
+    let host = host.map(|host| {
+      baseview::host::Host::new()
+        .with_callbacks(HostCallbacks(host.callbacks))
+        .with_main_thread(MainThreadCaller(host.main_thread_caller))
     });
-    meshes.push(mesh);
-  };
-  let steel = Vec3::new(0.30, 0.32, 0.36);
-  let ink = Material::matte(Vec3::splat(0.86));
-  let hole = Material::matte(Vec3::splat(0.012));
-  let (middle, across) = (WIDTH / 2.0, HEIGHT / 2.0);
-
-  // a brushed plate in a dark rim, with a darker section standing on it for the knobs
-  put(
-    &mut meshes,
-    parts::plate(WIDTH, HEIGHT, 6.0),
-    0.0,
-    0.0,
-    0.0,
-    Material::brushed(steel),
-  );
-  put(
-    &mut meshes,
-    parts::frame(WIDTH, HEIGHT, 7.0, 7.0, 10.0),
-    middle,
-    across,
-    0.0,
-    Material::glossy(Vec3::new(0.05, 0.05, 0.06)),
-  );
-  put(
-    &mut meshes,
-    parts::slab(WIDTH - 44.0, 168.0, UP, 10.0),
-    middle,
-    KNOB_Y + 12.0,
-    0.0,
-    Material::brushed(steel * 0.6),
-  );
-  // the plugin's name along the top, and what it is at the other end
-  put(
-    &mut meshes,
-    parts::legend("CANWETALK", 11.0, 1.9),
-    86.0,
-    24.0,
-    0.0,
-    Material::matte(Vec3::splat(0.07)),
-  );
-  put(
-    &mut meshes,
-    parts::legend("PITCH + FORMANT SHIFTER", 6.0, 1.0),
-    WIDTH - 110.0,
-    25.0,
-    0.0,
-    Material::matte(Vec3::splat(0.07)),
-  );
-  for control in Control::ALL {
-    let (x, radius) = (control.x(), control.knob().radius);
-    // a ring of dashes around each knob with its ends numbered, and its name under it
-    put(
-      &mut meshes,
-      parts::dashes(19, parts::KNOB_SWEEP, radius + 8.0, 3.2, 0.6),
-      x,
-      KNOB_Y,
-      UP,
-      ink,
-    );
-    let (low, high) = control.ends();
-    put(
-      &mut meshes,
-      parts::legend(low, 6.0, 1.0),
-      x - radius - 6.0,
-      KNOB_Y + radius + 6.0,
-      UP,
-      ink,
-    );
-    put(
-      &mut meshes,
-      parts::legend(high, 6.0, 1.0),
-      x + radius + 6.0,
-      KNOB_Y + radius + 6.0,
-      UP,
-      ink,
-    );
-    put(
-      &mut meshes,
-      parts::legend(control.name(), 8.0, 1.4),
-      x,
-      KNOB_Y + KNOB_RADIUS + 24.0,
-      UP,
-      ink,
-    );
-  }
-  // a screw in a dark seat in each corner
-  for (x, y) in [
-    (22.0, 22.0),
-    (WIDTH - 22.0, 22.0),
-    (22.0, HEIGHT - 22.0),
-    (WIDTH - 22.0, HEIGHT - 22.0),
-  ] {
-    if y < across {
-      continue;
-    }
-    put(
-      &mut meshes,
-      parts::Button::round(11.0, 1.0).seat(2.0),
-      x,
-      y - 4.0,
-      0.0,
-      hole,
-    );
-    put(
-      &mut meshes,
-      parts::screw(5.5),
-      x,
-      y - 4.0,
-      0.0,
-      Material::chrome(Vec3::splat(0.6)),
-    );
-  }
-
-  let mut knobs = [0; 3];
-  for (slot, control) in knobs.iter_mut().zip(Control::ALL) {
-    let knob = control.knob();
-    *slot = meshes.len();
-    meshes.extend([knob.body(), knob.cap(0.86), knob.line()]);
-  }
-  Panel {
-    meshes: Arc::from(meshes),
-    fixed,
-    knobs,
-  }
-}
-
-fn update(editor: &mut Editor, message: Message) -> Task<Message> {
-  match message {
-    Message::Turned(control, gesture) => {
-      let setter = editor.context.nice_context.param_setter();
-      set_nice_param(control.param(&editor.params), gesture, &setter);
-    }
-    Message::Polled => {}
-  }
-  Task::none()
-}
-
-fn view(editor: &Editor) -> Element<'_, Message, Theme> {
-  let mut layers = stack![skeuo::iced::panel(scene(editor))];
-  for control in Control::ALL {
-    let param = control.param(&editor.params);
-    let knob = Knob::new(nice_to_iced(param))
-      .on_gesture(move |gesture| Message::Turned(control, gesture))
-      .size(Length::Fixed(KNOB_RADIUS * 2.0))
-      .style(Unseen);
-    layers = layers.push(
-      pin(knob)
-        .x(control.x() - KNOB_RADIUS)
-        .y(KNOB_Y - KNOB_RADIUS),
-    );
-    // the name is engraved on the panel, so only the value is written here
-    let label = text(param.to_string()).size(12).color(Color::WHITE);
-    layers = layers.push(
-      pin(label)
-        .x(control.x() - 22.0)
-        .y(KNOB_Y + KNOB_RADIUS + 31.0),
-    );
-  }
-  layers.into()
-}
-
-fn scene(editor: &Editor) -> Scene {
-  let panel = &editor.panel;
-  let mut objects = panel.fixed.clone();
-  for (control, body) in Control::ALL.into_iter().zip(panel.knobs) {
-    let turn = control.param(&editor.params).unmodulated_normalized_value();
-    let transform = Mat4::from_translation(Vec3::Z * UP)
-      * parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
-    let black = Vec3::new(0.035, 0.035, 0.04);
-    let parts = [
-      Material::glossy(black),
-      Material::spun(Vec3::new(0.78, 0.79, 0.81)),
-      Material::matte(black),
-    ];
-    for (part, material) in parts.into_iter().enumerate() {
-      objects.push(Object {
-        mesh: body + part,
-        transform,
-        material,
-      });
-    }
-  }
-  Scene {
-    size: Vec2::new(WIDTH, HEIGHT),
-    heights: [-8.0, 48.0],
-    // seen a little from in front, under a wide soft light
-    lean: Vec2::new(0.0, -0.3),
-    light: Light {
-      ambient: Vec3::splat(0.34),
-      softness: 5.0,
-      ..Light::default()
-    },
-    look: Look {
-      soften: 0.25,
-      ..Look::default()
-    },
-    meshes: panel.meshes.clone(),
-    objects,
-    lamps: Vec::new(),
-  }
-}
-
-/// the look of a knob that leaves all the drawing to the panel under it
-struct Unseen;
-
-impl knob_style::StyleSheet for Unseen {
-  type Style = Theme;
-
-  fn idle(&self, _theme: &Theme) -> knob_style::Appearance {
-    knob_style::Appearance::Circle(knob_style::CircleAppearance {
-      color: Color::TRANSPARENT,
-      border_width: 0.0,
-      border_color: Color::TRANSPARENT,
-      notch: knob_style::NotchShape::None,
+    let settings = WindowSettings::new()
+      .with_title("CanWeTalk")
+      .with_size(sized(self.params.editor_scale.load(Ordering::Relaxed)))
+      .with_min_size::<LogicalSize<f32>>(Some(sized(SCALES[0])))
+      .with_max_size::<LogicalSize<f32>>(Some(sized(SCALES[1])))
+      .with_parent(parent.as_ref())
+      .with_wait_for_parent(wait_for_parent)
+      .with_fallback_scale_factor(fallback_scale_factor);
+    let (to_window, from_host) = mpsc::channel();
+    let to_reader = to_window.clone();
+    // the names the wrapper reports the controls' parameters by
+    let named = self.params.param_map();
+    let ids = Control::ALL.map(|control| {
+      let ptr = control.param(&self.params).as_ptr();
+      (named.iter().find(|(_, named, _)| *named == ptr))
+        .map(|(id, _, _)| id.clone())
+        .expect("every control's parameter is one of the plugin's")
+    });
+    let (params, shared) = (Arc::clone(&self.params), Arc::clone(&self.shared));
+    let window = baseview::Window::create_with_host(
+      settings,
+      move |context| -> Result<Window, HandlerError> {
+        Window::new(context, gui_context, params, shared, from_host, to_reader)
+      },
+      host,
+    )?;
+    Ok(SpawnedEditor {
+      handle: Handle {
+        waker: window.waker(),
+        shared: Arc::clone(&self.shared),
+        to_window,
+        ids,
+      },
+      window,
     })
   }
 
-  fn hovered(&self, theme: &Theme) -> knob_style::Appearance {
-    self.idle(theme)
+  fn size(&self) -> NativeSize<u32> {
+    let scale = f64::from_bits(self.shared.display_scale.load(Ordering::Relaxed));
+    let size = sized(self.params.editor_scale.load(Ordering::Relaxed));
+    NativeSize::from_size(size.into(), scale)
   }
 
-  fn gesturing(&self, theme: &Theme) -> knob_style::Appearance {
-    self.idle(theme)
+  fn resize_hint(&self) -> ResizeHint {
+    RESIZE
+  }
+}
+
+/// the host's side of an open window
+pub struct Handle {
+  waker: WindowWaker,
+  shared: Arc<Shared>,
+  to_window: mpsc::Sender<ToWindow>,
+  /// the name of each control's parameter, in the order of [`Control::ALL`]
+  ids: [String; 3],
+}
+
+impl Handle {
+  fn tell(&self, told: ToWindow) {
+    // a window that has closed has nothing left to tell
+    if self.to_window.send(told).is_ok() {
+      self.waker.request_poll();
+    }
+  }
+}
+
+impl EditorHandle for Handle {
+  type Window = baseview::Window;
+  type Error = baseview::Error;
+
+  fn run_until_closed(window: baseview::Window) -> Result<(), baseview::Error> {
+    window.run_until_closed()
   }
 
-  fn disabled(&self, theme: &Theme) -> knob_style::Appearance {
-    self.idle(theme)
+  fn set_parent(
+    &self,
+    parent: ParentWindowHandle,
+    window: &baseview::Window,
+  ) -> Result<(), baseview::Error> {
+    window.set_parent(&parent)
+  }
+
+  fn show(&self, window: &baseview::Window) -> Result<(), baseview::Error> {
+    window.show()
+  }
+
+  fn hide(&self, window: &baseview::Window) -> Result<(), baseview::Error> {
+    window.hide()
+  }
+
+  fn set_size(
+    &self,
+    new_size: NativeSize<u32>,
+    window: &baseview::Window,
+  ) -> Result<(), baseview::Error> {
+    window.resize(new_size)
+  }
+
+  fn adjust_size(
+    &self,
+    new_size: NativeSize<u32>,
+    window: &baseview::Window,
+  ) -> Option<NativeSize<u32>> {
+    let now = window.size();
+    let current = NativeSize::from_logical_or_physical(now.logical, now.physical);
+    Some(RESIZE.adjust_size(new_size, current, now.scale_factor))
+  }
+
+  fn host_main_thread_callback(&self, window: &baseview::Window) {
+    window.host_main_thread_callback();
+  }
+
+  fn set_fallback_scale_factor(
+    &self,
+    scale_factor: f64,
+    window: &baseview::Window,
+  ) -> Result<(), baseview::Error> {
+    window.suggest_fallback_scale_factor(scale_factor)
+  }
+
+  fn on_virtual_key_from_host(
+    &self,
+    key_code: VirtualKeyCode,
+    is_down: bool,
+    modifiers: Modifiers,
+  ) -> bool {
+    if !self.shared.typing.load(Ordering::Relaxed) {
+      return false;
+    }
+    let extend = modifiers.contains(Modifiers::SHIFT);
+    let key = match key_code {
+      VirtualKeyCode::Return | VirtualKeyCode::NumpadEnter => Some(Key::Enter),
+      VirtualKeyCode::Escape => Some(Key::Escape),
+      VirtualKeyCode::Backspace => Some(Key::Backspace),
+      VirtualKeyCode::Delete => Some(Key::Delete),
+      VirtualKeyCode::ArrowLeft => Some(Key::Left { extend }),
+      VirtualKeyCode::ArrowRight => Some(Key::Right { extend }),
+      VirtualKeyCode::Home => Some(Key::Home { extend }),
+      VirtualKeyCode::End => Some(Key::End { extend }),
+      VirtualKeyCode::Tab => Some(Key::Tab),
+      VirtualKeyCode::Space => Some(Key::Letter(' ')),
+      _ => None,
+    };
+    if is_down && let Some(key) = key {
+      self.tell(ToWindow::Key(key));
+    }
+    // every key is kept from the host while a value is typed, and so is its release
+    true
+  }
+
+  fn state_changed(&self) {
+    self.tell(ToWindow::State);
+  }
+
+  fn param_value_changed(&self, id: &str, normalized_value: f32) {
+    // the parameters with no control on the panel change nothing that it shows
+    let control = (Control::ALL.into_iter())
+      .zip(&self.ids)
+      .find(|(_, named)| *named == id);
+    if let Some((control, _)) = control {
+      self.tell(ToWindow::Value(control, normalized_value));
+    }
+  }
+
+  fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {
+    // the panel shows the values without their modulation
+  }
+}
+
+/// baseview's host callbacks from the ones nice-plug hands an editor
+struct HostCallbacks(Box<dyn nice_plug::editor::HostCallbacks>);
+
+impl baseview::host::HostCallbacks for HostCallbacks {
+  fn request_resize(&mut self, new_size: baseview::WindowSize) -> Result<(), HandlerError> {
+    (self.0)
+      .request_resize(new_size.physical.into(), new_size.scale_factor)
+      .map_err(HandlerError::from_boxed)
+  }
+
+  fn destroyed(&mut self) {
+    self.0.destroyed();
+  }
+}
+
+struct MainThreadCaller(Box<dyn nice_plug::editor::HostMainThreadCaller>);
+
+impl baseview::host::HostMainThreadCaller for MainThreadCaller {
+  fn call_main_thread(&mut self) {
+    self.0.call_main_thread();
   }
 }

@@ -79,7 +79,7 @@ impl Plugin for CanWeTalk {
   // pitch bend comes with the control changes
   const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
 
-  type Editor = nice_plug_iced::IcedEditor;
+  type Editor = editor::Editor;
   type SysExMessage = ();
   type BackgroundTask = ();
 
@@ -88,7 +88,7 @@ impl Plugin for CanWeTalk {
   }
 
   fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
-    editor::create(self.params.clone())
+    Some(editor::Editor::new(self.params.clone()))
   }
 
   fn activate(
