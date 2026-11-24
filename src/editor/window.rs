@@ -24,7 +24,7 @@ use super::panel::{HEIGHT, Panel, Picture, READOUT_LETTERS, WIDTH, readout_shows
 use super::screen::Screen;
 use super::{Control, Shared, ToWindow};
 use crate::params::CanWeTalkParams;
-use controls::interaction::{Action, Button, Edit, Event, Interaction, Key, Menu, Moment};
+use controls::interaction::{Action, Button, Edit, Event, Interaction, Key, Menu, Moment, Readout};
 
 /// how often the panel is told that time has passed, and what the window shows is checked
 /// against what it should
@@ -293,7 +293,11 @@ impl Window {
     let window = [size.physical.width, size.physical.height];
 
     let dials = Control::ALL.map(|control| control.dial(&params)).into();
-    let interaction = Interaction::new(dials, [WIDTH, HEIGHT], READOUT_LETTERS, readout_shows);
+    let readout = Readout {
+      room: READOUT_LETTERS,
+      shows: readout_shows,
+    };
+    let interaction = Interaction::new(dials, [WIDTH, HEIGHT], readout, super::SCALES);
     let mut panel = Panel::new();
     let values = Control::ALL.map(|control| control.param(&params).unmodulated_normalized_value());
     let [_, _, width, _] = fitted(window, [WIDTH, HEIGHT]);
@@ -834,8 +838,7 @@ fn hint_shape(
   use wgpu::rwh::{HasWindowHandle, RawWindowHandle};
   use x11rb::properties::{AspectRatio, WmSizeHints};
 
-  use super::sized;
-  use controls::interaction::SCALES;
+  use super::{SCALES, sized};
 
   let RawWindowHandle::Xlib(window) = context.window_handle()?.as_raw() else {
     return Err("the window is not an x11 one".into());

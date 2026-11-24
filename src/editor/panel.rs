@@ -445,7 +445,7 @@ impl Panel {
         Material::matte(Vec3::splat(0.92)),
       ];
       for (mesh, material) in self.knobs[index].iter().zip(materials) {
-        drawn.place(mesh, transform, material, Some(Target::Knob(index)));
+        drawn.place(mesh, transform, material, Some(Target::Control(index)));
       }
       let edit = interaction.edit().filter(|edit| edit.control == index);
       let value = param.normalized_value_to_string(turn, false);

@@ -21,7 +21,7 @@ use self::panel::{HEIGHT, WIDTH};
 use self::window::{Guarded, Window};
 use crate::params::CanWeTalkParams;
 use controls::fit::{chosen, shaped};
-use controls::interaction::{Dial, Key, SCALES};
+use controls::interaction::{Dial, Feel, Key};
 
 /// the knobs on the panel, left to right
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,9 +66,13 @@ impl Control {
         self.param(&write).normalized_value_to_string(value, unit)
       }),
       read: Box::new(move |text| self.param(&read).string_to_normalized_value(text)),
+      feel: Feel::default(),
     }
   }
 }
+
+/// the window is no smaller and no larger than this many times its own size
+const SCALES: [f32; 2] = [0.75, 3.0];
 
 /// how the window may be sized: at the panel's own shape, from the smallest to the largest
 /// it is drawn at
