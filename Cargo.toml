@@ -26,10 +26,10 @@ standalone = ["nice-plug/standalone"]
 [dependencies]
 # fades and filters decay into denormals on silence, which the wrapper flushes to zero
 nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
-# the editor's crates, from a checkout of the potpot repository next to this one
-potpot = { path = "../potpot/crates/potpot" }
-potpot-controls = { path = "../potpot/crates/potpot-controls" }
-potpot-window = { path = "../potpot/crates/potpot-window" }
+# the editor's crates
+potpot = { git = "https://github.com/tetra-fox/potpot", branch = "main" }
+potpot-controls = { git = "https://github.com/tetra-fox/potpot", branch = "main" }
+potpot-window = { git = "https://github.com/tetra-fox/potpot", branch = "main" }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]

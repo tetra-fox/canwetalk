@@ -9,6 +9,7 @@ use potpot::parts;
 use potpot::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::flat::Flat;
 use potpot_controls::interaction::{Edit, Reading, Target};
+use potpot_controls::stroke;
 use potpot_window::{Gpu, Skin, View, wgpu};
 
 use super::Control;
@@ -40,7 +41,7 @@ const UNIT_WEIGHT: f32 = 1.15;
 /// how many letters as tall as the figures fit in a window with two points clear at each end
 pub(super) const READOUT_LETTERS: usize = {
   let mut letters = 0;
-  while parts::legend_width(letters + 1, READOUT_TALL) <= WINDOW.x - 4.0 {
+  while stroke::width(letters + 1, READOUT_TALL) <= WINDOW.x - 4.0 {
     letters += 1;
   }
   letters
@@ -159,7 +160,7 @@ struct Lettering {
 impl Lettering {
   fn new(figures: &str, unit: &str, selected: Range<usize>) -> Self {
     let count = figures.chars().count();
-    let wide = parts::legend_width(count, READOUT_TALL).max(0.0);
+    let wide = stroke::width(count, READOUT_TALL).max(0.0);
     // a unit written after a space is a word, which stands off from the figures
     let name = unit.trim_start();
     let (gap, unit_tall) = if name.len() < unit.len() {
@@ -167,7 +168,7 @@ impl Lettering {
     } else {
       (2.5, READOUT_TALL)
     };
-    let unit_wide = parts::legend_width(name.chars().count(), unit_tall);
+    let unit_wide = stroke::width(name.chars().count(), unit_tall);
     let all = if name.is_empty() {
       wide
     } else {
@@ -199,8 +200,8 @@ impl Lettering {
       }),
       selected: (!selected.is_empty()).then(|| {
         // from the gap before the first of them to the gap after the last
-        let from = parts::legend_gap(count, selected.start, READOUT_TALL);
-        let to = parts::legend_gap(count, selected.end, READOUT_TALL);
+        let from = stroke::gap(count, selected.start, READOUT_TALL);
+        let to = stroke::gap(count, selected.end, READOUT_TALL);
         let half = Vec3::new((to - from) / 2.0, READOUT_TALL / 2.0 + 2.0, 0.0);
         let block = Mesh::cuboid(-half, half + Vec3::Z * 0.15);
         (lettered(&only(true)), Arc::new(block), (from + to) / 2.0)
@@ -305,7 +306,7 @@ impl Panel {
     for (name, from, to) in [("SHIFT", 42.0, 300.0), ("OUTPUT", 324.0, 424.0)] {
       let at = (from + to) / 2.0;
       put(parts::legend(name, 5.5, 1.0), at, HEADING_Y, 0.0, ink, None);
-      let clear = parts::legend_width(name.len(), 5.5) / 2.0 + 6.0;
+      let clear = stroke::width(name.len(), 5.5) / 2.0 + 6.0;
       for (near, far) in [(at - clear, from), (at + clear, to)] {
         let rule = Mesh::cuboid(
           Vec3::new(near.min(far), HEADING_Y - 0.4, 0.0),
@@ -559,6 +560,7 @@ impl Panel {
         // strong enough to show on the black strip, which gives little of any light back
         color: LAMP_COLOR * wet * 2.5,
         reach: LAMP_SIZE * 4.0,
+        radius: LAMP_SIZE / 2.0,
       }],
     };
     (scene, drawn.targets)
@@ -605,7 +607,7 @@ impl Panel {
       drawn.put(unit, on_glass + unit_at.extend(0.0), lit, target);
     }
     if let Some(edit) = edit {
-      let across = parts::legend_gap(edit.text.chars().count(), edit.caret, READOUT_TALL);
+      let across = stroke::gap(edit.text.chars().count(), edit.caret, READOUT_TALL);
       drawn.put(&self.caret, figures_at + Vec3::X * across, lit, target);
     }
     self.readouts[index] = Some(lettering);
@@ -645,9 +647,9 @@ mod tests {
     // the widest a shift is written, and the most letters that are let be typed
     let widest = Lettering::new("-24.00", " st", 0..0);
     let (_, unit_at) = widest.unit.as_ref().expect("a unit");
-    let right = unit_at.x + parts::legend_width(2, UNIT_TALL) / 2.0;
+    let right = unit_at.x + stroke::width(2, UNIT_TALL) / 2.0;
     assert!(right <= WINDOW.x / 2.0 - 1.0, "{right}");
-    assert!(parts::legend_width(READOUT_LETTERS, READOUT_TALL) <= WINDOW.x - 4.0);
+    assert!(stroke::width(READOUT_LETTERS, READOUT_TALL) <= WINDOW.x - 4.0);
     assert!(READOUT_LETTERS >= "-12.5 st".len());
   }
 }
