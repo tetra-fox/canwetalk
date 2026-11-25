@@ -26,10 +26,10 @@ standalone = ["nice-plug/standalone"]
 [dependencies]
 # fades and filters decay into denormals on silence, which the wrapper flushes to zero
 nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
-# the editor's crates, from a checkout of the skeuo repository next to this one
-controls = { path = "../skeuo/crates/controls" }
-controls-window = { path = "../skeuo/crates/controls-window" }
-skeuo = { path = "../skeuo/crates/skeuo" }
+# the editor's crates, from a checkout of the potpot repository next to this one
+potpot = { path = "../potpot/crates/potpot" }
+potpot-controls = { path = "../potpot/crates/potpot-controls" }
+potpot-window = { path = "../potpot/crates/potpot-window" }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]

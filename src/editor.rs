@@ -1,4 +1,4 @@
-//! the plugin's window: a lit panel drawn by skeuo, with the knobs turned and their values
+//! the plugin's window: a lit panel drawn by potpot, with the knobs turned and their values
 //! typed by what the pointer and the keys do on it
 
 mod panel;
@@ -6,16 +6,16 @@ mod panel;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use controls::interaction::Readout;
-use controls_window::nice_plug::{Bound, NotOurs};
-use controls_window::{Remembered, Settings};
 use nice_plug::prelude::*;
+use potpot_controls::interaction::Readout;
+use potpot_window::nice_plug::{Bound, NotOurs};
+use potpot_window::{Remembered, Settings};
 
 use self::panel::{HEIGHT, READOUT_LETTERS, WIDTH};
 use crate::params::CanWeTalkParams;
 
 /// the plugin's panel as the wrapper has it
-pub type Editor = controls_window::nice_plug::Editor<panel::Panel>;
+pub type Editor = potpot_window::nice_plug::Editor<panel::Panel>;
 
 /// the knobs on the panel, left to right
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

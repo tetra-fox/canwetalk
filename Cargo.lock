@@ -351,10 +351,10 @@ dependencies = [
 name = "canwetalk"
 version = "0.1.0"
 dependencies = [
- "controls",
- "controls-window",
  "nice-plug",
- "skeuo",
+ "potpot",
+ "potpot-controls",
+ "potpot-window",
 ]
 
 [[package]]
@@ -503,28 +503,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
-]
-
-[[package]]
-name = "controls"
-version = "0.1.0"
-
-[[package]]
-name = "controls-window"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "baseview",
- "bytemuck",
- "controls",
- "keyboard-types",
- "nice-plug",
- "pollster",
- "softbuffer",
- "tracing",
- "wgpu",
- "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]
@@ -1814,6 +1792,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "potpot"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "potpot-controls",
+ "wgpu",
+]
+
+[[package]]
+name = "potpot-controls"
+version = "0.1.0"
+
+[[package]]
+name = "potpot-window"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "baseview",
+ "bytemuck",
+ "keyboard-types",
+ "nice-plug",
+ "pollster",
+ "potpot-controls",
+ "softbuffer",
+ "tracing",
+ "wgpu",
+ "windows-sys 0.61.2",
+ "x11rb",
+]
+
+[[package]]
 name = "powerfmt"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2091,16 +2101,6 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
-
-[[package]]
-name = "skeuo"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "controls",
- "glam",
- "wgpu",
-]
 
 [[package]]
 name = "slab"

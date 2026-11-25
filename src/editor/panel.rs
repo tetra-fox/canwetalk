@@ -4,12 +4,12 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use std::ops::Range;
 use std::sync::Arc;
 
-use controls::flat::Flat;
-use controls::interaction::{Edit, Reading, Target};
-use controls_window::{Gpu, Skin, View, wgpu};
-use skeuo::glam::{Mat4, Vec2, Vec3};
-use skeuo::parts;
-use skeuo::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
+use potpot::glam::{Mat4, Vec2, Vec3};
+use potpot::parts;
+use potpot::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
+use potpot_controls::flat::Flat;
+use potpot_controls::interaction::{Edit, Reading, Target};
+use potpot_window::{Gpu, Skin, View, wgpu};
 
 use super::Control;
 
@@ -210,7 +210,7 @@ impl Lettering {
   }
 }
 
-/// the panel as skeuo draws it: its meshes, each made once, and the scene of the frame last
+/// the panel as potpot draws it: its meshes, each made once, and the scene of the frame last
 /// laid out
 pub struct Panel {
   renderer: Renderer,
