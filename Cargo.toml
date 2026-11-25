@@ -8,14 +8,7 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [workspace]
-members = ["crates/controls", "crates/controls-window", "crates/skeuo", "xtask"]
-
-[workspace.dependencies]
-# the one place the crate of unstyled controls is named: everything else writes `controls`
-controls = { path = "crates/controls" }
-# and the one place its window is: everything else writes `controls_window`
-controls-window = { path = "crates/controls-window" }
-wgpu = { version = "27", default-features = false, features = ["std", "wgsl"] }
+members = ["xtask"]
 
 [lib]
 # the plugin hosts load, and a library for the program below to build on
@@ -33,9 +26,10 @@ standalone = ["nice-plug/standalone"]
 [dependencies]
 # fades and filters decay into denormals on silence, which the wrapper flushes to zero
 nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
-controls.workspace = true
-controls-window.workspace = true
-skeuo = { path = "crates/skeuo" }
+# the editor's crates, from a checkout of the skeuo repository next to this one
+controls = { path = "../skeuo/crates/controls" }
+controls-window = { path = "../skeuo/crates/controls-window" }
+skeuo = { path = "../skeuo/crates/skeuo" }
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]
