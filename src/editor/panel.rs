@@ -263,7 +263,7 @@ impl Panel {
       None,
     );
     let rim = |half: f32| {
-      let outline = [[0.0, 0.0], [0.0, 1.3], [0.9, 1.3], [2.6, 0.0]].map(Vec2::from);
+      let outline = [[0.0, 0.0], [0.0, 2.0], [1.4, 2.0], [4.4, 0.0]].map(Vec2::from);
       Mesh::extruded(&outline, |_| half, 1.0)
     };
     for (half, x, y, turn) in [
@@ -323,14 +323,14 @@ impl Panel {
     for slot in 0..5 {
       let x = WIDTH - EAR - 28.0 + slot as f32 * 5.0;
       put(
-        parts::slot(2.6, 76.0),
-        x + 0.4,
-        KNOB_Y + 0.4,
+        parts::slot(2.8, 76.0),
+        x + 0.6,
+        KNOB_Y + 0.6,
         0.0,
         lip,
         None,
       );
-      put(parts::slot(2.6, 76.0), x, KNOB_Y, 0.05, hole, None);
+      put(parts::slot(2.8, 76.0), x, KNOB_Y, 0.05, hole, None);
     }
 
     for control in Control::ALL {
@@ -514,9 +514,12 @@ impl Panel {
           reflect: 0.9,
           ..Material::glossy(Vec3::new(0.06, 0.06, 0.065))
         },
+        // tight enough that its bright wedges stay apart under the light, where it glances
+        // off the whole face at nearly one angle
         Material {
           specular: 1.0,
-          ..Material::spun(Vec3::new(0.5, 0.51, 0.54))
+          shininess: 160.0,
+          ..Material::spun(Vec3::new(0.42, 0.43, 0.46))
         },
         Material::matte(Vec3::splat(0.92)),
       ];
