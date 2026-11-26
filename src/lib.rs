@@ -1218,6 +1218,25 @@ mod tests {
     assert_eq!(released.shifter.made_hz(), [0.0; VOICES]);
   }
 
+  /// the voice that follows the input is published for a while after the input's pitch is
+  /// lost, and not long after
+  #[test]
+  fn the_following_voice_outlasts_its_pitch_for_a_moment() {
+    let take = |silent: f32| {
+      let mut input = tone(RATE as usize / 2);
+      input.resize(input.len() + (RATE * silent) as usize, [0.0; 2]);
+      Take {
+        set: vec![(0, "pitch", 7.0)],
+        ..Take::new(RATE, input)
+      }
+    };
+    let (soon, _) = run(&take(0.1), &[512]);
+    assert_eq!(soon.shifter.detected_hz(), None);
+    assert!(soon.shifter.made_hz()[0] > 0.0, "gone straight away");
+    let (later, _) = run(&take(0.3), &[512]);
+    assert_eq!(later.shifter.made_hz(), [0.0; VOICES]);
+  }
+
   /// with no note held and no pitch in the input, no voice plays: the one that follows the
   /// input still sounds at the pitch it last had, but nothing of it is published
   #[test]

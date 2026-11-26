@@ -18,6 +18,9 @@ use crate::voice::Expression;
 
 /// seconds of input the voices can read back over. the longest grains are cut to fit
 const HISTORY_SECONDS: f32 = 4.5;
+/// seconds the voice that follows the input is still shown for after the input's pitch is
+/// lost, which bridges the gaps between a voice's words
+const FOLLOW_HOLD_SECONDS: f64 = 0.2;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
 /// the most frames taken at once. a block's input goes into the lines before the voices
@@ -57,6 +60,10 @@ pub(crate) struct Shifter {
   detector: Detector,
   /// the last detected pitch, held while the input is unvoiced
   input_pitch: f64,
+  /// samples since the detector last held a pitch, which stops counting at `follow_hold`,
+  /// the samples in `FOLLOW_HOLD_SECONDS`
+  unvoiced_for: usize,
+  follow_hold: usize,
   smear: Smear,
   /// what the voices read, the input after smear
   input: [Ring; 2],
@@ -85,10 +92,14 @@ impl Shifter {
   pub(crate) fn new(sample_rate: f32, range: Range) -> Self {
     let detector = Detector::new(sample_rate, range);
     let input_pitch = lowest_pitch(&detector, sample_rate);
+    let follow_hold = (f64::from(sample_rate) * FOLLOW_HOLD_SECONDS) as usize;
     Self {
       sample_rate: f64::from(sample_rate),
       detector,
       input_pitch,
+      // a new shifter has no pitch it has just lost
+      unvoiced_for: follow_hold,
+      follow_hold,
       smear: Smear::new(sample_rate),
       input: std::array::from_fn(|_| Ring::new((sample_rate * HISTORY_SECONDS) as usize)),
       marks: Marks::new(2.0 / INPUT_PITCH.start()),
@@ -113,6 +124,8 @@ impl Shifter {
       sample_rate,
       detector,
       input_pitch,
+      unvoiced_for,
+      follow_hold,
       smear,
       input,
       marks,
@@ -124,6 +137,7 @@ impl Shifter {
     } = self;
     detector.reset();
     *input_pitch = lowest_pitch(detector, *sample_rate as f32);
+    *unvoiced_for = *follow_hold;
     smear.reset();
     for line in input {
       line.clear();
@@ -144,6 +158,12 @@ impl Shifter {
       + self.stereo.longest_delay()
   }
 
+  /// whether the voice that follows the input is shown: while the detector holds a pitch, and
+  /// for `FOLLOW_HOLD_SECONDS` after it lets one go
+  fn following(&self) -> bool {
+    self.unvoiced_for < self.follow_hold
+  }
+
   /// the input's pitch in hertz while the detector has one
   pub(crate) fn detected_hz(&self) -> Option<f32> {
     let hz = self.input_pitch * self.sample_rate / 2.0;
@@ -151,16 +171,16 @@ impl Shifter {
   }
 
   /// semitones the formants of the voice that started last follow its pitch by, of the voices
-  /// with a note and the one that follows the input while a pitch is detected in it
+  /// with a note and the one that follows the input while it is `following`
   pub(crate) fn formant_followed(&self) -> Option<f32> {
-    (self.notes.followed(self.detector.voiced())).map(|octaves| (12.0 * octaves) as f32)
+    (self.notes.followed(self.following())).map(|octaves| (12.0 * octaves) as f32)
   }
 
-  /// the pitch in hertz each voice makes that has a note, or follows the input while a pitch
-  /// is detected in it, the voice that started last first, and after the last of them zero
+  /// the pitch in hertz each voice makes that has a note, or follows the input while it is
+  /// `following`, the voice that started last first, and after the last of them zero
   pub(crate) fn made_hz(&self) -> [f32; VOICES] {
     let hertz = self.sample_rate / 2.0;
-    let made = self.notes.made_pitches(self.detector.voiced());
+    let made = self.notes.made_pitches(self.following());
     made.map(|pitch| (pitch * hertz) as f32)
   }
 
@@ -192,10 +212,16 @@ impl Shifter {
     if settings.detect != self.detector.range() {
       self.detector.set_range(settings.detect);
       self.input_pitch = lowest_pitch(&self.detector, self.sample_rate as f32);
+      self.unvoiced_for = self.follow_hold;
     }
     if let Some(period) = self.detector.push(frame[0] + frame[1]) {
       self.input_pitch = (2.0 / f64::from(period)).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end());
     }
+    self.unvoiced_for = if self.detector.voiced() {
+      0
+    } else {
+      self.unvoiced_for.saturating_add(1)
+    };
 
     let smear = settings.effects.smear;
     let frame = if smear > 0.0 {

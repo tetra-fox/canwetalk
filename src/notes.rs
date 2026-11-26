@@ -393,31 +393,31 @@ impl Notes {
   }
 
   /// the voices that play something: each with a note, until it falls silent after the note
-  /// is let go, and the one that follows the input while `input_voiced`, which is whether the
-  /// input has a pitch to follow. without one that voice's pitch is the last one found, or the
-  /// lowest of the range before any was
-  fn playing(&self, input_voiced: bool) -> impl Iterator<Item = &Voice> {
+  /// is let go, and the one that follows the input while `following`, which is whether the
+  /// input has a pitch to follow or lost one only just. long without one that voice's pitch is
+  /// the last one found, or the lowest of the range before any was
+  fn playing(&self, following: bool) -> impl Iterator<Item = &Voice> {
     (self.voices.iter()).filter(move |voice| match voice.note {
       // the same end the voice itself stops at
       Some(_) => voice.sounding || !voice.envelope.is_silent(),
-      None => input_voiced && voice.sounding,
+      None => following && voice.sounding,
     })
   }
 
   /// octaves the formants of the playing voice that started last follow its pitch by, as its
-  /// last grain had them, if a voice plays. `input_voiced` is as `playing` takes it
-  pub(crate) fn followed(&self, input_voiced: bool) -> Option<f64> {
-    (self.playing(input_voiced))
+  /// last grain had them, if a voice plays. `following` is as `playing` takes it
+  pub(crate) fn followed(&self, following: bool) -> Option<f64> {
+    (self.playing(following))
       .max_by_key(|voice| voice.started)
       .map(Voice::followed)
   }
 
   /// the pitch each playing voice makes, as of its last grain, the voice that started last
   /// first, and after the last of them zero. a voice that has made no grain yet is zero too.
-  /// `input_voiced` is as `playing` takes it
-  pub(crate) fn made_pitches(&self, input_voiced: bool) -> [f64; VOICES] {
+  /// `following` is as `playing` takes it
+  pub(crate) fn made_pitches(&self, following: bool) -> [f64; VOICES] {
     let mut sounding = [None; VOICES];
-    let voices = self.playing(input_voiced);
+    let voices = self.playing(following);
     for (slot, voice) in sounding.iter_mut().zip(voices) {
       *slot = Some((voice.started, voice.made_pitch()));
     }
