@@ -215,9 +215,7 @@ impl Lettering {
 /// laid out
 pub struct Panel {
   renderer: Renderer,
-  /// the scene last laid out, which is what the pointer is on. none until the first is
-  scene: Option<Scene>,
-  /// what each of the scene's objects is, in the same order
+  /// what each object of the scene last laid out is, in the scene's order
   targets: Vec<Option<Target>>,
   /// everything that never moves or changes
   fixed: Drawn,
@@ -485,7 +483,6 @@ impl Panel {
     });
     Self {
       renderer: Renderer::new(gpu.device, gpu.format),
-      scene: None,
       targets: Vec::new(),
       fixed,
       knobs,
@@ -618,7 +615,7 @@ impl Skin for Panel {
   fn prepare(&mut self, gpu: &Gpu, view: &View, _over: &mut Flat) {
     let (scene, targets) = self.scene(view.controls, view.edit);
     (self.renderer).prepare(gpu.device, gpu.queue, &scene, view.pixels);
-    (self.scene, self.targets) = (Some(scene), targets);
+    self.targets = targets;
   }
 
   fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, place: [u32; 4]) {
@@ -632,8 +629,12 @@ impl Skin for Panel {
     self.renderer.render(encoder, target, on, place);
   }
 
+  fn changed(&self) -> Option<&[[u32; 4]]> {
+    self.renderer.changed()
+  }
+
   fn target_at(&self, at: [f32; 2]) -> Option<Target> {
-    let object = self.scene.as_ref()?.pick(at.into())?;
+    let object = self.renderer.pick(at.into())?;
     self.targets[object]
   }
 }
