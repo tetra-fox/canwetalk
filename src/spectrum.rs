@@ -1,5 +1,5 @@
-//! the input's spectrum and its detected pitch, taken on the audio thread and written to the
-//! feed the editor draws them from
+//! the input's spectrum, its detected pitch and what formant follow does, taken on the audio
+//! thread and written to the feed the editor draws them from
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -13,9 +13,11 @@ use realfft::{RealFftPlanner, RealToComplex};
 /// how many bands the spectrum is drawn in
 pub(crate) const BANDS: usize = 120;
 /// the feed's slots: each band's level in decibels, then the detected pitch in hertz, which is
-/// zero while there is none
+/// zero while there is none, then the semitones formant follow moves the formants of the voice
+/// that started last by, which is zero while none sounds
 pub(crate) const PITCH_SLOT: usize = BANDS;
-pub(crate) const SLOTS: usize = BANDS + 1;
+pub(crate) const FOLLOW_SLOT: usize = BANDS + 1;
+pub(crate) const SLOTS: usize = BANDS + 2;
 /// the frequencies the bands are laid along
 pub(crate) const HERTZ: Axis = Axis::log([20.0, 20_000.0]);
 /// the quietest level a band shows, in decibels against a full scale sine
@@ -85,12 +87,19 @@ impl Analyzer {
     self.next = 0;
     self.until = self.hop;
     self.shown.fill(FLOOR_DB);
-    self.write(feed, None);
+    self.write(feed, None, None);
   }
 
   /// takes in frames of input and writes the spectrum to `feed` each time a transform is due,
-  /// with `pitch` in hertz if one is detected. does not allocate
-  pub(crate) fn take(&mut self, frames: &[[f32; 2]], pitch: Option<f32>, feed: &Feed) {
+  /// with `pitch` in hertz if one is detected and the semitones formant follow moves the
+  /// formants by, if a voice sounds. does not allocate
+  pub(crate) fn take(
+    &mut self,
+    frames: &[[f32; 2]],
+    pitch: Option<f32>,
+    followed: Option<f32>,
+    feed: &Feed,
+  ) {
     for [left, right] in frames {
       self.heard[self.next] = 0.5 * (left + right);
       self.next = (self.next + 1) % self.heard.len();
@@ -98,7 +107,7 @@ impl Analyzer {
       if self.until == 0 {
         self.until = self.hop;
         self.transform();
-        self.write(feed, pitch);
+        self.write(feed, pitch, followed);
       }
     }
   }
@@ -124,11 +133,12 @@ impl Analyzer {
     }
   }
 
-  fn write(&self, feed: &Feed, pitch: Option<f32>) {
+  fn write(&self, feed: &Feed, pitch: Option<f32>, followed: Option<f32>) {
     for (slot, shown) in self.shown.iter().enumerate() {
       feed.set(slot, *shown);
     }
     feed.set(PITCH_SLOT, pitch.unwrap_or(0.0));
+    feed.set(FOLLOW_SLOT, followed.unwrap_or(0.0));
   }
 }
 
@@ -146,7 +156,7 @@ mod tests {
     let frames: Vec<[f32; 2]> = (0..analyzer.heard.len() * 2)
       .map(|index| [(TAU * hz * index as f32 / rate).sin(); 2])
       .collect();
-    analyzer.take(&frames, Some(hz), &feed);
+    analyzer.take(&frames, Some(hz), None, &feed);
     let band = (HERTZ.turn(hz) * BANDS as f32) as usize;
     let level = analyzer.shown[band];
     assert!(level.abs() < 0.1, "{level} dB");

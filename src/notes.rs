@@ -392,6 +392,15 @@ impl Notes {
     }
   }
 
+  /// octaves the formants of the voice that started last follow its pitch by, as its last
+  /// grain had them, while any voice is held or follows the input
+  pub(crate) fn followed(&self) -> Option<f64> {
+    (self.voices.iter())
+      .filter(|voice| voice.sounding)
+      .max_by_key(|voice| voice.started)
+      .map(Voice::followed)
+  }
+
   /// adds every voice to the samples of `out`, of which `input` already holds every one's
   /// input. each has its own settings, and in `heard` its input cycle and the ratio the
   /// vibrato moves the pitches by

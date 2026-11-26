@@ -71,6 +71,9 @@ pub(crate) struct Engine {
   rise: Option<f64>,
   /// the ratio the pitch was last shifted by, for the octaves that was
   shift: Last,
+  /// octaves the last grain's formants moved by to follow its pitch, within the limit on how
+  /// far the formants move
+  followed: f64,
   grains: Vec<Grain>,
 }
 
@@ -126,6 +129,7 @@ impl Engine {
       wet: None,
       rise: None,
       shift: Last::default(),
+      followed: 0.0,
       grains: Vec::with_capacity(MAX_GRAINS),
     }
   }
@@ -136,6 +140,10 @@ impl Engine {
       grains: std::mem::take(&mut self.grains),
       ..Self::new()
     };
+  }
+
+  pub(crate) fn followed(&self) -> f64 {
+    self.followed
   }
 
   /// the voice over the samples of `out`, of each of which `wanted` says how it is to
@@ -234,7 +242,9 @@ impl Engine {
     }
 
     let followed = shape.formant_follow * (pitch / input_pitch).log2();
-    let rate = 2f64.powf((shape.formant + followed).clamp(-MAX_FORMANT, MAX_FORMANT));
+    let formant = (shape.formant + followed).clamp(-MAX_FORMANT, MAX_FORMANT);
+    self.followed = formant - shape.formant;
+    let rate = 2f64.powf(formant);
     // back to where the input period began, so grains start whole periods apart
     let mut delay = self.input_phase / (0.5 * input_pitch);
     if unity && delay < UNITY_REACH {

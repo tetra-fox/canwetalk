@@ -149,6 +149,11 @@ impl Voice {
     *key_pitch = Last::default();
   }
 
+  /// octaves the formants of the voice's last grain moved by to follow its pitch
+  pub(crate) fn followed(&self) -> f64 {
+    self.engine.followed()
+  }
+
   /// the note while it is held
   pub(crate) fn held(&self) -> Option<Note> {
     self.note.filter(|_| self.sounding)

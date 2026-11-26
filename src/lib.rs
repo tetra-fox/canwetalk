@@ -166,8 +166,8 @@ impl Plugin for CanWeTalk {
       }
       let mut wet = dry;
       self.shifter.process(&mut wet[..count], &self.settings);
-      let pitch = self.shifter.detected_hz();
-      (self.analyzer).take(&dry[..count], pitch, &self.feed);
+      let (pitch, followed) = (self.shifter.detected_hz(), self.shifter.formant_followed());
+      (self.analyzer).take(&dry[..count], pitch, followed, &self.feed);
       for (index, (dry, wet)) in dry.iter().zip(wet).take(count).enumerate() {
         let mix = self.params.mix.smoothed.next();
         for ((channel, dry), wet) in channels.iter_mut().zip(dry).zip(wet) {
@@ -1064,6 +1064,30 @@ mod tests {
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().expect("the png header is written");
     (writer.write_image_data(&picture.pixels)).expect("the png pixels are written");
+  }
+
+  /// what the ring around the formant shows: the semitones formant follow adds to the formants
+  /// of the voice that started last, which with no note is the one following the input
+  #[test]
+  fn formant_follow_is_published_as_the_shift_it_adds() {
+    let set = |midi| {
+      vec![
+        (0, "midi", midi),
+        (0, "pitch", 7.0),
+        (0, "formant", -5.0),
+        (0, "formant_follow", 0.8),
+      ]
+    };
+    let take = |set| Take {
+      set,
+      ..Take::new(RATE, tone(RATE as usize / 2))
+    };
+    let (plugin, _) = run(&take(set(2.0)), &[512]);
+    let followed = (plugin.shifter.formant_followed()).expect("the voice following the input");
+    assert!((followed - 0.8 * 7.0).abs() < 1e-3, "{followed}");
+    // in a gate mode with no note held nothing sounds
+    let (gated, _) = run(&take(set(3.0)), &[512]);
+    assert_eq!(gated.shifter.formant_followed(), None);
   }
 
   #[test]

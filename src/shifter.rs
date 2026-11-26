@@ -150,6 +150,12 @@ impl Shifter {
     self.detector.voiced().then_some(hz as f32)
   }
 
+  /// semitones the formants of the voice that started last follow its pitch by, while one
+  /// sounds
+  pub(crate) fn formant_followed(&self) -> Option<f32> {
+    (self.notes.followed()).map(|octaves| (12.0 * octaves) as f32)
+  }
+
   /// the effect alone on up to `BLOCK` frames, each with its own settings, with no latency
   /// against the input. the mode and latch of the settings are given to `notes` beforehand,
   /// ahead of the notes of the first frame, and no note comes with a later one
