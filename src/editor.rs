@@ -56,8 +56,9 @@ enum Kind {
   /// a large knob with figures around it
   Shift,
   Knob,
-  /// a pointed knob that stops at each of the choices it has the names of. a printed one has
-  /// them printed around it, one at each stop, in place of a window its value shows in
+  /// a knob that stops at each of the choices it has the names of, with a light at each stop.
+  /// a printed one has the names printed around it, one at each stop, in place of a window its
+  /// value shows in
   Selector {
     choices: &'static [&'static str],
     printed: bool,
@@ -187,6 +188,7 @@ pub(crate) fn editor(params: Arc<CanWeTalkParams>, feed: Feed) -> Result<Editor,
   let mut settings = Settings::new("CanWeTalk", [WIDTH, HEIGHT]);
   // the window is no smaller and no larger than this many times the panel's size
   settings.scales = [0.6, 2.0];
+  (settings.menu, settings.grip) = panel::furniture();
   settings.feed = feed;
   let bound = Control::ALL.map(|control| control.bound(&params));
   let (get, set) = (Arc::clone(&params), Arc::clone(&params));

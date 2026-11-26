@@ -5,10 +5,11 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use potpot::glam::{Mat4, Vec2, Vec3};
-use potpot::parts::{self, LedRing, PushSwitch, Screen};
-use potpot::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
+use potpot::parts::{self, Handle, LedArc, LedRing, PushSwitch, Screen, Vent};
+use potpot::{Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::axis::Axis;
 use potpot_controls::flat::{Color, Flat};
+use potpot_controls::furniture::{GripLook, MenuLook};
 use potpot_controls::interaction::{Edit, Push, Reading, Target};
 use potpot_controls::layout::{Pack, middle, pack};
 use potpot_controls::stroke;
@@ -31,19 +32,35 @@ const EAR: f32 = 32.0;
 /// the ends of the room the controls have across the panel, clear of the ears
 const LEFT: f32 = EAR + 14.0;
 const RIGHT: f32 = WIDTH - EAR - 14.0;
+/// the light built into the hardware
+const CYAN: Vec3 = Vec3::new(0.2, 0.85, 1.0);
+/// the color of the caret and the selection while a value is typed
+const AMBER: Vec3 = Vec3::new(1.0, 0.66, 0.14);
+/// the dark metal of the panel, and the darker metal of the strip along its bottom
+const GUNMETAL: Vec3 = Vec3::new(0.12, 0.13, 0.14);
+const STRIP_METAL: Vec3 = Vec3::new(0.06, 0.065, 0.07);
+/// how much further apart lit letters are than the face sets them, in units of the grid a
+/// letter is drawn on, and how wide their strokes are for each point of their height
+const TRACKING: f32 = 1.0;
+const LIT_WEIGHT: f32 = 0.13;
+/// how brightly the names of the groups are lit, and the rest of the lettering on the panel
+const HEADING_LIT: f32 = 1.0;
+const LABEL_LIT: f32 = 0.85;
 /// the windows the controls' values show in
 const WINDOW: Vec2 = Vec2::new(66.0, 17.0);
-/// how much wider and taller the frame around a window is than the window
+/// how much wider and taller the rim around a window is than the window, and how high it
+/// stands over the glass
 const WINDOW_FRAME: f32 = 6.0;
+const WINDOW_RIM: f32 = 1.8;
 /// how high the glass of a window is, which what it shows is lit on
 const GLASS_UP: f32 = 0.5;
 /// the figures a window shows its value in: how tall, and how wide their strokes. a unit
 /// that is a word comes after them in smaller letters standing on the same line, and one
 /// that is a sign as tall as they are, both in finer strokes
 const READOUT_TALL: f32 = 7.0;
-const READOUT_WEIGHT: f32 = 1.35;
+const READOUT_WEIGHT: f32 = 1.2;
 const UNIT_TALL: f32 = 5.0;
-const UNIT_WEIGHT: f32 = 1.0;
+const UNIT_WEIGHT: f32 = 0.9;
 /// how many letters as tall as the figures fit in a window with two points clear at each end
 pub(super) const READOUT_LETTERS: usize = {
   let mut letters = 0;
@@ -52,27 +69,48 @@ pub(super) const READOUT_LETTERS: usize = {
   }
   letters
 };
-const READOUT_COLOR: Vec3 = Vec3::new(1.0, 0.66, 0.14);
-/// how tall the names of a selector's choices are printed around it
+/// the knobs: the radius and height of a shift's and of the others'
+const SHIFT_RADIUS: f32 = 27.0;
+const SHIFT_HEIGHT: f32 = 24.0;
+const SMALL_RADIUS: f32 = 14.0;
+const SMALL_HEIGHT: f32 = 15.0;
+/// how far the chrome skirt under a knob reaches past its edge, for each point of its radius
+const SKIRT: f32 = 1.22;
+/// how far out from a shift's middle the figures of its scale are, and how tall
+const FIGURES_OUT: f32 = 53.0;
+const FIGURES_TALL: f32 = 6.0;
+/// how far out from a selector's middle the light at each stop is and how wide, and how far
+/// out the name of each choice is printed and how tall
+const PIP_OUT: f32 = 22.0;
+const PIP: f32 = 4.0;
+const CHOICE_OUT: f32 = 31.0;
 const CHOICE_TALL: f32 = 5.0;
-/// how tall the letters of a group's name are, and how far the rules beside it turn down at
-/// their far ends
+/// how bright a selector's light is at a stop it is not at
+const PIP_DARK: f32 = 0.1;
+/// the field each group of controls is set in: how wide its rim is, how high and the radius
+/// of its corners, and the room inside it over the group's name and under its windows
+const FIELD_BORDER: f32 = 3.0;
+const FIELD_UP: f32 = 1.6;
+const FIELD_CORNER: f32 = 6.0;
+const FIELD_PAD: f32 = 6.0;
+/// how tall the letters of a group's name are, how far the lines of light beside it turn down
+/// at their far ends, and how far in from the ends of its field those ends are
 const HEADING_TALL: f32 = 5.5;
 const RULE_DROP: f32 = 6.0;
+const RULE_IN: f32 = 10.0;
 /// the strip along the bottom that carries the plugin's name: its middle down the panel, how
 /// high it stands and how tall it is
 const STRIP_Y: f32 = HEIGHT - 29.0;
-const STRIP_UP: f32 = 1.5;
+const STRIP_UP: f32 = 2.0;
 const STRIP_TALL: f32 = 34.0;
-/// the lamp at the end of the strip, and how wide it is
-const LAMP: Vec2 = Vec2::new(WIDTH - 54.0, STRIP_Y);
-const LAMP_SIZE: f32 = 11.0;
-const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.45, 0.08);
+/// the light on the strip that shows how much of the shift is heard, and how wide it is
+const EFFECT: Vec2 = Vec2::new(WIDTH - 66.0, STRIP_Y);
+const EFFECT_SIZE: f32 = 7.0;
 /// the screen at the top right, by the middle and the size of its face
-const SCREEN_AT: Vec2 = Vec2::new(RIGHT - SCREEN_CLEAR - SCREEN_SIZE.x / 2.0, 104.0);
+const SCREEN_AT: Vec2 = Vec2::new(RIGHT - SCREEN_CLEAR - SCREEN_SIZE.x / 2.0, 106.0);
 const SCREEN_SIZE: Vec2 = Vec2::new(352.0, 136.0);
-/// the room kept clear across the panel at each side of the screen's face
-const SCREEN_CLEAR: f32 = 7.0;
+/// the room kept clear across the panel at each side of the screen's face, in its field
+const SCREEN_CLEAR: f32 = 14.0;
 /// the room on the screen the spectrum is drawn in, from its top left corner to its bottom
 /// right, and the middle of the column beside it that the note is written in
 const PLOT: [Vec2; 2] = [
@@ -99,24 +137,25 @@ const LEVEL_LINES: [f32; 4] = [-18.0, -36.0, -54.0, -72.0];
 /// the frequencies a line is drawn up at, those named under them
 const HERTZ_LINES: [f32; 8] = [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0];
 const HERTZ_NAMES: [(f32, &str); 3] = [(100.0, "100"), (1000.0, "1K"), (10_000.0, "10K")];
-/// the colors on the screen: its face, its lines, their names, the input spectrum's fill under
-/// its edge, the edge and the detected pitch, then the output spectrum's edge, the pitches the
-/// voices make and the names of the output's lines
-const FACE: Vec3 = Vec3::new(0.014, 0.011, 0.008);
-const GRID: Color = [0.12, 0.075, 0.03, 1.0];
-const LABELS: Color = [0.42, 0.27, 0.08, 1.0];
-const FILL: Color = [0.3, 0.16, 0.03, 1.0];
-const EDGE: Color = [1.0, 0.66, 0.14, 1.0];
-const PITCH: Color = [1.0, 0.92, 0.75, 1.0];
-const MADE: Color = [0.45, 0.9, 1.0, 1.0];
-const MADE_PITCH: Color = [0.3, 0.62, 0.72, 1.0];
-const MADE_LABELS: Color = [0.16, 0.36, 0.42, 1.0];
+/// the colors on the screen: its smoked face, its lines, their names, the input spectrum's
+/// fill under its edge, the edge and the detected pitch, then the output spectrum's edge, the
+/// pitches the voices make and the names of the output's lines
+const FACE: Vec3 = Vec3::new(0.008, 0.014, 0.018);
+const GRID: Color = [0.035, 0.11, 0.14, 1.0];
+const LABELS: Color = [0.12, 0.42, 0.52, 1.0];
+const FILL: Color = [0.02, 0.12, 0.16, 1.0];
+const EDGE: Color = [CYAN.x, CYAN.y, CYAN.z, 1.0];
+const PITCH: Color = [0.92, 1.0, 1.0, 1.0];
+const MADE: Color = [0.78, 0.96, 1.0, 1.0];
+const MADE_PITCH: Color = [0.38, 0.5, 0.56, 1.0];
+const MADE_LABELS: Color = [0.28, 0.4, 0.46, 1.0];
 
-/// a row of controls across the panel, by where its parts are down it: the names of its
-/// groups, the middles of its controls, the names under them and the windows their values
-/// show in
+/// a row of controls across the panel, by where its parts are down it: the top and the foot
+/// of the fields its groups are set in, the names of its groups, the middles of its controls,
+/// the names under them and the windows their values show in
 #[derive(Clone, Copy, Debug)]
 struct Row {
+  field: [f32; 2],
   heading: f32,
   middle: f32,
   name: f32,
@@ -128,8 +167,8 @@ const TOP_MARGIN: f32 = 10.0;
 const STRIP_CLEAR: f32 = 8.0;
 /// the room in a row between the drops at the ends of its rules and the tops of its controls,
 /// between the controls and the names under them, and between the names and the windows
-const OVER_GAP: f32 = 6.75;
-const UNDER_GAP: f32 = 14.0;
+const OVER_GAP: f32 = 5.5;
+const UNDER_GAP: f32 = 10.0;
 const NAME_GAP: f32 = 6.0;
 
 /// the groups of controls in each row, left to right, each under its name. the one group of
@@ -192,13 +231,51 @@ const GROUPS: [&[(&str, &[Control])]; 3] = [
   ],
 ];
 
+/// the knob the shifts are turned by
+fn shift_knob() -> parts::Knob {
+  parts::Knob {
+    skirt: 0.0,
+    ..parts::Knob::round(SHIFT_RADIUS, SHIFT_HEIGHT)
+  }
+}
+
+/// the knob the other controls that turn are turned by
+fn small_knob() -> parts::Knob {
+  parts::Knob {
+    skirt: 0.0,
+    ..parts::Knob::round(SMALL_RADIUS, SMALL_HEIGHT)
+  }
+}
+
+/// the chrome skirt a knob stands on, which does not turn with it
+fn skirt(knob: parts::Knob) -> Mesh {
+  parts::bezel(knob.radius * 0.8, knob.radius * SKIRT, knob.height * 0.18)
+}
+
+/// the lights around a shift's knob, which show its value either way from nothing
+fn shift_ring() -> LedRing {
+  LedRing::new(24, SHIFT_RADIUS * SKIRT + 6.0, 5.0)
+}
+
+/// the unbroken light around the knob of a control that turns smoothly
+fn knob_arc() -> LedArc {
+  LedArc::new(SMALL_RADIUS * SKIRT + 5.0, 2.4)
+}
+
+/// how far down from a knob's middle a point `out` from it is at either end of its turn
+fn down_at_ends(out: f32) -> f32 {
+  -out * (parts::KNOB_SWEEP / 2.0).cos()
+}
+
 impl Kind {
   /// how wide a part of this kind is laid out, with the room it keeps clear around it
   fn slot(self) -> f32 {
     match self {
       Self::Shift => 140.0,
-      Self::Knob | Self::Selector { .. } => 76.0,
-      Self::Switch => 60.0,
+      // room for the names printed out to its sides
+      Self::Selector { printed: true, .. } => 88.0,
+      Self::Knob | Self::Selector { printed: false, .. } => 76.0,
+      Self::Switch => 64.0,
     }
   }
 
@@ -206,26 +283,36 @@ impl Kind {
   /// panel
   fn reach(self) -> [f32; 2] {
     match self {
-      // over the figure at the top of its scale, and under the ring it stands in
-      Self::Shift => [64.25, 43.6],
-      // over the marks of its scale, and under the ring it stands in
-      Self::Knob => [26.5, 20.6],
-      // over the name of the choice at the top, and under the names at the ends of its turn
-      Self::Selector { printed: true, .. } => [30.5, 22.3],
-      // over the long mark at the top, and under the marks at the ends of its turn
-      Self::Selector { printed: false, .. } => [26.0, 18.4],
+      // over the figure at the top of its scale, and under those at the ends of its turn or
+      // its skirt, whichever is lower
+      Self::Shift => {
+        let skirt = SHIFT_RADIUS * SKIRT;
+        let ends = down_at_ends(FIGURES_OUT) + FIGURES_TALL / 2.0;
+        [FIGURES_OUT + FIGURES_TALL / 2.0, ends.max(skirt)]
+      }
+      // over the light around it, and under its ends or the skirt
+      Self::Knob => {
+        let arc = knob_arc();
+        let out = arc.radius + arc.width / 2.0 + arc.margin;
+        [out, down_at_ends(out).max(SMALL_RADIUS * SKIRT)]
+      }
+      // over the name of the choice at the top, and under those at the ends of its turn
+      Self::Selector { printed: true, .. } => [
+        CHOICE_OUT + CHOICE_TALL / 2.0,
+        down_at_ends(CHOICE_OUT) + CHOICE_TALL / 2.0,
+      ],
+      // over the light at the top, and under those at the ends of its turn or the skirt
+      Self::Selector { printed: false, .. } => {
+        let pip = PIP / 2.0 * 1.12;
+        let ends = down_at_ends(PIP_OUT) + pip;
+        [PIP_OUT + pip, ends.max(SMALL_RADIUS * SKIRT)]
+      }
       // over and under the collar
-      Self::Switch => [14.52, 14.52],
-    }
-  }
-
-  /// the knob a control of this kind is turned by, if it has one
-  fn turned(self) -> Option<Turned> {
-    match self {
-      Self::Shift => Some(Turned::Shift),
-      Self::Knob => Some(Turned::Small),
-      Self::Selector { choices, printed } => Some(Turned::Pointed { choices, printed }),
-      Self::Switch => None,
+      Self::Switch => {
+        let switch = switch();
+        let half = switch.plunger.length / 2.0 + switch.collar;
+        [half, half]
+      }
     }
   }
 
@@ -238,12 +325,12 @@ impl Kind {
     }
   }
 
-  /// how tall the name under a control of this kind is, and how wide its strokes
-  fn name_size(self) -> (f32, f32) {
+  /// how tall the name under a control of this kind is
+  fn name_tall(self) -> f32 {
     match self {
-      Self::Shift => (8.0, 1.7),
-      Self::Knob | Self::Selector { .. } => (6.0, 1.25),
-      Self::Switch => (5.5, 1.15),
+      Self::Shift => 7.5,
+      Self::Knob | Self::Selector { .. } => 5.5,
+      Self::Switch => 5.0,
     }
   }
 }
@@ -279,6 +366,41 @@ impl Control {
       Self::Mix => "MIX",
     }
   }
+
+  /// the place of its turn the light around a control is lit from: the middle for one that
+  /// shifts either way, the start for the rest
+  fn rest(self) -> f32 {
+    match self {
+      Self::Pitch | Self::Formant | Self::SlideFormant => 0.5,
+      Self::FormantFollow
+      | Self::Smooth
+      | Self::Detune
+      | Self::Smear
+      | Self::Stereo
+      | Self::VibratoDepth
+      | Self::VibratoRate
+      | Self::VibratoSync
+      | Self::VibratoDivision
+      | Self::Mode
+      | Self::Latch
+      | Self::Glide
+      | Self::GlideNotesOnly
+      | Self::Attack
+      | Self::Decay
+      | Self::Sustain
+      | Self::Release
+      | Self::PressureLevel
+      | Self::BendRange
+      | Self::Detect
+      | Self::Anchor
+      | Self::Mix => 0.0,
+    }
+  }
+}
+
+/// the push switch every switch on the panel is
+fn switch() -> PushSwitch {
+  PushSwitch::backlit(30.0, 18.0, 6.0)
 }
 
 /// where a control is: across the panel, and its row
@@ -298,20 +420,22 @@ impl Spot {
   }
 }
 
-/// the name of a group of controls over them, between rules that reach `ends` across the
-/// panel
-struct Heading {
+/// a field set into the panel, `across` and `down` it, with a name over what is in it. `y` is
+/// how far down the name is
+#[derive(Clone, Debug)]
+struct Field {
   name: &'static str,
+  across: [f32; 2],
+  down: [f32; 2],
   y: f32,
-  ends: [f32; 2],
 }
 
-/// where each control is, in the order of [`Control::ALL`], and the names of the groups and
-/// of the screen. `border` is the width of the screen's bezel
-fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Heading>) {
+/// where each control is, in the order of [`Control::ALL`], and the fields the groups of
+/// controls and the screen are set in. `border` is the width of the screen's bezel
+fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
   let mut spots = [None; Control::ALL.len()];
-  let mut headings = Vec::new();
-  // each row's parts down the panel, from its heading to its windows
+  let mut fields = Vec::new();
+  // each row's parts down the panel, from the top of its fields to their foot
   let bands = GROUPS.map(|groups| {
     let kinds =
       || (groups.iter()).flat_map(|(_, controls)| controls.iter().map(|control| control.kind()));
@@ -322,6 +446,7 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Heading>) {
       (0.0, 0.0)
     };
     [
+      FIELD_PAD,
       HEADING_TALL,
       // the drop starts at the middle of the letters
       RULE_DROP - HEADING_TALL / 2.0,
@@ -329,21 +454,25 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Heading>) {
       largest(|kind| kind.reach()[0]),
       largest(|kind| kind.reach()[1]),
       UNDER_GAP,
-      largest(|kind| kind.name_size().0),
+      largest(Kind::name_tall),
       name_gap,
       window,
+      FIELD_PAD,
     ]
   });
-  // the rows spread from the top margin to the strip, the first reaching at least to the foot
-  // of the screen's bezel
+  // the rows spread from the top margin to the strip, the first reaching at least past the
+  // foot of the screen's bezel
   let mut tall = bands.map(|bands| bands.iter().sum::<f32>());
-  tall[0] = tall[0].max(SCREEN_AT.y + SCREEN_SIZE.y / 2.0 + border - TOP_MARGIN);
+  let screen_foot = SCREEN_AT.y + SCREEN_SIZE.y / 2.0 + border + FIELD_PAD;
+  tall[0] = tall[0].max(screen_foot - TOP_MARGIN);
   let down = [TOP_MARGIN, STRIP_Y - STRIP_TALL / 2.0 - STRIP_CLEAR];
   let rows: Vec<Row> = (pack(down, &tall, Pack::Spread).into_iter().zip(bands))
     .map(|(span, bands)| {
-      let placed = <[_; 9]>::try_from(pack(span, &bands, Pack::Start));
-      let [letters, _, _, over, _, _, name, _, window] = placed.expect("a place for each band");
+      let placed = <[_; 11]>::try_from(pack(span, &bands, Pack::Start));
+      let [_, letters, _, _, over, _, _, name, _, window, _] =
+        placed.expect("a place for each band");
       Row {
+        field: span,
         heading: middle(letters),
         middle: over[1],
         name: middle(name),
@@ -357,10 +486,10 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Heading>) {
       .map(|control| control.kind().slot())
       .collect()
   };
-  // the room each row's groups share, and how
-  let screen = SCREEN_AT.x - SCREEN_SIZE.x / 2.0 - SCREEN_CLEAR;
+  // the room each row's groups share, and how. the screen's field reaches to the right end
+  let screen = [RIGHT - SCREEN_SIZE.x - 2.0 * SCREEN_CLEAR, RIGHT];
   let rooms = [
-    ([LEFT, screen], Pack::Start),
+    ([LEFT, screen[0] - FIELD_PAD * 2.0], Pack::Start),
     ([LEFT, RIGHT], Pack::Spread),
     ([LEFT, RIGHT], Pack::Spread),
   ];
@@ -369,10 +498,11 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Heading>) {
       .map(|(_, controls)| slots(controls).iter().sum())
       .collect();
     for (&(name, controls), span) in groups.iter().zip(pack(room, &widths, how)) {
-      headings.push(Heading {
+      fields.push(Field {
         name,
+        across: span,
+        down: row.field,
         y: row.heading,
-        ends: [span[0] + 6.0, span[1] - 6.0],
       });
       for (&control, slot) in controls
         .iter()
@@ -385,15 +515,15 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Heading>) {
       }
     }
   }
-  let over_screen = SCREEN_SIZE.x / 2.0 + border - 6.0;
-  headings.push(Heading {
+  fields.push(Field {
     name: "INPUT",
+    across: screen,
+    down: rows[0].field,
     y: rows[0].heading,
-    ends: [SCREEN_AT.x - over_screen, SCREEN_AT.x + over_screen],
   });
   (
     spots.map(|spot| spot.expect("every control is in a group")),
-    headings,
+    fields,
   )
 }
 
@@ -438,6 +568,21 @@ fn slanted(mut mesh: Mesh, slope: f32) -> Mesh {
     vertex.position[0] -= vertex.position[1] * slope;
   }
   mesh
+}
+
+/// lettering lit from inside the panel, in fine strokes spread wider than the face sets them
+fn lit_legend(text: &str, tall: f32) -> Mesh {
+  parts::tracked_legend(text, tall, tall * LIT_WEIGHT, TRACKING)
+}
+
+/// how wide [`lit_legend`] draws `text`
+fn lit_width(text: &str, tall: f32) -> f32 {
+  stroke::tracked_width(text.chars().count(), tall, TRACKING)
+}
+
+/// what lit lettering and lines are made of, at `level` of their full light
+fn lit(level: f32) -> Material {
+  Material::lamp(CYAN * level)
 }
 
 /// what a window shows, as meshes
@@ -509,99 +654,48 @@ impl Lettering {
   }
 }
 
-/// the knob the shifts are turned by, skirted and large
-fn shift_knob() -> parts::Knob {
-  parts::Knob {
-    skirt: 0.2,
-    ..parts::Knob::skirted(36.0, 30.0)
-  }
-}
-
-/// the knob the other controls that turn smoothly are turned by
-fn small_knob() -> parts::Knob {
-  parts::Knob {
-    top: parts::Top::Flat,
-    ..parts::Knob::knurled(16.0, 18.0)
-  }
-}
-
-/// the knob a selector is turned by, which points
-fn pointed_knob() -> parts::Knob {
-  parts::Knob::chicken_head(15.0, 16.0)
-}
-
-/// the knob a control is turned by, and for a pointed one the names of the choices it stops at
-/// and whether they are printed around it
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Turned {
-  Shift,
-  Small,
-  Pointed {
-    choices: &'static [&'static str],
-    printed: bool,
-  },
-}
-
 /// the point `out` from a knob's middle where the knob points at `turn` of its sweep
 fn around(middle: Vec2, turn: f32, out: f32) -> Vec2 {
   let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
   middle + Vec2::new(sin, -cos) * out
 }
 
+/// the place of its turn each of `count` stops of a selector is at, from one end to the
+/// other, which puts a lone stop in the middle
+fn stop_turn(stop: usize, count: usize) -> f32 {
+  match count {
+    1 => 0.5,
+    count => stop as f32 / (count - 1) as f32,
+  }
+}
+
+/// the middle of the name of a choice printed at `turn` of the sweep of a selector around
+/// `middle`. each name is pushed to the side its stop leans to, by as much of its half width as
+/// the stop leans, which keeps a name beside the knob clear of it
+fn choice_at(middle: Vec2, turn: f32, name: &str) -> Vec2 {
+  let side = ((turn - 0.5) * parts::KNOB_SWEEP).sin();
+  let half = lit_width(name, CHOICE_TALL) / 2.0;
+  around(middle, turn, CHOICE_OUT) + Vec2::X * side * half
+}
+
 /// meshes and what each is made of
 type Parts = Vec<(Arc<Mesh>, Material)>;
 
-/// the meshes of a knob: its body, the face let into it if it has `face`, and the line painted
-/// on it
-fn knob_parts(knob: parts::Knob, face: bool) -> Parts {
+/// the meshes of a knob that turn with it: its glossy black body and the lit line on it
+fn knob_parts(knob: parts::Knob) -> Parts {
   let body = Material {
     reflect: 0.9,
-    ..Material::glossy(Vec3::new(0.06, 0.06, 0.065))
+    ..Material::glossy(Vec3::splat(0.02))
   };
-  // tight enough that its bright wedges stay apart under the light, where it glances off the
-  // whole face at nearly one angle
-  let spun = Material {
-    specular: 1.0,
-    shininess: 160.0,
-    ..Material::spun(Vec3::new(0.42, 0.43, 0.46))
-  };
-  let line = Material::matte(Vec3::splat(0.92));
-  let mut parts = vec![(Arc::new(knob.body()), body)];
-  if face {
-    parts.push((Arc::new(knob.cap(0.74)), spun));
-  }
-  parts.push((Arc::new(knob.line()), line));
-  parts
+  vec![
+    (Arc::new(knob.body()), body),
+    (Arc::new(knob.line()), Material::lamp(CYAN)),
+  ]
 }
 
-/// the parts of each knob, made once. a pointed knob has no face let into it
-struct Knobs {
-  shift: Parts,
-  small: Parts,
-  pointed: Parts,
-}
-
-impl Knobs {
-  fn new() -> Self {
-    Self {
-      shift: knob_parts(shift_knob(), true),
-      small: knob_parts(small_knob(), true),
-      pointed: knob_parts(pointed_knob(), false),
-    }
-  }
-
-  fn of(&self, turned: Turned) -> &Parts {
-    match turned {
-      Turned::Shift => &self.shift,
-      Turned::Small => &self.small,
-      Turned::Pointed { .. } => &self.pointed,
-    }
-  }
-}
-
-/// what the screen shows of a feed, kept for as long as the feed holds the same numbers
-struct Shown {
-  feed: Vec<f32>,
+/// objects made for what they show, kept for as long as it is the same
+struct Kept<T> {
+  of: T,
   objects: Vec<Object>,
 }
 
@@ -610,12 +704,22 @@ struct Front {
   spots: [Spot; Control::ALL.len()],
   /// everything that never moves or changes
   fixed: Drawn,
-  knobs: Knobs,
+  /// the parts of a shift's knob and of the others
+  shift_knob: Parts,
+  small_knob: Parts,
   switch: PushSwitch,
   plunger: Arc<Mesh>,
-  /// one light of the ring around the formant's knob
+  ring: LedRing,
+  /// one light of a shift's ring
   ring_light: Arc<Mesh>,
-  lamp: Arc<Mesh>,
+  arc: LedArc,
+  /// the dark gap an arc is set in and its lens
+  arc_meshes: [Arc<Mesh>; 2],
+  /// the lit arc around each control, kept for as long as it is lit over the same run
+  arcs: Vec<Option<Kept<[f32; 2]>>>,
+  /// the light at each stop of a selector
+  pip: Arc<Mesh>,
+  effect: Arc<Mesh>,
   glass: Arc<Mesh>,
   /// the lettering of what each window shows, kept for as long as it shows that
   readouts: Vec<Option<Lettering>>,
@@ -623,65 +727,60 @@ struct Front {
   screen: Screen,
   /// how many objects the screen's lines and their names are, which what it shows lies over
   grid: usize,
-  shown: Option<Shown>,
+  shown: Option<Kept<Vec<f32>>>,
 }
 
 impl Front {
   fn new() -> Self {
     let screen = Screen::new(SCREEN_SIZE.x, SCREEN_SIZE.y);
-    let (spots, headings) = layout(screen.border);
+    let (spots, fields) = layout(screen.border);
     let mut fixed = Drawn::default();
-    let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material, target| {
-      fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
+    let mut put = |mesh: Mesh, at: Vec3, material: Material, target| {
+      fixed.put(&Arc::new(mesh), at, material, target);
     };
-    let face = Vec3::new(0.05, 0.30, 0.66);
-    // less of a mirror than bare metal and with less of a shine, so that the dye shows
-    let anodized = Material {
-      metal: 0.3,
-      specular: 0.28,
-      wear: 0.7,
-      ..Material::brushed(face)
+    let flat = |x: f32, y: f32| Vec3::new(x, y, 0.0);
+    // bead blasted more than brushed
+    let metal = Material {
+      brushed: 0.35,
+      grain: 0.3,
+      ..Material::brushed(GUNMETAL)
     };
-    let ink = Material::matte(Vec3::splat(0.92));
-    let faint = Material::matte(Vec3::splat(0.55));
-    let red = Material::matte(Vec3::new(0.85, 0.07, 0.05));
-    let black = Vec3::new(0.03, 0.03, 0.035);
-    let hole = Material::matte(Vec3::splat(0.012));
-    let chrome = Material::chrome(Vec3::splat(0.8));
+    let hole = Material::matte(Vec3::splat(0.01));
+    let chrome = Material::chrome(Vec3::splat(0.75));
+    let steel = Material::brushed(Vec3::splat(0.55));
     // the far side of anything cut into the plate, which the light reaches
-    let lip = Material::matte(face.lerp(Vec3::ONE, 0.5));
-    let (middle, across) = (WIDTH / 2.0, HEIGHT / 2.0);
+    let lip = Material::matte(GUNMETAL.lerp(Vec3::ONE, 0.3));
+    let (half_wide, half_tall) = (WIDTH / 2.0, HEIGHT / 2.0);
 
-    // a brushed and anodized plate, with a low rim along each edge that slopes down to it
-    put(
-      parts::plate(WIDTH, HEIGHT, 6.0),
-      0.0,
-      0.0,
-      0.0,
-      anodized,
-      None,
-    );
+    // the plate, with a low rim along each edge that slopes down to it
+    put(parts::plate(WIDTH, HEIGHT, 6.0), Vec3::ZERO, metal, None);
     let rim = |half: f32| {
       let outline = [[0.0, 0.0], [0.0, 2.0], [1.4, 2.0], [4.4, 0.0]].map(Vec2::from);
       Mesh::extruded(&outline, |_| half, 1.0)
     };
     for (half, x, y, turn) in [
-      (middle, middle, 0.0, 0.0),
-      (middle, middle, HEIGHT, PI),
-      (across, 0.0, across, -FRAC_PI_2),
-      (across, WIDTH, across, FRAC_PI_2),
+      (half_wide, half_wide, 0.0, 0.0),
+      (half_wide, half_wide, HEIGHT, PI),
+      (half_tall, 0.0, half_tall, -FRAC_PI_2),
+      (half_tall, WIDTH, half_tall, FRAC_PI_2),
     ] {
       let turned = rim(half).transformed(Mat4::from_rotation_z(turn));
-      put(turned, x, y, 0.0, anodized, None);
+      put(turned, flat(x, y), metal, None);
     }
 
-    // a rack ear at each end, marked off by a groove, with a screw through a long hole near
-    // its top and its bottom, each screw's cross left at another angle
+    // a rack ear at each end, marked off by a groove, with a handle on two blocks down its
+    // middle and a socket screw through a long hole near its top and its bottom, each
+    // socket at another angle
+    let handle = Handle::new(260.0, 18.0, 5.0);
     for x in [EAR, WIDTH - EAR] {
       for (from, to, up, material) in [(0.5, 1.2, 0.1, lip), (-0.5, 0.5, 0.2, hole)] {
         let groove = Mesh::cuboid(Vec3::new(from, 5.0, 0.0), Vec3::new(to, HEIGHT - 5.0, up));
-        put(groove, x, 0.0, 0.0, material, None);
+        put(groove, flat(x, 0.0), material, None);
       }
+    }
+    for x in [EAR / 2.0, WIDTH - EAR / 2.0] {
+      put(handle.mounts(), flat(x, half_tall), steel, None);
+      put(handle.bar(), flat(x, half_tall), steel, None);
     }
     for (x, y, turn) in [
       (EAR / 2.0, 30.0, 0.4),
@@ -689,232 +788,226 @@ impl Front {
       (WIDTH - EAR / 2.0, 30.0, 2.3),
       (WIDTH - EAR / 2.0, HEIGHT - 30.0, 0.9),
     ] {
-      put(parts::slot(16.0, 9.0), x + 0.5, y + 0.5, 0.0, lip, None);
-      put(parts::slot(16.0, 9.0), x, y, 0.05, hole, None);
-      let washer = Material::satin(Vec3::splat(0.05));
-      put(parts::bezel(2.0, 6.8, 1.3), x, y, 0.0, washer, None);
+      put(parts::slot(16.0, 9.0), flat(x + 0.5, y + 0.5), lip, None);
+      put(parts::slot(16.0, 9.0), Vec3::new(x, y, 0.05), hole, None);
       let turned = Mat4::from_rotation_z(turn);
-      put(parts::screw_head(4.6), x, y, 0.5, chrome, None);
-      let cross = parts::screw_cross(4.6).transformed(turned);
-      put(cross, x, y, 0.5, hole, None);
+      put(
+        parts::cap_screw(4.4).transformed(turned),
+        flat(x, y),
+        chrome,
+        None,
+      );
+      let socket = parts::hex_socket(4.4).transformed(turned);
+      put(socket, flat(x, y), hole, None);
     }
 
-    // each group of controls has its name over it, between two rules that turn down at their
-    // far ends, and so does the screen
-    for Heading { name, y, ends } in headings {
-      let [from, to] = ends;
-      let at = (from + to) / 2.0;
-      let letters = parts::legend(name, HEADING_TALL, 1.0);
-      put(letters, at, y, 0.0, ink, None);
-      let clear = stroke::width(name.len(), HEADING_TALL) / 2.0 + 6.0;
-      for (near, far) in [(at - clear, from), (at + clear, to)] {
-        let rule = Mesh::cuboid(
-          Vec3::new(near.min(far), y - 0.4, 0.0),
-          Vec3::new(near.max(far), y + 0.4, 0.25),
+    // each group of controls and the screen are set in a field with a cut rim, with the name
+    // over them between two lines of light that turn down at their far ends
+    for Field {
+      name,
+      across: [left, right],
+      down: [top, foot],
+      y,
+    } in fields
+    {
+      let field = parts::inset(
+        right - left,
+        foot - top,
+        FIELD_BORDER,
+        FIELD_UP,
+        FIELD_CORNER,
+      );
+      let at = middle([left, right]);
+      put(field, flat(at, middle([top, foot])), metal, None);
+      put(
+        lit_legend(name, HEADING_TALL),
+        flat(at, y),
+        lit(HEADING_LIT),
+        None,
+      );
+      let clear = lit_width(name, HEADING_TALL) / 2.0 + 6.0;
+      for (near, far) in [(at - clear, left + RULE_IN), (at + clear, right - RULE_IN)] {
+        let path = [
+          Vec2::new(near, y),
+          Vec2::new(far, y),
+          Vec2::new(far, y + RULE_DROP),
+        ];
+        put(
+          parts::light_line_seat(&path, 0.9, 0.5),
+          Vec3::ZERO,
+          hole,
+          None,
         );
-        put(rule, 0.0, 0.0, 0.0, ink, None);
-        let drop = Mesh::cuboid(
-          Vec3::new(far - 0.4, y - 0.4, 0.0),
-          Vec3::new(far + 0.4, y + RULE_DROP, 0.25),
-        );
-        put(drop, 0.0, 0.0, 0.0, ink, None);
+        put(parts::light_line(&path, 0.9), Vec3::ZERO, lit(0.6), None);
       }
     }
 
-    let switch = PushSwitch::square(22.0, 12.0);
+    let switch = switch();
+    let ring = shift_ring();
+    let ring_seat = Arc::new(ring.seat());
+    let pip_seat = Arc::new(parts::led_seat(PIP));
     for (index, (control, spot)) in Control::ALL.into_iter().zip(spots).enumerate() {
       let kind = control.kind();
       let Vec2 { x, y } = spot.middle();
-      // each knob that turns smoothly stands in a polished ring, with a scale of marks around
-      // it at `ticks` out from its edge. the formant's ring of lights stands on a low black
-      // ring where the others' polished one does
-      let mut ringed = |radius: f32, ring: f32, marks: u32, long_every: u32, ticks: [f32; 2]| {
-        let (bezel, up) = match control {
-          Control::Formant => (hole, 0.3),
-          _ => (chrome, ring * 0.45),
-        };
-        let bezel_mesh = parts::bezel(radius + 0.9, radius + ring, up);
-        put(bezel_mesh, x, y, 0.0, bezel, None);
-        let [inner, outer] = ticks.map(|out| radius + out);
-        let scale = parts::ticks(marks, parts::KNOB_SWEEP, inner, outer, long_every);
-        put(scale, x, y, 0.0, ink, None);
-      };
-      match kind.turned() {
-        Some(Turned::Shift) => {
-          let radius = shift_knob().radius;
-          ringed(radius, 7.6, 25, 6, [11.5, 14.5]);
-          // the shifts have figures outside their marks, spread evenly from one end of the
-          // turn to the other
+      match kind {
+        Kind::Shift => {
+          fixed.put(&Arc::new(skirt(shift_knob())), flat(x, y), chrome, None);
+          fixed.extend(ring.seats(&ring_seat, x, y));
+          // figures outside the ring, spread evenly from one end of the turn to the other
           let figures = ["-24", "-12", "0", "+12", "+24"];
           for (place, figure) in figures.iter().enumerate() {
-            let turn = place as f32 / (figures.len() - 1) as f32;
-            let at = around(Vec2::new(x, y), turn, radius + 25.0);
-            put(parts::legend(figure, 6.5, 0.95), at.x, at.y, 0.0, ink, None);
+            let turn = stop_turn(place, figures.len());
+            let at = around(Vec2::new(x, y), turn, FIGURES_OUT);
+            let figure = Arc::new(lit_legend(figure, FIGURES_TALL));
+            fixed.put(&figure, at.extend(0.0), lit(LABEL_LIT), None);
           }
         }
-        Some(Turned::Small) => ringed(small_knob().radius, 4.6, 11, 5, [7.5, 10.5]),
-        Some(Turned::Pointed { choices, printed }) => {
-          // a mark at each choice past the pointer's tip, long unless the choice's name is
-          // printed past it, which leaves the room for it
-          let radius = pointed_knob().radius;
-          let (long_every, [inner, outer]) = if printed {
-            (0, [4.0, 8.0])
-          } else {
-            (1, [5.0, 11.0])
-          };
-          let marks = parts::ticks(
-            choices.len() as u32,
-            parts::KNOB_SWEEP,
-            radius + inner,
-            radius + outer,
-            long_every,
-          );
-          put(marks, x, y, 0.0, ink, None);
-          if printed {
-            // each name is pushed to the side its mark leans to, by as much of its half
-            // width as the mark leans, which keeps a name beside the knob clear of it
-            for (place, name) in choices.iter().enumerate() {
-              // from one end of the turn to the other, as `ticks` spreads the marks, which
-              // puts a lone choice in the middle
-              let turn = match choices.len() {
-                1 => 0.5,
-                count => place as f32 / (count - 1) as f32,
-              };
-              let at = around(Vec2::new(x, y), turn, radius + 13.0);
-              let side = ((turn - 0.5) * parts::KNOB_SWEEP).sin();
-              let half = stroke::width(name.chars().count(), CHOICE_TALL) / 2.0;
-              let legend = parts::legend(name, CHOICE_TALL, 1.0);
-              put(legend, at.x + side * half, at.y, 0.0, ink, None);
+        Kind::Knob => {
+          let skirt = Arc::new(skirt(small_knob()));
+          fixed.put(&skirt, flat(x, y), chrome, None);
+        }
+        Kind::Selector { choices, printed } => {
+          let skirt = Arc::new(skirt(small_knob()));
+          fixed.put(&skirt, flat(x, y), chrome, None);
+          for (stop, name) in choices.iter().enumerate() {
+            let turn = stop_turn(stop, choices.len());
+            let at = around(Vec2::new(x, y), turn, PIP_OUT);
+            fixed.put(&pip_seat, at.extend(0.0), hole, None);
+            if printed {
+              let legend = Arc::new(lit_legend(name, CHOICE_TALL));
+              let at = choice_at(Vec2::new(x, y), turn, name);
+              fixed.put(&legend, at.extend(0.0), lit(LABEL_LIT), None);
             }
           }
         }
-        None => {
-          put(switch.plunger.seat(1.2), x, y, 0.0, hole, None);
-          put(switch.collar(), x, y, 0.0, chrome, None);
+        Kind::Switch => {
+          let collar = Arc::new(switch.collar());
+          fixed.put(
+            &collar,
+            flat(x, y),
+            Material::satin(Vec3::splat(0.03)),
+            None,
+          );
         }
       }
-      let (tall, weight) = kind.name_size();
-      let name = parts::legend(control.name(), tall, weight);
-      put(name, x, spot.row.name, 0.0, ink, None);
-      // the bezel of the window its value shows in. the glass set down in it changes with
+      let name = Arc::new(lit_legend(control.name(), kind.name_tall()));
+      fixed.put(&name, flat(x, spot.row.name), lit(LABEL_LIT), None);
+      // the rim the window its value shows in is sunk behind. the glass in it changes with
       // what it shows
       if kind.has_window() {
         let frame = WINDOW + WINDOW_FRAME;
-        put(
-          parts::frame(frame.x, frame.y, 3.0, 2.2, 3.5),
-          x,
-          spot.row.window,
-          0.0,
-          Material::glossy(black),
-          Some(Target::Readout(index)),
-        );
+        let rim = parts::inset(frame.x, frame.y, WINDOW_FRAME / 2.0, WINDOW_RIM, 3.5);
+        let target = Some(Target::Readout(index));
+        fixed.put(&Arc::new(rim), spot.window(), metal, target);
       }
     }
 
     // the screen in its bezel, with lines across and up it that the spectrum is drawn over
+    let mut put = |mesh: Mesh, at: Vec3, material: Material| {
+      fixed.put(&Arc::new(mesh), at, material, None);
+    };
     let glass = screen_glass();
     let Vec2 { x, y } = SCREEN_AT;
-    put(screen.face(), x, y, 0.0, glass, None);
-    put(screen.bezel(), x, y, 0.0, Material::glossy(black), None);
+    put(screen.face(), flat(x, y), glass);
+    put(screen.bezel(), flat(x, y), Material::satin(STRIP_METAL));
     let grid = parts::picture(&lines(), x, y, glass, 0);
     let grid_objects = grid.len();
     fixed.extend(grid);
 
-    // a black strip between the ears along the bottom. the plugin's name is on it in
-    // slanted letters over a red stroke, then what it is, a maker's plate riveted on, and
-    // the lamp in a polished ring
-    let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material, target| {
-      fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
+    // a strip of darker metal between the ears along the bottom. the plugin's name is lit on
+    // it over a line of light, between two vents with light coming through them. what it is
+    // is to the left, and to the right a maker's plate and the light that shows the effect
+    let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material| {
+      fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, None);
     };
+    let strip = Material::brushed(STRIP_METAL);
+    let strip_wide = WIDTH - 2.0 * EAR - 8.0;
+    let slab = parts::chamfered_slab(strip_wide, STRIP_TALL, STRIP_UP, 1.2, 4.0);
+    put(slab, half_wide, STRIP_Y, 0.0, strip);
+    let name = slanted(lit_legend("CANWETALK", 13.0), 0.2);
+    put(name, half_wide, STRIP_Y - 2.0, STRIP_UP, lit(1.0));
+    let logo_half = lit_width("CANWETALK", 13.0) / 2.0;
+    let underline = [
+      Vec2::new(half_wide - logo_half, STRIP_Y + 9.5),
+      Vec2::new(half_wide + logo_half - 4.0, STRIP_Y + 9.5),
+    ];
+    let seat = parts::light_line_seat(&underline, 0.9, 0.5);
+    put(seat, 0.0, 0.0, STRIP_UP, hole);
     put(
-      parts::slab(WIDTH - 2.0 * EAR - 8.0, STRIP_TALL, STRIP_UP, 4.0),
-      middle,
-      STRIP_Y,
+      parts::light_line(&underline, 0.9),
       0.0,
-      Material::glossy(black),
-      None,
+      0.0,
+      STRIP_UP,
+      lit(0.7),
     );
-    let name = slanted(parts::legend("CANWETALK", 13.0, 2.6), 0.2);
-    put(name, 106.0, STRIP_Y - 1.5, STRIP_UP, ink, None);
-    let stroke = Mesh::cuboid(Vec3::new(-58.0, -0.7, 0.0), Vec3::new(58.0, 0.7, 0.25));
-    put(stroke, 103.5, STRIP_Y + 10.0, STRIP_UP, red, None);
+    let vent = Vent::new(7, 4.0, 20.0);
+    let vent_half = vent.pitch * (vent.slots - 1) as f32 / 2.0 + vent.width / 2.0;
+    for side in [-1.0, 1.0] {
+      let x = half_wide + side * (logo_half + 22.0 + vent_half);
+      put(vent.slots(), x, STRIP_Y, STRIP_UP, hole);
+      put(vent.holes(), x, STRIP_Y, STRIP_UP, lit(0.3));
+    }
     for (line, y, tall) in [
       ("PROFESSIONAL", -4.5, 4.4),
       ("PITCH + FORMANT SHIFTER", 4.0, 5.0),
     ] {
-      let weight = tall * 0.19;
       put(
-        parts::legend(line, tall, weight),
-        230.0,
+        lit_legend(line, tall),
+        170.0,
         STRIP_Y + y,
         STRIP_UP,
-        faint,
-        None,
+        lit(LABEL_LIT),
       );
     }
-    let plate = Vec3::new(WIDTH - 162.0, STRIP_Y, STRIP_UP);
+    let plate = Vec3::new(WIDTH - 190.0, STRIP_Y, STRIP_UP);
+    let plate_mesh = parts::chamfered_slab(96.0, 22.0, 1.2, 0.5, 1.5);
     put(
-      parts::slab(76.0, 20.0, 0.9, 1.5),
+      plate_mesh,
       plate.x,
       plate.y,
       plate.z,
-      Material::brushed(Vec3::splat(0.72)),
-      None,
+      Material::brushed(Vec3::splat(0.3)),
     );
     for (line, y) in [("MODEL CWT-3", -4.2), ("SERIAL NO 004217", 4.2)] {
-      let stamped = Material::matte(Vec3::splat(0.06));
+      let engraved = lit_legend(line, 3.6);
       put(
-        parts::legend(line, 3.8, 0.75),
+        engraved,
         plate.x,
         plate.y + y,
-        plate.z + 0.9,
-        stamped,
-        None,
+        plate.z + 1.2,
+        lit(LABEL_LIT),
       );
     }
     for side in [-1.0, 1.0] {
-      put(
-        parts::screw_head(1.3),
-        plate.x + side * 34.0,
-        plate.y,
-        plate.z + 0.9,
-        chrome,
-        None,
-      );
+      let x = plate.x + side * 43.0;
+      put(parts::cap_screw(1.6), x, plate.y, plate.z + 1.2, chrome);
+      put(parts::hex_socket(1.6), x, plate.y, plate.z + 1.2, hole);
     }
+    let label = lit_legend("EFFECT", 4.2);
+    put(label, EFFECT.x - 30.0, STRIP_Y, STRIP_UP, lit(LABEL_LIT));
     put(
-      parts::legend("EFFECT", 4.2, 0.8),
-      LAMP.x - 30.0,
-      STRIP_Y,
-      STRIP_UP,
-      faint,
-      None,
-    );
-    put(
-      parts::led_seat(LAMP_SIZE),
-      LAMP.x,
-      LAMP.y,
+      parts::led_seat(EFFECT_SIZE),
+      EFFECT.x,
+      EFFECT.y,
       STRIP_UP,
       hole,
-      None,
-    );
-    put(
-      parts::bezel(LAMP_SIZE * 0.56 + 0.4, LAMP_SIZE * 0.56 + 3.2, 2.0),
-      LAMP.x,
-      LAMP.y,
-      STRIP_UP,
-      chrome,
-      None,
     );
 
+    let arc = knob_arc();
     Self {
       spots,
       fixed,
-      knobs: Knobs::new(),
+      shift_knob: knob_parts(shift_knob()),
+      small_knob: knob_parts(small_knob()),
       plunger: Arc::new(switch.plunger()),
-      ring_light: Arc::new(formant_ring().segment()),
       switch,
-      lamp: Arc::new(parts::led(LAMP_SIZE)),
+      ring_light: Arc::new(ring.segment()),
+      ring,
+      arc_meshes: [Arc::new(arc.seat()), Arc::new(arc.lens())],
+      arc,
+      arcs: Control::ALL.map(|_| None).into(),
+      pip: Arc::new(parts::led(PIP)),
+      effect: Arc::new(parts::led(EFFECT_SIZE)),
       glass: Arc::new(Mesh::cuboid(
         (-WINDOW / 2.0).extend(0.0),
         (WINDOW / 2.0).extend(GLASS_UP),
@@ -943,27 +1036,64 @@ impl Front {
     // the scene owns this frame's objects, so the ones that never move are copied into it
     let mut drawn = self.fixed.clone();
     let mut lamps = Vec::new();
-    let rubber = Material::silicone(Vec3::splat(0.1));
     for (index, (control, spot)) in Control::ALL.into_iter().zip(self.spots).enumerate() {
       let Vec2 { x, y } = spot.middle();
       let reading = &controls[index];
       let target = Some(Target::Control(index));
-      let knob = match control.kind().turned() {
-        Some(turned) => self.knobs.of(turned),
-        None => {
-          // a switch that is on stays in and is lit, and throws its light around it
+      let knob = match control.kind() {
+        Kind::Shift => {
+          // lit from nothing to the shift that is heard: the knob's own, and for the formant
+          // what formant follow adds to the formants of the voice that started last. a run
+          // past either end of the scale stops there, which is as far as the ring shows,
+          // though the shifter moves the formants further
+          let followed = match control {
+            Control::Formant => feed[FOLLOW_SLOT] / (2.0 * SHIFT_SEMITONES),
+            _ => 0.0,
+          };
+          let run = [control.rest(), reading.value + followed];
+          let lights = (self.ring).lights(&self.ring_light, x, y, run, CYAN);
+          drawn.extend(lights);
+          &self.shift_knob
+        }
+        Kind::Knob => {
+          let run = [control.rest(), reading.value];
+          let kept = (self.arcs[index].take())
+            .filter(|kept| kept.of == run)
+            .unwrap_or_else(|| Kept {
+              of: run,
+              objects: (self.arc.lights(&self.arc_meshes, x, y, run, CYAN)).collect(),
+            });
+          drawn.extend(kept.objects.iter().cloned());
+          self.arcs[index] = Some(kept);
+          &self.small_knob
+        }
+        Kind::Selector { choices, .. } => {
+          // the stop the selector is at is lit, and the others barely
+          let count = choices.len();
+          let at = (reading.value * (count - 1) as f32).round() as usize;
+          for stop in 0..count {
+            let turn = stop_turn(stop, count);
+            let pip = around(Vec2::new(x, y), turn, PIP_OUT);
+            let level = if stop == at { 1.0 } else { PIP_DARK };
+            let material = parts::led_material(CYAN, level, PIP);
+            drawn.put(&self.pip, pip.extend(0.0), material, None);
+          }
+          &self.small_knob
+        }
+        Kind::Switch => {
+          // a switch that is on stays in and is lit from under it, and throws its light
+          // around it. one that is off is lit barely
           let on = reading.value > 0.5;
           let depth = Push::Latching.depth(on, held == Some(index));
-          let plunger = self.switch.plunger;
-          let level = f32::from(u8::from(on));
+          let level = if on { 1.0 } else { PIP_DARK };
           drawn.place(
             &self.plunger,
             self.switch.transform(x, y, depth),
-            rubber.lit(READOUT_COLOR, level, plunger.glow_radius()),
+            self.switch.backlight(CYAN, level),
             target,
           );
           if on {
-            lamps.push(plunger.lamp(x, y, READOUT_COLOR, 0.5));
+            lamps.push(self.switch.plunger.lamp(x, y, CYAN, 0.6));
           }
           continue;
         }
@@ -971,20 +1101,6 @@ impl Front {
       let transform = parts::knob_transform(x, y, reading.value, parts::KNOB_SWEEP);
       for (mesh, material) in knob {
         drawn.place(mesh, transform, *material, target);
-      }
-      if control == Control::Formant {
-        // lit from where the knob points on by what formant follow adds to the formants of
-        // the voice that started last. a run past either end of the scale stops there, which
-        // is as far as the ring shows, though the shifter moves the formants further
-        let followed = feed[FOLLOW_SLOT] / (2.0 * SHIFT_SEMITONES);
-        let run = [reading.value, reading.value + followed];
-        let ring = formant_ring();
-        let lights = ring.lights(&self.ring_light, x, y, run, LAMP_COLOR);
-        // stood on the black ring
-        drawn.extend(lights.map(|light| Object {
-          transform: Mat4::from_translation(Vec3::Z * 0.3) * light.transform,
-          ..light
-        }));
       }
       if control.kind().has_window() {
         let edit = edit.filter(|edit| edit.control == index);
@@ -996,43 +1112,47 @@ impl Front {
     let Vec2 { x, y } = SCREEN_AT;
     let glass = screen_glass();
     let shown = (self.shown.take())
-      .filter(|shown| shown.feed == feed)
-      .unwrap_or_else(|| Shown {
-        feed: feed.to_vec(),
+      .filter(|shown| shown.of == feed)
+      .unwrap_or_else(|| Kept {
+        of: feed.to_vec(),
         objects: parts::picture(&spectrum(feed), x, y, glass, self.grid),
       });
     drawn.extend(shown.objects.iter().cloned());
     self.shown = Some(shown);
-    lamps.extend(self.screen.lamps(x, y, READOUT_COLOR, 0.35));
+    lamps.extend(self.screen.lamps(x, y, CYAN, 0.3));
 
-    // the lamp is as bright as the mix is wet, and dark when nothing of the shift is heard
+    // the light is as bright as the mix is wet, and dark when nothing of the shift is heard
     let wet = controls[Control::Mix as usize].value;
     drawn.put(
-      &self.lamp,
-      LAMP.extend(STRIP_UP),
-      parts::led_material(LAMP_COLOR, wet, LAMP_SIZE),
+      &self.effect,
+      EFFECT.extend(STRIP_UP),
+      parts::led_material(CYAN, wet, EFFECT_SIZE),
       None,
     );
-    lamps.push(Lamp {
-      at: LAMP.extend(STRIP_UP + LAMP_SIZE),
-      // strong enough to show on the black strip, which gives little of any light back
-      color: LAMP_COLOR * wet * 2.5,
-      reach: LAMP_SIZE * 4.0,
-      radius: LAMP_SIZE / 2.0,
-    });
+    let over = EFFECT.extend(STRIP_UP + EFFECT_SIZE);
+    lamps.push(parts::led_lamp(
+      over,
+      CYAN,
+      wet,
+      EFFECT_SIZE,
+      EFFECT_SIZE * 5.0,
+    ));
     let scene = Scene {
       size: Vec2::new(WIDTH, HEIGHT),
       heights: [-8.0, 48.0],
       lean: LEAN,
-      // under a wide soft light
+      // under a dim wide light, which leaves what glows to show
       light: Light {
-        ambient: Vec3::splat(0.26),
+        color: Vec3::splat(0.6),
+        ambient: Vec3::splat(0.2),
         softness: 3.0,
         ..Light::default()
       },
       look: Look {
-        soften: 0.25,
+        soften: 0.2,
         vignette: 0.4,
+        bloom: 0.6,
+        bloom_radius: 10.0,
         ..Look::default()
       },
       objects: drawn.objects,
@@ -1041,9 +1161,9 @@ impl Front {
     (scene, drawn.targets)
   }
 
-  /// a control's window: dark glass with its value and unit lit on it. while the value is
-  /// typed the glass is lit too and shows what has been typed, with a caret in it or, for
-  /// as long as all of it is selected, dark on a bright block
+  /// a control's window: smoked glass sunk in the panel, with its value and unit lit on it.
+  /// while the value is typed the glass is lit too and shows what has been typed, with an
+  /// amber caret in it or, for as long as all of it is selected, dark on an amber block
   fn readout(
     &mut self,
     drawn: &mut Drawn,
@@ -1056,10 +1176,10 @@ impl Front {
     let glass = Material {
       reflect: 0.2,
       // sized as a much larger pane, which keeps the sheen to one corner
-      ..Material::pane(Vec3::new(0.012, 0.01, 0.008), WINDOW.x * 3.5)
+      ..Material::pane(FACE, WINDOW.x * 3.5)
     };
     let glass = match edit {
-      Some(_) => glass.lit(READOUT_COLOR * 0.5, 0.45, 0.0),
+      Some(_) => glass.lit(CYAN * 0.4, 0.3, 0.0),
       None => glass,
     };
     drawn.put(&self.glass, at, glass, target);
@@ -1068,35 +1188,47 @@ impl Front {
     let lettering = (self.readouts[index].take())
       .filter(|shown| shown.of.0 == figures && shown.of.1 == unit && shown.of.2 == selected)
       .unwrap_or_else(|| Lettering::new(figures, unit, selected));
-    let lit = Material::lamp(READOUT_COLOR);
+    let figure_light = Material::lamp(CYAN);
+    let typing = Material::lamp(AMBER);
     let on_glass = at + Vec3::Z * GLASS_UP;
     let figures_at = on_glass + Vec3::X * lettering.figures_at;
-    drawn.put(&lettering.figures, figures_at, lit, target);
+    drawn.put(&lettering.figures, figures_at, figure_light, target);
     if let Some((figures, block, across)) = &lettering.selected {
-      drawn.put(block, figures_at + Vec3::X * *across, lit, target);
+      drawn.put(block, figures_at + Vec3::X * *across, typing, target);
       let ink = Material::matte(Vec3::ZERO);
       drawn.put(figures, figures_at + Vec3::Z * 0.15, ink, target);
     }
     if let Some((unit, unit_at)) = &lettering.unit {
-      drawn.put(unit, on_glass + unit_at.extend(0.0), lit, target);
+      drawn.put(unit, on_glass + unit_at.extend(0.0), figure_light, target);
     }
     if let Some(edit) = edit {
       let across = stroke::gap(edit.text.chars().count(), edit.caret, READOUT_TALL);
-      drawn.put(&self.caret, figures_at + Vec3::X * across, lit, target);
+      drawn.put(&self.caret, figures_at + Vec3::X * across, typing, target);
     }
     self.readouts[index] = Some(lettering);
   }
 }
 
-/// the lights around the formant's knob, one between each two of its marks
-fn formant_ring() -> LedRing {
-  let radius = shift_knob().radius;
-  LedRing::new(24, radius + 4.3, 4.0)
+/// the menu and the grip of the window, in the panel's colors
+pub(super) fn furniture() -> (MenuLook, GripLook) {
+  let mut menu = MenuLook::default();
+  menu.ground = [0.05, 0.055, 0.06, 0.97];
+  menu.line = [0.1, 0.4, 0.48, 1.0];
+  menu.ink = [0.7, 0.93, 1.0, 1.0];
+  menu.mark = EDGE;
+  menu.marked_ink = [0.02, 0.04, 0.05, 1.0];
+  let mut grip = GripLook::default();
+  grip.ink = [CYAN.x, CYAN.y, CYAN.z, 0.5];
+  (menu, grip)
 }
 
 /// the face of the screen, which what it shows is lit on
 fn screen_glass() -> Material {
-  Material::screen(FACE, (SCREEN_SIZE.x + SCREEN_SIZE.y) * 3.0)
+  Material {
+    // smoked dark enough that the sheen stays faint
+    reflect: 0.15,
+    ..Material::screen(FACE, (SCREEN_SIZE.x + SCREEN_SIZE.y) * 3.0)
+  }
 }
 
 /// the point of the panel at a place in the plot: a part of the way across it and a part of
@@ -1339,7 +1471,8 @@ mod tests {
     let (scene, targets) = scene(&mut front);
     let picked = |at: Vec2| scene.pick(at).and_then(|object| targets[object]);
     for (index, (control, spot)) in Control::ALL.into_iter().zip(front.spots).enumerate() {
-      // the middle of a knob and a little off it each way, which its top is seen leaned from
+      // the middle of a knob or a switch and a little off it each way, which its top is seen
+      // leaned from
       for off in [Vec2::ZERO, Vec2::X * 6.0, -Vec2::X * 6.0, Vec2::Y * 6.0] {
         let at = spot.middle() + off;
         assert_eq!(
@@ -1348,13 +1481,15 @@ mod tests {
           "{control:?} at {at}"
         );
       }
+      // the window, its glass and its rim
       if control.kind().has_window() {
         let at = spot.window().truncate();
-        for off in [Vec2::ZERO, Vec2::X * (WINDOW.x / 2.0 - 2.0)] {
+        let rim = WINDOW.x / 2.0 + WINDOW_FRAME / 4.0;
+        for off in [0.0, WINDOW.x / 2.0 - 2.0, rim, -rim] {
           assert_eq!(
-            picked(at + off),
+            picked(at + Vec2::X * off),
             Some(Target::Readout(index)),
-            "{control:?}"
+            "{control:?} {off} across its window"
           );
         }
       }
@@ -1362,11 +1497,92 @@ mod tests {
   }
 
   #[test]
-  fn no_two_controls_take_the_same_room() {
+  fn every_control_fits_in_its_field_and_no_two_fields_meet() {
+    let screen = Screen::new(SCREEN_SIZE.x, SCREEN_SIZE.y);
+    let (spots, fields) = layout(screen.border);
     // each control is in one group alone, which with every one placed is once each
-    let grouped: usize = (GROUPS.iter().flat_map(|row| row.iter()))
-      .map(|(_, controls)| controls.len())
-      .sum();
+    let groups = GROUPS.iter().flat_map(|row| row.iter());
+    let grouped: usize = groups.clone().map(|(_, controls)| controls.len()).sum();
     assert_eq!(grouped, Control::ALL.len());
+
+    // between the ears and over the strip, and clear of each other
+    for field in &fields {
+      let [left, right] = field.across;
+      let [top, foot] = field.down;
+      assert!(left >= LEFT && right <= RIGHT, "{field:?}");
+      assert!(
+        top >= TOP_MARGIN && foot <= STRIP_Y - STRIP_TALL / 2.0,
+        "{field:?}"
+      );
+      // the lines of light beside its name reach out from it
+      let clear = lit_width(field.name, HEADING_TALL) / 2.0 + 6.0;
+      assert!(clear < (right - left) / 2.0 - RULE_IN, "{field:?}");
+    }
+    for (index, one) in fields.iter().enumerate() {
+      for other in &fields[index + 1..] {
+        let apart = |side: fn(&Field) -> [f32; 2]| {
+          let ([a_from, a_to], [b_from, b_to]) = (side(one), side(other));
+          a_to <= b_from || b_to <= a_from
+        };
+        assert!(
+          apart(|field| field.across) || apart(|field| field.down),
+          "{one:?} meets {other:?}"
+        );
+      }
+    }
+
+    // each control lies inside its group's field, all it reaches between the drops of the
+    // lines beside the name and the rim at the foot, and its name no wider than its slot
+    for (group, controls) in groups {
+      let field = (fields.iter())
+        .find(|field| field.name == *group)
+        .expect("a field for each group");
+      let foot = field.down[1] - FIELD_BORDER;
+      for &control in *controls {
+        let (kind, spot) = (control.kind(), spots[control as usize]);
+        let [up, down] = kind.reach();
+        let half = kind.slot() / 2.0;
+        assert!(
+          spot.x - half >= field.across[0] && spot.x + half <= field.across[1],
+          "{control:?}"
+        );
+        assert!(spot.row.middle - up > field.y + RULE_DROP, "{control:?}");
+        assert!(spot.row.middle + down < spot.row.name, "{control:?}");
+        // and the names on it clear of the rim of the field at either end of a row
+        let room = kind.slot() / 2.0 - FIELD_BORDER;
+        assert!(
+          lit_width(control.name(), kind.name_tall()) / 2.0 <= room,
+          "{control:?}"
+        );
+        if let Kind::Selector {
+          choices,
+          printed: true,
+        } = kind
+        {
+          for (stop, name) in choices.iter().enumerate() {
+            let at = choice_at(Vec2::ZERO, stop_turn(stop, choices.len()), name);
+            let half = lit_width(name, CHOICE_TALL) / 2.0;
+            assert!(at.x.abs() + half <= room, "{control:?} {name}");
+          }
+        }
+        let lowest = if kind.has_window() {
+          spot.row.window + (WINDOW.y + WINDOW_FRAME) / 2.0
+        } else {
+          spot.row.name + kind.name_tall() / 2.0
+        };
+        assert!(lowest <= foot, "{control:?}");
+      }
+    }
+
+    // the screen and its bezel lie in their field, under its name
+    let input = (fields.iter())
+      .find(|field| field.name == "INPUT")
+      .expect("a field for the screen");
+    let half = SCREEN_SIZE / 2.0 + screen.border;
+    let [left, right] = input.across;
+    assert!(SCREEN_AT.x - half.x >= left + FIELD_BORDER);
+    assert!(SCREEN_AT.x + half.x <= right - FIELD_BORDER);
+    assert!(SCREEN_AT.y - half.y > input.y + RULE_DROP);
+    assert!(SCREEN_AT.y + half.y <= input.down[1] - FIELD_BORDER);
   }
 }
