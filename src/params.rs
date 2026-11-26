@@ -21,19 +21,19 @@ pub(crate) struct CanWeTalkParams {
   #[nested(group = "Shift")]
   pub(crate) shift: ShiftParams,
   #[nested(group = "Effects")]
-  effects: EffectParams,
+  pub(crate) effects: EffectParams,
   #[nested(group = "Vibrato")]
-  vibrato: VibratoParams,
+  pub(crate) vibrato: VibratoParams,
   #[nested(group = "Notes")]
-  notes: NoteParams,
+  pub(crate) notes: NoteParams,
   #[nested(group = "Envelope")]
-  envelope: EnvelopeParams,
+  pub(crate) envelope: EnvelopeParams,
   #[nested(group = "Expression")]
   pub(crate) expression: ExpressionParams,
   #[id = "detect"]
   pub(crate) detect: EnumParam<Range>,
   #[id = "anchor"]
-  anchor: BoolParam,
+  pub(crate) anchor: BoolParam,
   #[id = "mix"]
   pub(crate) mix: FloatParam,
   /// how many times its own size the editor's window is, kept with the plugin's state so
@@ -69,63 +69,63 @@ pub(crate) struct ShiftParams {
   #[id = "formant"]
   pub(crate) formant: FloatParam,
   #[id = "formant_follow"]
-  formant_follow: FloatParam,
+  pub(crate) formant_follow: FloatParam,
   #[id = "smooth"]
-  smooth: FloatParam,
+  pub(crate) smooth: FloatParam,
 }
 
 #[derive(Params)]
-struct EffectParams {
+pub(crate) struct EffectParams {
   #[id = "detune"]
-  detune: FloatParam,
+  pub(crate) detune: FloatParam,
   #[id = "smear"]
-  smear: FloatParam,
+  pub(crate) smear: FloatParam,
   #[id = "stereo"]
-  stereo: FloatParam,
+  pub(crate) stereo: FloatParam,
 }
 
 #[derive(Params)]
-struct VibratoParams {
+pub(crate) struct VibratoParams {
   #[id = "vibrato"]
-  depth: FloatParam,
+  pub(crate) depth: FloatParam,
   #[id = "vibrato_rate"]
-  rate: FloatParam,
+  pub(crate) rate: FloatParam,
   #[id = "vibrato_sync"]
-  sync: BoolParam,
+  pub(crate) sync: BoolParam,
   #[id = "vibrato_division"]
-  division: EnumParam<Division>,
+  pub(crate) division: EnumParam<Division>,
 }
 
 #[derive(Params)]
-struct NoteParams {
+pub(crate) struct NoteParams {
   #[id = "midi"]
-  mode: EnumParam<Mode>,
+  pub(crate) mode: EnumParam<Mode>,
   #[id = "latch"]
-  latch: BoolParam,
+  pub(crate) latch: BoolParam,
   #[id = "glide"]
-  glide: FloatParam,
+  pub(crate) glide: FloatParam,
   #[id = "glide_notes"]
-  glide_notes_only: BoolParam,
+  pub(crate) glide_notes_only: BoolParam,
 }
 
 #[derive(Params)]
-struct EnvelopeParams {
+pub(crate) struct EnvelopeParams {
   #[id = "attack"]
-  attack: FloatParam,
+  pub(crate) attack: FloatParam,
   #[id = "decay"]
-  decay: FloatParam,
+  pub(crate) decay: FloatParam,
   #[id = "sustain"]
-  sustain: FloatParam,
+  pub(crate) sustain: FloatParam,
   #[id = "release"]
-  release: FloatParam,
+  pub(crate) release: FloatParam,
 }
 
 #[derive(Params)]
 pub(crate) struct ExpressionParams {
   #[id = "pressure_level"]
-  pressure_level: FloatParam,
+  pub(crate) pressure_level: FloatParam,
   #[id = "slide_formant"]
-  slide_formant: FloatParam,
+  pub(crate) slide_formant: FloatParam,
   /// semitones a channel's pitch bend reaches either way, for every channel but the first
   #[id = "bend_range"]
   pub(crate) bend_range: IntParam,
@@ -133,7 +133,7 @@ pub(crate) struct ExpressionParams {
 
 /// the length of a vibrato cycle against the host's tempo
 #[derive(Enum, Clone, Copy, PartialEq, Eq)]
-enum Division {
+pub(crate) enum Division {
   #[name = "1/1"]
   Whole,
   #[name = "1/2"]

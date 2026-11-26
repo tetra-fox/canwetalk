@@ -5,39 +5,38 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use potpot::glam::{Mat4, Vec2, Vec3};
-use potpot::parts;
+use potpot::parts::{self, PushSwitch, Screen};
 use potpot::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
-use potpot_controls::flat::Flat;
-use potpot_controls::interaction::{Edit, Reading, Target};
+use potpot_controls::axis::Axis;
+use potpot_controls::flat::{Color, Flat};
+use potpot_controls::interaction::{Edit, Push, Reading, Target};
 use potpot_controls::stroke;
 use potpot_window::{Gpu, Skin, View, wgpu};
 
-use super::Control;
+use super::{Control, Kind, note};
+use crate::spectrum::{BANDS, FLOOR_DB, HERTZ, PITCH_SLOT};
 
-pub(super) const WIDTH: f32 = 500.0;
-pub(super) const HEIGHT: f32 = 250.0;
+pub(super) const WIDTH: f32 = 920.0;
+pub(super) const HEIGHT: f32 = 500.0;
 /// how far a point slides across the picture for each unit of its height: seen a little
 /// from in front
 const LEAN: Vec2 = Vec2::new(0.0, -0.3);
 /// how wide the rack ear at each end of the plate is
 const EAR: f32 = 32.0;
-/// the names of the groups of knobs, along the top
-const HEADING_Y: f32 = 13.0;
-/// the knobs' centers down the panel
-const KNOB_Y: f32 = 94.0;
-/// the names under the knobs, and under those the windows their values show in
-const NAME_Y: f32 = 152.0;
-const WINDOW_Y: f32 = 176.0;
-const WINDOW: Vec2 = Vec2::new(66.0, 19.0);
+/// the ends of the room the controls have across the panel, clear of the ears
+const LEFT: f32 = EAR + 14.0;
+const RIGHT: f32 = WIDTH - EAR - 14.0;
+/// the windows the controls' values show in
+const WINDOW: Vec2 = Vec2::new(66.0, 17.0);
 /// how high the glass of a window is, which what it shows is lit on
 const GLASS_UP: f32 = 0.5;
 /// the figures a window shows its value in: how tall, and how wide their strokes. a unit
 /// that is a word comes after them in smaller letters standing on the same line, and one
 /// that is a sign as tall as they are, both in finer strokes
-const READOUT_TALL: f32 = 8.0;
-const READOUT_WEIGHT: f32 = 1.5;
-const UNIT_TALL: f32 = 5.6;
-const UNIT_WEIGHT: f32 = 1.15;
+const READOUT_TALL: f32 = 7.0;
+const READOUT_WEIGHT: f32 = 1.35;
+const UNIT_TALL: f32 = 5.0;
+const UNIT_WEIGHT: f32 = 1.0;
 /// how many letters as tall as the figures fit in a window with two points clear at each end
 pub(super) const READOUT_LETTERS: usize = {
   let mut letters = 0;
@@ -48,61 +47,268 @@ pub(super) const READOUT_LETTERS: usize = {
 };
 const READOUT_COLOR: Vec3 = Vec3::new(1.0, 0.66, 0.14);
 /// the strip along the bottom that carries the plugin's name
-const STRIP_Y: f32 = 221.0;
+const STRIP_Y: f32 = HEIGHT - 29.0;
 const STRIP_UP: f32 = 1.5;
 /// the lamp at the end of the strip, and how wide it is
 const LAMP: Vec2 = Vec2::new(WIDTH - 54.0, STRIP_Y);
 const LAMP_SIZE: f32 = 11.0;
 const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.45, 0.08);
-impl Control {
-  /// the kind of knob it is: the two shifts match, and the mix is smaller and set apart
-  fn knob(self) -> parts::Knob {
+/// the screen at the top right, by the middle and the size of its face
+const SCREEN_AT: Vec2 = Vec2::new(RIGHT - 7.0 - SCREEN_SIZE.x / 2.0, 104.0);
+const SCREEN_SIZE: Vec2 = Vec2::new(352.0, 136.0);
+/// the room on the screen the spectrum is drawn in, from its top left corner to its bottom
+/// right, and the middle of the column beside it that the note is written in
+const PLOT: [Vec2; 2] = [
+  Vec2::new(
+    SCREEN_AT.x - SCREEN_SIZE.x / 2.0 + 8.0,
+    SCREEN_AT.y - SCREEN_SIZE.y / 2.0 + 8.0,
+  ),
+  Vec2::new(
+    SCREEN_AT.x + SCREEN_SIZE.x / 2.0 - 84.0,
+    SCREEN_AT.y + SCREEN_SIZE.y / 2.0 - 14.0,
+  ),
+];
+const NOTE_X: f32 = SCREEN_AT.x + SCREEN_SIZE.x / 2.0 - 40.0;
+/// where across the panel the line is that sets the note's column apart
+const NOTE_LINE: f32 = PLOT[1].x + 6.0;
+/// how tall the note's name is written
+const NOTE_TALL: f32 = 18.0;
+/// the levels the spectrum is drawn over, in decibels, and the ones a line is drawn across at
+const LEVELS: Axis = Axis::linear([FLOOR_DB, 0.0]);
+const LEVEL_LINES: [f32; 4] = [-18.0, -36.0, -54.0, -72.0];
+/// the frequencies a line is drawn up at, those named under them
+const HERTZ_LINES: [f32; 8] = [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0];
+const HERTZ_NAMES: [(f32, &str); 3] = [(100.0, "100"), (1000.0, "1K"), (10_000.0, "10K")];
+/// the colors on the screen: its face, its lines, their names, the spectrum's fill under its
+/// edge, the edge and the detected pitch
+const FACE: Vec3 = Vec3::new(0.014, 0.011, 0.008);
+const GRID: Color = [0.12, 0.075, 0.03, 1.0];
+const LABELS: Color = [0.42, 0.27, 0.08, 1.0];
+const FILL: Color = [0.3, 0.16, 0.03, 1.0];
+const EDGE: Color = [1.0, 0.66, 0.14, 1.0];
+const PITCH: Color = [1.0, 0.92, 0.75, 1.0];
+
+/// a row of controls across the panel, by where its parts are down it: the names of its
+/// groups, the middles of its controls, the names under them and the windows their values
+/// show in
+#[derive(Clone, Copy, Debug)]
+struct Row {
+  heading: f32,
+  middle: f32,
+  name: f32,
+  window: f32,
+}
+
+const ROWS: [Row; 3] = [
+  Row {
+    heading: 13.0,
+    middle: 92.0,
+    name: 150.0,
+    window: 174.0,
+  },
+  Row {
+    heading: 206.0,
+    middle: 245.0,
+    name: 286.0,
+    window: 305.0,
+  },
+  Row {
+    heading: 335.0,
+    middle: 374.0,
+    name: 415.0,
+    window: 434.0,
+  },
+];
+
+/// the groups of controls in each row, left to right, each under its name. the one group of
+/// the first row keeps to the left, beside the screen, and the groups of the others are
+/// spread from end to end
+const GROUPS: [&[(&str, &[Control])]; 3] = [
+  &[(
+    "SHIFT",
+    &[
+      Control::Pitch,
+      Control::Formant,
+      Control::FormantFollow,
+      Control::Smooth,
+    ],
+  )],
+  &[
+    (
+      "EFFECTS",
+      &[Control::Detune, Control::Smear, Control::Stereo],
+    ),
+    (
+      "VIBRATO",
+      &[
+        Control::VibratoDepth,
+        Control::VibratoRate,
+        Control::VibratoSync,
+        Control::VibratoDivision,
+      ],
+    ),
+    (
+      "NOTES",
+      &[
+        Control::Mode,
+        Control::Latch,
+        Control::Glide,
+        Control::GlideNotesOnly,
+      ],
+    ),
+  ],
+  &[
+    (
+      "ENVELOPE",
+      &[
+        Control::Attack,
+        Control::Decay,
+        Control::Sustain,
+        Control::Release,
+      ],
+    ),
+    (
+      "EXPRESSION",
+      &[
+        Control::PressureLevel,
+        Control::SlideFormant,
+        Control::BendRange,
+      ],
+    ),
+    ("DETECTION", &[Control::Detect, Control::Anchor]),
+    ("OUTPUT", &[Control::Mix]),
+  ],
+];
+
+impl Kind {
+  /// how wide a part of this kind is laid out, with the room it keeps clear around it
+  fn slot(self) -> f32 {
     match self {
-      Self::Pitch | Self::Formant => parts::Knob {
-        skirt: 0.2,
-        ..parts::Knob::skirted(36.0, 30.0)
-      },
-      Self::Mix => parts::Knob {
-        skirt: 0.0,
-        top: parts::Top::Flat,
-        ..parts::Knob::knurled(26.0, 26.0)
-      },
+      Self::Shift => 140.0,
+      Self::Knob | Self::Selector { .. } => 76.0,
+      Self::Switch => 60.0,
     }
   }
 
-  /// what is printed under the knob
+  /// the knob a control of this kind is turned by, if it has one. the shifts' are skirted and
+  /// large, the others' small, and a selector's points
+  fn knob(self) -> Option<parts::Knob> {
+    match self {
+      Self::Shift => Some(parts::Knob {
+        skirt: 0.2,
+        ..parts::Knob::skirted(36.0, 30.0)
+      }),
+      Self::Knob => Some(parts::Knob {
+        top: parts::Top::Flat,
+        ..parts::Knob::knurled(16.0, 18.0)
+      }),
+      Self::Selector { .. } => Some(parts::Knob::chicken_head(15.0, 16.0)),
+      Self::Switch => None,
+    }
+  }
+
+  /// how tall the name under a control of this kind is, and how wide its strokes
+  fn name_size(self) -> (f32, f32) {
+    match self {
+      Self::Shift => (8.0, 1.7),
+      Self::Knob | Self::Selector { .. } => (6.0, 1.25),
+      Self::Switch => (5.5, 1.15),
+    }
+  }
+}
+
+impl Control {
+  /// what is printed under the control
   fn name(self) -> &'static str {
     match self {
       Self::Pitch => "PITCH",
       Self::Formant => "FORMANT",
+      Self::FormantFollow => "FOLLOW",
+      Self::Smooth => "SMOOTH",
+      Self::Detune => "DETUNE",
+      Self::Smear => "SMEAR",
+      Self::Stereo => "STEREO",
+      Self::VibratoDepth => "DEPTH",
+      Self::VibratoRate => "RATE",
+      Self::VibratoSync => "SYNC",
+      Self::VibratoDivision => "DIVISION",
+      Self::Mode => "MIDI",
+      Self::Latch => "LATCH",
+      Self::Glide => "GLIDE",
+      Self::GlideNotesOnly => "NOTES ONLY",
+      Self::Attack => "ATTACK",
+      Self::Decay => "DECAY",
+      Self::Sustain => "SUSTAIN",
+      Self::Release => "RELEASE",
+      Self::PressureLevel => "PRESSURE",
+      Self::SlideFormant => "SLIDE",
+      Self::BendRange => "BEND",
+      Self::Detect => "RANGE",
+      Self::Anchor => "ANCHOR",
       Self::Mix => "MIX",
     }
   }
+}
 
-  /// the figures printed around the knob, spread evenly from one end of its turn to the other
-  fn figures(self) -> &'static [&'static str] {
-    match self {
-      Self::Pitch | Self::Formant => &["-24", "-12", "0", "+12", "+24"],
-      Self::Mix => &["0", "50", "100"],
-    }
+/// where a control is: across the panel, and its row
+#[derive(Clone, Copy, Debug)]
+struct Spot {
+  x: f32,
+  row: Row,
+}
+
+impl Spot {
+  fn middle(self) -> Vec2 {
+    Vec2::new(self.x, self.row.middle)
   }
 
-  /// how many marks the knob's scale has, and how many apart the long ones are
-  fn marks(self) -> (u32, u32) {
-    match self {
-      Self::Pitch | Self::Formant => (25, 6),
-      Self::Mix => (11, 5),
-    }
+  fn window(self) -> Vec3 {
+    Vec3::new(self.x, self.row.window, 0.0)
   }
+}
 
-  /// the knob's center across the panel
-  fn x(self) -> f32 {
-    match self {
-      Self::Pitch => 102.0,
-      Self::Formant => 240.0,
-      Self::Mix => 374.0,
+/// the name of a group of controls over them, between rules that reach `ends` across the
+/// panel
+struct Heading {
+  name: &'static str,
+  y: f32,
+  ends: [f32; 2],
+}
+
+/// where each control is, in the order of [`Control::ALL`], and the names of the groups
+fn layout() -> ([Spot; Control::ALL.len()], Vec<Heading>) {
+  let mut spots = [None; Control::ALL.len()];
+  let mut headings = Vec::new();
+  let wide = |controls: &[Control]| -> f32 { controls.iter().map(|c| c.kind().slot()).sum() };
+  for (row, groups) in ROWS.into_iter().zip(GROUPS) {
+    let taken: f32 = groups.iter().map(|(_, controls)| wide(controls)).sum();
+    let gap = match groups.len() {
+      1 => 0.0,
+      count => (RIGHT - LEFT - taken) / (count - 1) as f32,
+    };
+    let mut x = LEFT;
+    for &(name, controls) in groups {
+      let ends = [x + 6.0, x + wide(controls) - 6.0];
+      headings.push(Heading {
+        name,
+        y: row.heading,
+        ends,
+      });
+      for &control in controls {
+        let slot = control.kind().slot();
+        spots[control as usize] = Some(Spot {
+          x: x + slot / 2.0,
+          row,
+        });
+        x += slot;
+      }
+      x += gap;
     }
   }
+  (
+    spots.map(|spot| spot.expect("every control is in a group")),
+    headings,
+  )
 }
 
 /// objects on their way into a scene, and for each of them what a press on it is on
@@ -130,6 +336,12 @@ impl Drawn {
       material,
     });
     self.targets.push(target);
+  }
+
+  /// adds objects no press is on
+  fn extend(&mut self, objects: impl IntoIterator<Item = Object>) {
+    self.objects.extend(objects);
+    self.targets.resize(self.objects.len(), None);
   }
 }
 
@@ -164,9 +376,9 @@ impl Lettering {
     // a unit written after a space is a word, which stands off from the figures
     let name = unit.trim_start();
     let (gap, unit_tall) = if name.len() < unit.len() {
-      (4.5, UNIT_TALL)
+      (4.0, UNIT_TALL)
     } else {
-      (2.5, READOUT_TALL)
+      (2.2, READOUT_TALL)
     };
     let unit_wide = stroke::width(name.chars().count(), unit_tall);
     let all = if name.is_empty() {
@@ -211,25 +423,59 @@ impl Lettering {
   }
 }
 
-/// the panel as potpot draws it: its meshes, each made once, and the scene of the frame last
-/// laid out
-pub struct Panel {
-  renderer: Renderer,
-  /// what each object of the scene last laid out is, in the scene's order
-  targets: Vec<Option<Target>>,
+/// the meshes of the knob a control of `kind` is turned by and what each is made of: its body,
+/// the face let into it unless it is a selector's, and the line painted on it
+fn knob_parts(kind: Kind) -> Vec<(Arc<Mesh>, Material)> {
+  let knob = kind.knob().expect("it is turned by a knob");
+  let body = Material {
+    reflect: 0.9,
+    ..Material::glossy(Vec3::new(0.06, 0.06, 0.065))
+  };
+  // tight enough that its bright wedges stay apart under the light, where it glances off the
+  // whole face at nearly one angle
+  let spun = Material {
+    specular: 1.0,
+    shininess: 160.0,
+    ..Material::spun(Vec3::new(0.42, 0.43, 0.46))
+  };
+  let line = Material::matte(Vec3::splat(0.92));
+  let mut parts = vec![(Arc::new(knob.body()), body)];
+  if !matches!(kind, Kind::Selector { .. }) {
+    parts.push((Arc::new(knob.cap(0.74)), spun));
+  }
+  parts.push((Arc::new(knob.line()), line));
+  parts
+}
+
+/// what the screen shows of a feed, kept for as long as the feed holds the same numbers
+struct Shown {
+  feed: Vec<f32>,
+  objects: Vec<Object>,
+}
+
+/// everything the panel is drawn from, apart from the renderer that draws it
+struct Front {
+  spots: [Spot; Control::ALL.len()],
   /// everything that never moves or changes
   fixed: Drawn,
-  /// for each control its knob, the face let into it and the line painted on it
-  knobs: [[Arc<Mesh>; 3]; 3],
+  /// the knobs of the shifts, of the other knobs and of the selectors
+  knobs: [Vec<(Arc<Mesh>, Material)>; 3],
+  switch: PushSwitch,
+  plunger: Arc<Mesh>,
   lamp: Arc<Mesh>,
   glass: Arc<Mesh>,
   /// the lettering of what each window shows, kept for as long as it shows that
-  readouts: [Option<Lettering>; 3],
+  readouts: Vec<Option<Lettering>>,
   caret: Arc<Mesh>,
+  screen: Screen,
+  /// how many objects the screen's lines and their names are, which what it shows lies over
+  grid: usize,
+  shown: Option<Shown>,
 }
 
-impl Panel {
-  pub(super) fn new(gpu: &Gpu) -> Self {
+impl Front {
+  fn new() -> Self {
+    let (spots, headings) = layout();
     let mut fixed = Drawn::default();
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material, target| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
@@ -299,103 +545,125 @@ impl Panel {
       put(cross, x, y, 0.5, hole, None);
     }
 
-    // each group of knobs has its name over it, between two rules that turn down at their
-    // far ends
-    for (name, from, to) in [("SHIFT", 42.0, 300.0), ("OUTPUT", 324.0, 424.0)] {
+    // each group of controls has its name over it, between two rules that turn down at their
+    // far ends, and so does the screen
+    let screen = Screen::new(SCREEN_SIZE.x, SCREEN_SIZE.y);
+    let over_screen = SCREEN_SIZE.x / 2.0 + screen.border - 6.0;
+    let screen_heading = Heading {
+      name: "INPUT",
+      y: ROWS[0].heading,
+      ends: [SCREEN_AT.x - over_screen, SCREEN_AT.x + over_screen],
+    };
+    for Heading { name, y, ends } in headings.into_iter().chain([screen_heading]) {
+      let [from, to] = ends;
       let at = (from + to) / 2.0;
-      put(parts::legend(name, 5.5, 1.0), at, HEADING_Y, 0.0, ink, None);
+      put(parts::legend(name, 5.5, 1.0), at, y, 0.0, ink, None);
       let clear = stroke::width(name.len(), 5.5) / 2.0 + 6.0;
       for (near, far) in [(at - clear, from), (at + clear, to)] {
         let rule = Mesh::cuboid(
-          Vec3::new(near.min(far), HEADING_Y - 0.4, 0.0),
-          Vec3::new(near.max(far), HEADING_Y + 0.4, 0.25),
+          Vec3::new(near.min(far), y - 0.4, 0.0),
+          Vec3::new(near.max(far), y + 0.4, 0.25),
         );
         put(rule, 0.0, 0.0, 0.0, ink, None);
         let drop = Mesh::cuboid(
-          Vec3::new(far - 0.4, HEADING_Y - 0.4, 0.0),
-          Vec3::new(far + 0.4, HEADING_Y + 6.0, 0.25),
+          Vec3::new(far - 0.4, y - 0.4, 0.0),
+          Vec3::new(far + 0.4, y + 6.0, 0.25),
         );
         put(drop, 0.0, 0.0, 0.0, ink, None);
       }
     }
-    // slots that let the air out, beside the last knob
-    for slot in 0..5 {
-      let x = WIDTH - EAR - 28.0 + slot as f32 * 5.0;
-      put(
-        parts::slot(2.8, 76.0),
-        x + 0.6,
-        KNOB_Y + 0.6,
-        0.0,
-        lip,
-        None,
-      );
-      put(parts::slot(2.8, 76.0), x, KNOB_Y, 0.05, hole, None);
-    }
 
-    for control in Control::ALL {
-      let (x, radius) = (control.x(), control.knob().radius);
-      // each knob stands in a polished ring, with a scale of marks around it and figures
-      // outside them
-      put(
-        parts::bezel(radius + 0.9, radius + 8.5, 3.4),
-        x,
-        KNOB_Y,
-        0.0,
-        chrome,
-        None,
-      );
-      let (marks, long_every) = control.marks();
-      put(
-        parts::ticks(
-          marks,
-          parts::KNOB_SWEEP,
-          radius + 11.5,
-          radius + 14.5,
-          long_every,
-        ),
-        x,
-        KNOB_Y,
-        0.0,
-        ink,
-        None,
-      );
-      let figures = control.figures();
-      for (index, figure) in figures.iter().enumerate() {
-        let turn = index as f32 / (figures.len() - 1) as f32;
-        let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
-        let out = radius + 25.0;
-        put(
-          parts::legend(figure, 6.5, 0.95),
-          x + out * sin,
-          KNOB_Y - out * cos,
-          0.0,
-          ink,
-          None,
-        );
+    let switch = PushSwitch::square(22.0, 12.0);
+    for (index, (control, spot)) in Control::ALL.into_iter().zip(spots).enumerate() {
+      let kind = control.kind();
+      let Vec2 { x, y } = spot.middle();
+      match kind {
+        Kind::Shift | Kind::Knob => {
+          let radius = kind.knob().expect("it is turned by a knob").radius;
+          // each knob stands in a polished ring, with a scale of marks around it
+          let (ring, marks, long_every, ticks) = match kind {
+            Kind::Shift => (7.6, 25, 6, [11.5, 14.5]),
+            _ => (4.6, 11, 5, [7.5, 10.5]),
+          };
+          put(
+            parts::bezel(radius + 0.9, radius + ring, ring * 0.45),
+            x,
+            y,
+            0.0,
+            chrome,
+            None,
+          );
+          let [inner, outer] = ticks.map(|out| radius + out);
+          let scale = parts::ticks(marks, parts::KNOB_SWEEP, inner, outer, long_every);
+          put(scale, x, y, 0.0, ink, None);
+          // the shifts have figures outside their marks, spread evenly from one end of the turn
+          // to the other
+          if kind == Kind::Shift {
+            let figures = ["-24", "-12", "0", "+12", "+24"];
+            for (place, figure) in figures.iter().enumerate() {
+              let turn = place as f32 / (figures.len() - 1) as f32;
+              let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
+              let out = radius + 25.0;
+              put(
+                parts::legend(figure, 6.5, 0.95),
+                x + out * sin,
+                y - out * cos,
+                0.0,
+                ink,
+                None,
+              );
+            }
+          }
+        }
+        Kind::Selector { choices } => {
+          // a long mark at each choice, past the pointer's tip
+          let radius = kind.knob().expect("it is turned by a knob").radius;
+          let marks = parts::ticks(
+            choices as u32,
+            parts::KNOB_SWEEP,
+            radius + 6.0,
+            radius + 11.0,
+            1,
+          );
+          put(marks, x, y, 0.0, ink, None);
+        }
+        Kind::Switch => {
+          put(switch.plunger.seat(1.2), x, y, 0.0, hole, None);
+          put(switch.collar(), x, y, 0.0, chrome, None);
+        }
       }
-      put(
-        parts::legend(control.name(), 8.0, 1.7),
-        x,
-        NAME_Y,
-        0.0,
-        ink,
-        None,
-      );
+      let (tall, weight) = kind.name_size();
+      let name = parts::legend(control.name(), tall, weight);
+      put(name, x, spot.row.name, 0.0, ink, None);
       // the bezel of the window its value shows in. the glass set down in it changes with
       // what it shows
-      put(
-        parts::frame(WINDOW.x + 6.0, WINDOW.y + 6.0, 3.0, 2.2, 3.5),
-        x,
-        WINDOW_Y,
-        0.0,
-        Material::glossy(black),
-        Some(Target::Readout(control as usize)),
-      );
+      if kind != Kind::Switch {
+        put(
+          parts::frame(WINDOW.x + 6.0, WINDOW.y + 6.0, 3.0, 2.2, 3.5),
+          x,
+          spot.row.window,
+          0.0,
+          Material::glossy(black),
+          Some(Target::Readout(index)),
+        );
+      }
     }
+
+    // the screen in its bezel, with lines across and up it that the spectrum is drawn over
+    let glass = screen_glass();
+    let Vec2 { x, y } = SCREEN_AT;
+    put(screen.face(), x, y, 0.0, glass, None);
+    put(screen.bezel(), x, y, 0.0, Material::glossy(black), None);
+    let grid = parts::picture(&lines(), x, y, glass, 0);
+    let grid_objects = grid.len();
+    fixed.extend(grid);
 
     // a black strip between the ears along the bottom. the plugin's name is on it in
     // slanted letters over a red stroke, then what it is, a maker's plate riveted on, and
     // the lamp in a polished ring
+    let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material, target| {
+      fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
+    };
     put(
       parts::slab(WIDTH - 2.0 * EAR - 8.0, 34.0, STRIP_UP, 4.0),
       middle,
@@ -422,7 +690,7 @@ impl Panel {
         None,
       );
     }
-    let plate = Vec3::new(338.0, STRIP_Y, STRIP_UP);
+    let plate = Vec3::new(WIDTH - 162.0, STRIP_Y, STRIP_UP);
     put(
       parts::slab(76.0, 20.0, 0.9, 1.5),
       plate.x,
@@ -477,57 +745,90 @@ impl Panel {
       None,
     );
 
-    let knobs = Control::ALL.map(|control| {
-      let knob = control.knob();
-      [knob.body(), knob.cap(0.74), knob.line()].map(Arc::new)
-    });
     Self {
-      renderer: Renderer::new(gpu.device, gpu.format),
-      targets: Vec::new(),
+      spots,
       fixed,
-      knobs,
+      // made for one control of each of those kinds
+      knobs: [Control::Pitch, Control::Mix, Control::Detect].map(|one| knob_parts(one.kind())),
+      plunger: Arc::new(switch.plunger()),
+      switch,
       lamp: Arc::new(parts::led(LAMP_SIZE)),
       glass: Arc::new(Mesh::cuboid(
         (-WINDOW / 2.0).extend(0.0),
         (WINDOW / 2.0).extend(GLASS_UP),
       )),
-      readouts: [None, None, None],
+      readouts: Control::ALL.map(|_| None).into(),
       caret: Arc::new(Mesh::cuboid(
         Vec3::new(-0.6, -READOUT_TALL / 2.0 - 2.0, 0.0),
         Vec3::new(0.6, READOUT_TALL / 2.0 + 2.0, 0.3),
       )),
+      screen,
+      grid: grid_objects,
+      shown: None,
     }
   }
 
   /// the scene of the panel with each control at its value, in the order of
-  /// [`Control::ALL`], and whatever is being typed, with what each of its objects is
-  fn scene(&mut self, controls: &[Reading], edit: Option<&Edit>) -> (Scene, Vec<Option<Target>>) {
+  /// [`Control::ALL`], and whatever is being typed, with what each of its objects is.
+  /// `held` is the control held down, and `feed` is what the audio thread last wrote
+  fn scene(
+    &mut self,
+    controls: &[Reading],
+    edit: Option<&Edit>,
+    held: Option<usize>,
+    feed: &[f32],
+  ) -> (Scene, Vec<Option<Target>>) {
     // the scene owns this frame's objects, so the ones that never move are copied into it
     let mut drawn = self.fixed.clone();
-    for (index, control) in Control::ALL.into_iter().enumerate() {
-      let turn = controls[index].value;
-      let transform = parts::knob_transform(control.x(), KNOB_Y, turn, parts::KNOB_SWEEP);
-      let materials = [
-        Material {
-          reflect: 0.9,
-          ..Material::glossy(Vec3::new(0.06, 0.06, 0.065))
-        },
-        // tight enough that its bright wedges stay apart under the light, where it glances
-        // off the whole face at nearly one angle
-        Material {
-          specular: 1.0,
-          shininess: 160.0,
-          ..Material::spun(Vec3::new(0.42, 0.43, 0.46))
-        },
-        Material::matte(Vec3::splat(0.92)),
-      ];
-      for (mesh, material) in self.knobs[index].iter().zip(materials) {
-        drawn.place(mesh, transform, material, Some(Target::Control(index)));
+    let mut lamps = Vec::new();
+    let rubber = Material::silicone(Vec3::splat(0.1));
+    for (index, (control, spot)) in Control::ALL.into_iter().zip(self.spots).enumerate() {
+      let Vec2 { x, y } = spot.middle();
+      let reading = &controls[index];
+      let target = Some(Target::Control(index));
+      let knob = match control.kind() {
+        Kind::Shift => &self.knobs[0],
+        Kind::Knob => &self.knobs[1],
+        Kind::Selector { .. } => &self.knobs[2],
+        Kind::Switch => {
+          // a switch that is on stays in and is lit, and throws its light around it
+          let on = reading.value > 0.5;
+          let depth = Push::Latching.depth(on, held == Some(index));
+          let plunger = self.switch.plunger;
+          let level = f32::from(u8::from(on));
+          drawn.place(
+            &self.plunger,
+            self.switch.transform(x, y, depth),
+            rubber.lit(READOUT_COLOR, level, plunger.glow_radius()),
+            target,
+          );
+          if on {
+            lamps.push(plunger.lamp(x, y, READOUT_COLOR, 0.5));
+          }
+          continue;
+        }
+      };
+      let transform = parts::knob_transform(x, y, reading.value, parts::KNOB_SWEEP);
+      for (mesh, material) in knob {
+        drawn.place(mesh, transform, *material, target);
       }
       let edit = edit.filter(|edit| edit.control == index);
-      let Reading { text, unit, .. } = &controls[index];
-      self.readout(&mut drawn, index, control, (text, unit), edit);
+      let Reading { text, unit, .. } = reading;
+      self.readout(&mut drawn, index, spot.window(), (text, unit), edit);
     }
+
+    let Vec2 { x, y } = SCREEN_AT;
+    let glass = screen_glass();
+    let shown = (self.shown.take())
+      .filter(|shown| shown.feed == feed)
+      .unwrap_or_else(|| Shown {
+        feed: feed.to_vec(),
+        objects: parts::picture(&spectrum(feed), x, y, glass, self.grid),
+      });
+    drawn.extend(shown.objects.iter().cloned());
+    self.shown = Some(shown);
+    lamps.extend(self.screen.lamps(x, y, READOUT_COLOR, 0.35));
+
     // the lamp is as bright as the mix is wet, and dark when nothing of the shift is heard
     let wet = controls[Control::Mix as usize].value;
     drawn.put(
@@ -536,6 +837,13 @@ impl Panel {
       parts::led_material(LAMP_COLOR, wet, LAMP_SIZE),
       None,
     );
+    lamps.push(Lamp {
+      at: LAMP.extend(STRIP_UP + LAMP_SIZE),
+      // strong enough to show on the black strip, which gives little of any light back
+      color: LAMP_COLOR * wet * 2.5,
+      reach: LAMP_SIZE * 4.0,
+      radius: LAMP_SIZE / 2.0,
+    });
     let scene = Scene {
       size: Vec2::new(WIDTH, HEIGHT),
       heights: [-8.0, 48.0],
@@ -552,13 +860,7 @@ impl Panel {
         ..Look::default()
       },
       objects: drawn.objects,
-      lamps: vec![Lamp {
-        at: LAMP.extend(STRIP_UP + LAMP_SIZE),
-        // strong enough to show on the black strip, which gives little of any light back
-        color: LAMP_COLOR * wet * 2.5,
-        reach: LAMP_SIZE * 4.0,
-        radius: LAMP_SIZE / 2.0,
-      }],
+      lamps,
     };
     (scene, drawn.targets)
   }
@@ -570,12 +872,11 @@ impl Panel {
     &mut self,
     drawn: &mut Drawn,
     index: usize,
-    control: Control,
+    at: Vec3,
     (figures, unit): (&str, &str),
     edit: Option<&Edit>,
   ) {
     let target = Some(Target::Readout(index));
-    let at = Vec3::new(control.x(), WINDOW_Y, 0.0);
     let glass = Material {
       reflect: 0.2,
       // sized as a much larger pane, which keeps the sheen to one corner
@@ -611,9 +912,94 @@ impl Panel {
   }
 }
 
+/// the face of the screen, which what it shows is lit on
+fn screen_glass() -> Material {
+  Material::screen(FACE, (SCREEN_SIZE.x + SCREEN_SIZE.y) * 3.0)
+}
+
+/// the point of the panel at a place in the plot: a part of the way across it and a part of
+/// the way up
+fn plotted([across, up]: [f32; 2]) -> [f32; 2] {
+  let [min, max] = PLOT;
+  [
+    min.x + across * (max.x - min.x),
+    max.y - up * (max.y - min.y),
+  ]
+}
+
+/// the lines the screen's spectrum is drawn over, the names of the frequencies under them, and
+/// the line that sets the note's column apart
+fn lines() -> Flat {
+  let mut flat = Flat::default();
+  for hz in HERTZ_LINES {
+    let across = HERTZ.turn(hz);
+    flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, GRID);
+  }
+  for level in LEVEL_LINES {
+    let up = LEVELS.turn(level);
+    flat.line(plotted([0.0, up]), plotted([1.0, up]), 1.0, GRID);
+  }
+  for (hz, name) in HERTZ_NAMES {
+    let [x, y] = plotted([HERTZ.turn(hz), 0.0]);
+    flat.centered(name, [x, y + 7.0], 5.0, 1.0, LABELS);
+  }
+  let half = SCREEN_SIZE.y / 2.0 - 10.0;
+  let top = [NOTE_LINE, SCREEN_AT.y - half];
+  flat.line(top, [NOTE_LINE, SCREEN_AT.y + half], 1.0, GRID);
+  flat
+}
+
+/// what the screen shows of the feed: the level of each band of the spectrum as a curve over
+/// a fill, and beside it the note nearest the detected pitch, how many cents off it the pitch
+/// is and the pitch itself. the pitch is marked on the spectrum too. with none detected the
+/// note is two dashes
+fn spectrum(feed: &[f32]) -> Flat {
+  let mut flat = Flat::default();
+  let curve: Vec<[f32; 2]> = (feed[..BANDS].iter().enumerate())
+    .map(|(band, level)| {
+      let across = (band as f32 + 0.5) / BANDS as f32;
+      plotted([across, LEVELS.turn(*level)])
+    })
+    .collect();
+  flat.area(&curve, PLOT[1].y, FILL);
+  flat.curve(&curve, 1.5, EDGE);
+  let hz = feed[PITCH_SLOT];
+  if hz > 0.0 {
+    let across = HERTZ.turn(hz);
+    flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, PITCH);
+    let (name, cents) = note::nearest(hz);
+    flat.centered(&name, [NOTE_X, SCREEN_AT.y - 24.0], NOTE_TALL, 2.6, EDGE);
+    let cents = format!("{cents:+} CT");
+    flat.centered(&cents, [NOTE_X, SCREEN_AT.y + 8.0], 7.0, 1.3, EDGE);
+    let hertz = format!("{hz:.1} HZ");
+    flat.centered(&hertz, [NOTE_X, SCREEN_AT.y + 24.0], 5.5, 1.1, LABELS);
+  } else {
+    flat.centered("--", [NOTE_X, SCREEN_AT.y - 24.0], NOTE_TALL, 2.6, LABELS);
+  }
+  flat
+}
+
+/// the panel as potpot draws it, and what each object of the scene last laid out is
+pub struct Panel {
+  renderer: Renderer,
+  /// what each object of the scene last laid out is, in the scene's order
+  targets: Vec<Option<Target>>,
+  front: Front,
+}
+
+impl Panel {
+  pub(super) fn new(gpu: &Gpu) -> Self {
+    Self {
+      renderer: Renderer::new(gpu.device, gpu.format),
+      targets: Vec::new(),
+      front: Front::new(),
+    }
+  }
+}
+
 impl Skin for Panel {
   fn prepare(&mut self, gpu: &Gpu, view: &View, _over: &mut Flat) {
-    let (scene, targets) = self.scene(view.controls, view.edit);
+    let (scene, targets) = (self.front).scene(view.controls, view.edit, view.held, view.feed);
     (self.renderer).prepare(gpu.device, gpu.queue, &scene, view.pixels);
     self.targets = targets;
   }
@@ -641,16 +1027,112 @@ impl Skin for Panel {
 
 #[cfg(test)]
 mod tests {
+  use potpot_controls::interaction::{Control as Handled, Dial, Interaction, Readout};
+
   use super::*;
+  use crate::spectrum::SLOTS;
 
   #[test]
   fn the_longest_value_fits_its_window() {
-    // the widest a shift is written, and the most letters that are let be typed
-    let widest = Lettering::new("-24.00", " st", 0..0);
-    let (_, unit_at) = widest.unit.as_ref().expect("a unit");
-    let right = unit_at.x + stroke::width(2, UNIT_TALL) / 2.0;
-    assert!(right <= WINDOW.x / 2.0 - 1.0, "{right}");
+    // the widest each kind of value is written, and the most letters that are let be typed
+    for (figures, unit) in [
+      ("-24.00", " st"),
+      ("10000", " ms"),
+      ("15.00", " Hz"),
+      ("200", " ct"),
+      ("100", "%"),
+      ("96", " st"),
+      ("Mono Gate", ""),
+      ("1/16T", ""),
+      ("-12.5", ""),
+    ] {
+      let lettering = Lettering::new(figures, unit, 0..0);
+      // the furthest any stroke reaches from the window's middle
+      let reach = |mesh: &Mesh, at: f32| -> f32 {
+        (mesh.vertices.iter())
+          .map(|vertex| (vertex.position[0] + at).abs())
+          .fold(0.0, f32::max)
+      };
+      let unit_reach = (lettering.unit.as_ref()).map_or(0.0, |(mesh, at)| reach(mesh, at.x));
+      let widest = reach(&lettering.figures, lettering.figures_at).max(unit_reach);
+      assert!(
+        widest <= WINDOW.x / 2.0 - 1.0,
+        "{figures}{unit} reaches {widest}"
+      );
+    }
     assert!(stroke::width(READOUT_LETTERS, READOUT_TALL) <= WINDOW.x - 4.0);
     assert!(READOUT_LETTERS >= "-12.5 st".len());
+    // the widest note name, a sharp in the octave under the lowest, fits between the line
+    // that sets its column apart and the edge of the screen's face
+    let half = stroke::width("C#-1".len(), NOTE_TALL) / 2.0;
+    let edge = SCREEN_AT.x + SCREEN_SIZE.x / 2.0;
+    assert!(NOTE_X - half > NOTE_LINE && NOTE_X + half < edge, "{half}");
+  }
+
+  /// the scene with every control halfway, nothing typed and a pitch on the screen
+  fn scene(front: &mut Front) -> (Scene, Vec<Option<Target>>) {
+    let count = Control::ALL.len();
+    let dials = (0..count)
+      .map(|_| Dial::linear([0.0, 1.0], 0.5, None, 2, ""))
+      .collect();
+    let handled = (0..count).map(|control| Handled::new(control, Readout::new(4)));
+    let panel = Interaction::new(dials, handled.collect(), [WIDTH, HEIGHT], [1.0, 1.0]);
+    let mut feed = vec![FLOOR_DB; SLOTS];
+    feed[PITCH_SLOT] = 220.0;
+    front.scene(&panel.readings(&vec![0.5; count]), None, None, &feed)
+  }
+
+  #[test]
+  fn every_control_and_window_is_picked_where_it_is_drawn() {
+    let mut front = Front::new();
+    let (scene, targets) = scene(&mut front);
+    let picked = |at: Vec2| scene.pick(at).and_then(|object| targets[object]);
+    for (index, (control, spot)) in Control::ALL.into_iter().zip(front.spots).enumerate() {
+      // the middle of a knob and a little off it each way, which its top is seen leaned from
+      for off in [Vec2::ZERO, Vec2::X * 6.0, -Vec2::X * 6.0, Vec2::Y * 6.0] {
+        let at = spot.middle() + off;
+        assert_eq!(
+          picked(at),
+          Some(Target::Control(index)),
+          "{control:?} at {at}"
+        );
+      }
+      if control.kind() != Kind::Switch {
+        let at = spot.window().truncate();
+        for off in [Vec2::ZERO, Vec2::X * (WINDOW.x / 2.0 - 2.0)] {
+          assert_eq!(
+            picked(at + off),
+            Some(Target::Readout(index)),
+            "{control:?}"
+          );
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn no_two_controls_take_the_same_room() {
+    // each control is in one group alone, which with every one placed is once each
+    let grouped: usize = (GROUPS.iter().flat_map(|row| row.iter()))
+      .map(|(_, controls)| controls.len())
+      .sum();
+    assert_eq!(grouped, Control::ALL.len());
+    let (spots, _) = layout();
+    for (index, one) in spots.iter().enumerate() {
+      let kind = Control::ALL[index].kind();
+      for (other, two) in spots.iter().enumerate().skip(index + 1) {
+        let reach = (kind.slot() + Control::ALL[other].kind().slot()) / 2.0;
+        let apart = one.middle().distance(two.middle());
+        assert!(apart >= reach, "{index} and {other} are {apart} apart");
+      }
+      // and every one is clear of the screen and the ears
+      let half = kind.slot() / 2.0;
+      assert!(one.x - half >= LEFT && one.x + half <= RIGHT, "{index}");
+      let screen = SCREEN_AT.x - SCREEN_SIZE.x / 2.0 - 7.0;
+      assert!(
+        one.row.middle > ROWS[0].window || one.x + half <= screen,
+        "{index}"
+      );
+    }
   }
 }

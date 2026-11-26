@@ -12,8 +12,8 @@ long. Each held note gets a voice at that note's pitch, up to 16 at once. While 
 one voice follows the input's own pitch. The spacing of the grains sets the pitch and the speed
 they are read at sets the formants, so the two move separately.
 
-The plugin adds no latency and runs on mono and stereo tracks. Hosts show its parameters in
-their generic interface.
+The plugin adds no latency and runs on mono and stereo tracks. Its editor has a control for
+each parameter and shows the input's spectrum and the note nearest its detected pitch.
 
 ## Parameters
 

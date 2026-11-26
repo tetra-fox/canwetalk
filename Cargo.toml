@@ -33,6 +33,10 @@ potpot-window = { git = "https://github.com/tetra-fox/potpot", branch = "main" }
 # the fourier transform the editor's spectrum is taken with
 realfft = "3.5.1"
 
+[dev-dependencies]
+# writes the picture of the editor a test draws
+png = "0.18"
+
 # the audio code is too slow to try out unoptimized
 [profile.dev]
 opt-level = 1

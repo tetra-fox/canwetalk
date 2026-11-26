@@ -408,6 +408,11 @@ mod tests {
   /// what the plugin makes of `take`, handed over in buffers of the sizes `sizes` gives, over
   /// and over, and cut short where a control is set
   fn render(take: &Take, sizes: &[usize]) -> Vec<[f32; 2]> {
+    run(take, sizes).1
+  }
+
+  /// the plugin after `take`, as `render` plays it, and what it made
+  fn run(take: &Take, sizes: &[usize]) -> (CanWeTalk, Vec<[f32; 2]>) {
     let Take {
       rate, ref input, ..
     } = *take;
@@ -484,7 +489,7 @@ mod tests {
       let right = if take.mono { left } else { right };
       output.extend(left.iter().zip(right).map(|(&left, &right)| [left, right]));
     }
-    output
+    (plugin, output)
   }
 
   /// a few harmonics of a low note, not the same on the two sides
@@ -1037,6 +1042,28 @@ mod tests {
       2 * output.len(),
       -20.0 * (furthest / loudest).log10()
     );
+  }
+
+  /// with CANWETALK_PICTURE naming a png file, draws the editor there at twice its size after
+  /// a voice has played through the plugin, so that its screen shows the voice's spectrum and
+  /// note
+  #[test]
+  #[ignore = "needs a graphics device"]
+  fn the_editor_draws_what_the_plugin_hears() {
+    let (plugin, _) = run(&Take::new(RATE, voice(RATE, 1.0, 220.0)), &[512]);
+    let editor = editor::editor(plugin.params.clone(), plugin.feed.clone())
+      .expect("every control is bound to one of the plugin's parameters");
+    let picture = editor.picture(2.0).expect("the editor is drawn");
+    let Some(path) = std::env::var_os("CANWETALK_PICTURE") else {
+      return;
+    };
+    let file = std::fs::File::create(path).expect("the png file can be made");
+    let [width, height] = picture.size;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("the png header is written");
+    (writer.write_image_data(&picture.pixels)).expect("the png pixels are written");
   }
 
   #[test]
