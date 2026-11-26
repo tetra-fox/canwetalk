@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use potpot::glam::{Mat4, Vec2, Vec3};
-use potpot::parts::{self, Handle, LedArc, LedRing, LedStops, PushSwitch, Screen, Vent};
+use potpot::parts::{self, Handle, LedArc, LedRing, LedStops, Meter, PushSwitch, Screen, Vent};
 use potpot::{Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::axis::Axis;
 use potpot_controls::flat::{Color, Flat};
@@ -18,8 +18,8 @@ use potpot_window::{Gpu, Skin, View, wgpu};
 use super::{Control, Kind, note};
 use crate::params::SHIFT_SEMITONES;
 use crate::spectrum::{
-  BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, HERTZ_ENDS, INPUT_BANDS, OUTPUT_BANDS, PITCH_SLOT,
-  VOICE_SLOTS,
+  BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, HERTZ_ENDS, INPUT_BANDS, INPUT_LEVEL, OUTPUT_BANDS,
+  OUTPUT_LEVEL, PITCH_SLOT, VOICE_SLOTS,
 };
 
 pub(super) const WIDTH: f32 = 920.0;
@@ -36,6 +36,8 @@ const RIGHT: f32 = WIDTH - EAR - 14.0;
 const CYAN: Vec3 = Vec3::new(0.2, 0.85, 1.0);
 /// the color of the caret and the selection while a value is typed
 const AMBER: Vec3 = Vec3::new(1.0, 0.66, 0.14);
+/// the one color for a warning, which a level meter turns near full scale
+const ORANGE: Vec3 = Vec3::new(1.0, 0.38, 0.05);
 /// the dark metal of the panel, and the darker metal of the strip along its bottom
 const GUNMETAL: Vec3 = Vec3::new(0.12, 0.13, 0.14);
 const STRIP_METAL: Vec3 = Vec3::new(0.06, 0.065, 0.07);
@@ -69,13 +71,14 @@ pub(super) const READOUT_LETTERS: usize = {
   }
   letters
 };
-/// the knobs: the radius and height of a shift's and of the others'
-const SHIFT_RADIUS: f32 = 27.0;
-const SHIFT_HEIGHT: f32 = 24.0;
-const SMALL_RADIUS: f32 = 14.0;
+/// the knobs: the radius and height of a shift's, of a selector's to the tip of its point,
+/// and of the others'
+const SHIFT_RADIUS: f32 = 33.0;
+const SHIFT_HEIGHT: f32 = 26.0;
+const SELECTOR_RADIUS: f32 = 16.0;
+const SELECTOR_HEIGHT: f32 = 15.0;
+const SMALL_RADIUS: f32 = 17.0;
 const SMALL_HEIGHT: f32 = 15.0;
-/// how far the chrome skirt under a knob reaches past its edge, for each point of its radius
-const SKIRT: f32 = 1.22;
 /// how far out from a shift's middle the figures of its scale are, and how tall
 const FIGURES_OUT: f32 = 53.0;
 const FIGURES_TALL: f32 = 6.0;
@@ -105,9 +108,15 @@ const RULE_IN: f32 = 10.0;
 const STRIP_Y: f32 = HEIGHT - 29.0;
 const STRIP_UP: f32 = 2.0;
 const STRIP_TALL: f32 = 34.0;
-/// the light on the strip that shows how much of the shift is heard, and how wide it is
+/// the light on the strip that is as bright as the output is loud, and how wide it is
 const EFFECT: Vec2 = Vec2::new(WIDTH - 66.0, STRIP_Y);
 const EFFECT_SIZE: f32 = 7.0;
+/// the level meters on the strip: how long each is and how many lights it has, the quietest
+/// level they show in decibels, and the level they turn orange from
+const METER_LONG: f32 = 120.0;
+const METER_LIGHTS: u32 = 24;
+const METER_FLOOR_DB: f32 = -60.0;
+const METER_WARN_DB: f32 = -3.0;
 /// the screen at the top right, by the middle and the size of its face
 const SCREEN_AT: Vec2 = Vec2::new(RIGHT - SCREEN_CLEAR - SCREEN_SIZE.x / 2.0, 106.0);
 const SCREEN_SIZE: Vec2 = Vec2::new(352.0, 136.0);
@@ -235,33 +244,30 @@ const GROUPS: [&[(&str, &[Control])]; 3] = [
 
 /// the knob the shifts are turned by
 fn shift_knob() -> parts::Knob {
-  parts::Knob {
-    skirt: 0.0,
-    ..parts::Knob::round(SHIFT_RADIUS, SHIFT_HEIGHT)
-  }
+  parts::Knob::skirted(SHIFT_RADIUS, SHIFT_HEIGHT)
 }
 
-/// the knob the other controls that turn are turned by
+/// the knob a selector is turned by, which points
+fn selector_knob() -> parts::Knob {
+  parts::Knob::chicken_head(SELECTOR_RADIUS, SELECTOR_HEIGHT)
+}
+
+/// the knob the other controls that turn are turned by, knurled with a flat face for a cap
 fn small_knob() -> parts::Knob {
   parts::Knob {
-    skirt: 0.0,
-    ..parts::Knob::round(SMALL_RADIUS, SMALL_HEIGHT)
+    top: parts::Top::Flat,
+    ..parts::Knob::knurled(SMALL_RADIUS, SMALL_HEIGHT)
   }
-}
-
-/// the chrome skirt a knob stands on, which does not turn with it
-fn skirt(knob: parts::Knob) -> Mesh {
-  parts::bezel(knob.radius * 0.8, knob.radius * SKIRT, knob.height * 0.18)
 }
 
 /// the lights around a shift's knob, which show its value either way from nothing
 fn shift_ring() -> LedRing {
-  LedRing::new(24, SHIFT_RADIUS * SKIRT + 6.0, 5.0)
+  LedRing::new(24, SHIFT_RADIUS + 6.0, 5.0)
 }
 
 /// the unbroken light around the knob of a control that turns smoothly
 fn knob_arc() -> LedArc {
-  LedArc::new(SMALL_RADIUS * SKIRT + 5.0, 2.4)
+  LedArc::new(SMALL_RADIUS + 5.0, 2.4)
 }
 
 /// the lights at the stops of a selector with these choices
@@ -300,28 +306,27 @@ impl Kind {
       // over the figure at the top of its scale, and under those at the ends of its turn or
       // its skirt, whichever is lower
       Self::Shift => {
-        let skirt = SHIFT_RADIUS * SKIRT;
         let ends = down_at_ends(FIGURES_OUT) + FIGURES_TALL / 2.0;
-        [FIGURES_OUT + FIGURES_TALL / 2.0, ends.max(skirt)]
+        [FIGURES_OUT + FIGURES_TALL / 2.0, ends.max(SHIFT_RADIUS)]
       }
-      // over the light around it, and under its ends or the skirt
+      // over the light around it, and under its ends or the knob
       Self::Knob => {
         let arc = knob_arc();
         let out = arc.radius + arc.width / 2.0 + arc.margin;
-        [out, down_at_ends(out).max(SMALL_RADIUS * SKIRT)]
+        [out, down_at_ends(out).max(SMALL_RADIUS)]
       }
       // over the name of the choice at the top, and under those at the ends of its turn
       Self::Selector { printed: true, .. } => [
         CHOICE_OUT + CHOICE_TALL / 2.0,
         down_at_ends(CHOICE_OUT) + CHOICE_TALL / 2.0,
       ],
-      // over and under its lights, or under the skirt if that is lower
+      // over and under its lights, or under its point if that is lower
       Self::Selector {
         choices,
         printed: false,
       } => {
         let [up, down] = selector_stops(choices).reach();
-        [up, down.max(SMALL_RADIUS * SKIRT)]
+        [up, down.max(SELECTOR_RADIUS)]
       }
       // over and under the collar
       Self::Switch => {
@@ -532,7 +537,7 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
     }
   }
   fields.push(Field {
-    name: "INPUT",
+    name: "SPECTRUM",
     across: screen,
     down: rows[0].field,
     y: rows[0].heading,
@@ -584,6 +589,23 @@ fn slanted(mut mesh: Mesh, slope: f32) -> Mesh {
     vertex.position[0] -= vertex.position[1] * slope;
   }
   mesh
+}
+
+/// a level meter on the strip, lying on its side once turned a quarter
+fn meter() -> Meter {
+  let warn = (METER_WARN_DB - METER_FLOOR_DB) / -METER_FLOOR_DB;
+  Meter {
+    colors: [CYAN, CYAN, ORANGE],
+    yellow_from: warn,
+    red_from: warn,
+    ..Meter::ladder(METER_LIGHTS, 5.0, METER_LONG)
+  }
+}
+
+/// how much of a level meter a level in decibels lights, from none at its floor to all of it
+/// at full scale
+fn meter_level(db: f32) -> f32 {
+  ((db - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
 }
 
 /// lettering lit from inside the panel, in fine strokes spread wider than the face sets them
@@ -688,8 +710,9 @@ fn choice_at(middle: Vec2, turn: f32, name: &str) -> Vec2 {
 /// meshes and what each is made of
 type Parts = Vec<(Arc<Mesh>, Material)>;
 
-/// the meshes of a knob that turn with it: its glossy black body and the lit line on it
-fn knob_parts(knob: parts::Knob) -> Parts {
+/// the meshes of a knob that turn with it: its glossy black body, a face of spun aluminium if
+/// it is `capped`, and the lit line on it
+fn knob_parts(knob: parts::Knob, capped: bool) -> Parts {
   // black plastic with a tight, faint highlight and little of the room in it, which keeps a
   // knob's top black where the near light's mirror image falls on it
   let body = Material {
@@ -698,10 +721,15 @@ fn knob_parts(knob: parts::Knob) -> Parts {
     reflect: 0.1,
     ..Material::glossy(Vec3::splat(0.008))
   };
-  vec![
-    (Arc::new(knob.body()), body),
-    (Arc::new(knob.line()), Material::lamp(CYAN)),
-  ]
+  let mut parts = vec![(Arc::new(knob.body()), body)];
+  if capped {
+    parts.push((
+      Arc::new(knob.cap(0.86)),
+      Material::spun(Vec3::new(0.78, 0.79, 0.81)),
+    ));
+  }
+  parts.push((Arc::new(knob.line()), Material::lamp(CYAN)));
+  parts
 }
 
 /// objects made for what they show, kept for as long as it is the same
@@ -717,6 +745,7 @@ struct Front {
   fixed: Drawn,
   /// the parts of a shift's knob and of the others
   shift_knob: Parts,
+  selector_knob: Parts,
   small_knob: Parts,
   switch: PushSwitch,
   plunger: Arc<Mesh>,
@@ -731,6 +760,10 @@ struct Front {
   /// the light at each stop of a selector
   stop_light: Arc<Mesh>,
   effect: Arc<Mesh>,
+  meter: Meter,
+  meter_light: Arc<Mesh>,
+  /// where the input's meter and the output's lie, each from its quiet end
+  meters: [Mat4; 2],
   glass: Arc<Mesh>,
   /// the lettering of what each window shows, kept for as long as it shows that
   readouts: Vec<Option<Lettering>>,
@@ -758,11 +791,6 @@ impl Front {
     };
     let hole = Material::matte(Vec3::splat(0.01));
     let chrome = Material::chrome(Vec3::splat(0.75));
-    // polished on a lathe, which catches the light in bright wedges around the knob
-    let skirt_chrome = Material {
-      spun: 1.0,
-      ..Material::chrome(Vec3::splat(0.95))
-    };
     // polished steel brushed along the bar, which stands out from the darker metal of the panel
     let steel = Material {
       brushed: 0.6,
@@ -878,12 +906,6 @@ impl Front {
       let Vec2 { x, y } = spot.middle();
       match kind {
         Kind::Shift => {
-          fixed.put(
-            &Arc::new(skirt(shift_knob())),
-            flat(x, y),
-            skirt_chrome,
-            None,
-          );
           fixed.extend(ring.seats(&ring_seat, x, y));
           // figures outside the ring, each where the knob points at that shift
           for share in [-1.0, -0.5, 0.0, 0.5, 1.0_f32] {
@@ -896,13 +918,9 @@ impl Front {
             fixed.put(&figure, at.extend(0.0), lit(LABEL_LIT), None);
           }
         }
-        Kind::Knob => {
-          let skirt = Arc::new(skirt(small_knob()));
-          fixed.put(&skirt, flat(x, y), skirt_chrome, None);
-        }
+        // its light and the gap it is set in change with its value, so are drawn with it
+        Kind::Knob => {}
         Kind::Selector { choices, printed } => {
-          let skirt = Arc::new(skirt(small_knob()));
-          fixed.put(&skirt, flat(x, y), skirt_chrome, None);
           let stops = selector_stops(choices);
           fixed.extend(stops.seats(&stop_seat, x, y));
           if printed {
@@ -985,6 +1003,32 @@ impl Front {
       put(vent.slots(), x, STRIP_Y, STRIP_UP, hole);
       put(vent.holes(), x, STRIP_Y, STRIP_UP, lit(0.55));
     }
+    // past each vent its name and a meter running left to right, the input's on the left and
+    // the output's on the right, with the names nearer the vents
+    let vent_out = logo_half + 44.0 + 2.0 * vent_half;
+    let meter = meter();
+    let meter_seat = Arc::new(meter.seat());
+    let mut meters = [Mat4::IDENTITY; 2];
+    let mut meter_seats = Vec::new();
+    for ((side, name), place) in [(-1.0, "IN"), (1.0, "OUT")].into_iter().zip(&mut meters) {
+      let name_wide = lit_width(name, 4.2);
+      let name_x = half_wide + side * (vent_out + 18.0 + name_wide / 2.0);
+      put(
+        lit_legend(name, 4.2),
+        name_x,
+        STRIP_Y,
+        STRIP_UP,
+        lit(LABEL_LIT),
+      );
+      let near = half_wide + side * (vent_out + 26.0 + name_wide);
+      let quiet = if side < 0.0 { near - METER_LONG } else { near };
+      *place = Mat4::from_translation(Vec3::new(quiet, STRIP_Y, STRIP_UP))
+        * Mat4::from_rotation_z(FRAC_PI_2);
+      meter_seats.extend(meter.seats(&meter_seat, 0.0, 0.0).map(|seat| Object {
+        transform: *place * seat.transform,
+        ..seat
+      }));
+    }
     let label = lit_legend("EFFECT", 4.2);
     put(label, EFFECT.x - 30.0, STRIP_Y, STRIP_UP, lit(LABEL_LIT));
     put(
@@ -994,13 +1038,15 @@ impl Front {
       STRIP_UP,
       hole,
     );
+    fixed.extend(meter_seats);
 
     let arc = knob_arc();
     Self {
       spots,
       fixed,
-      shift_knob: knob_parts(shift_knob()),
-      small_knob: knob_parts(small_knob()),
+      shift_knob: knob_parts(shift_knob(), true),
+      selector_knob: knob_parts(selector_knob(), false),
+      small_knob: knob_parts(small_knob(), true),
       plunger: Arc::new(switch.plunger()),
       switch,
       ring_light: Arc::new(ring.segment()),
@@ -1010,6 +1056,9 @@ impl Front {
       arcs: Control::ALL.map(|_| None).into(),
       stop_light: Arc::new(stop.light()),
       effect: Arc::new(parts::led(EFFECT_SIZE)),
+      meter_light: Arc::new(meter.segment()),
+      meter,
+      meters,
       glass: Arc::new(Mesh::cuboid(
         (-WINDOW / 2.0).extend(0.0),
         (WINDOW / 2.0).extend(GLASS_UP),
@@ -1075,7 +1124,7 @@ impl Front {
         Kind::Selector { choices, .. } => {
           let stops = selector_stops(choices);
           drawn.extend(stops.lights(&self.stop_light, x, y, reading.value, CYAN));
-          &self.small_knob
+          &self.selector_knob
         }
         Kind::Switch => {
           // a switch that is on stays in and is lit from under it, and throws its light
@@ -1118,19 +1167,27 @@ impl Front {
     self.shown = Some(shown);
     lamps.extend(self.screen.lamps(x, y, CYAN, 0.3));
 
-    // the light is as bright as the mix is wet, and dark when nothing of the shift is heard
-    let wet = controls[Control::Mix as usize].value;
+    let levels = [INPUT_LEVEL, OUTPUT_LEVEL].map(|slot| meter_level(feed[slot]));
+    for (place, level) in self.meters.iter().zip(levels) {
+      let lights = (self.meter).lights(&self.meter_light, 0.0, 0.0, level, None);
+      drawn.extend(lights.map(|light| Object {
+        transform: *place * light.transform,
+        ..light
+      }));
+    }
+    // the light is as bright as the output is loud
+    let [_, loud] = levels;
     drawn.put(
       &self.effect,
       EFFECT.extend(STRIP_UP),
-      parts::led_material(CYAN, wet, EFFECT_SIZE),
+      parts::led_material(CYAN, loud, EFFECT_SIZE),
       None,
     );
     let over = EFFECT.extend(STRIP_UP + EFFECT_SIZE);
     lamps.push(parts::led_lamp(
       over,
       CYAN,
-      wet,
+      loud,
       EFFECT_SIZE,
       EFFECT_SIZE * 5.0,
     ));
