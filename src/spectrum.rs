@@ -52,7 +52,9 @@ pub(crate) struct Analyzer {
 }
 
 impl Analyzer {
-  pub(crate) fn new(sample_rate: f32) -> Self {
+  /// writes what it shows before it hears anything to `feed`, the spectrum at its floor and no
+  /// pitch, so that the editor never draws the zeros a new feed holds
+  pub(crate) fn new(sample_rate: f32, feed: &Feed) -> Self {
     // about a twelfth of a second at every rate, which keeps bins 12 hertz apart or closer
     let length = ((sample_rate / 12.0) as usize).next_power_of_two();
     let fft = RealFftPlanner::<f32>::new().plan_fft_forward(length);
@@ -63,7 +65,7 @@ impl Analyzer {
       .map(|index| hann(index) * 4.0 / length as f32)
       .collect();
     let hop = length / 4;
-    Self {
+    let analyzer = Self {
       window,
       heard: vec![0.0; length],
       next: 0,
@@ -78,7 +80,9 @@ impl Analyzer {
       fall: FALL_DB * hop as f32 / sample_rate,
       sample_rate,
       fft,
-    }
+    };
+    analyzer.write(feed, None, None);
+    analyzer
   }
 
   /// back to how `new` makes it, with nothing heard and nothing shown. does not allocate
@@ -149,8 +153,8 @@ mod tests {
   #[test]
   fn a_full_scale_sine_reads_nothing_under_full_scale_in_its_band() {
     let rate = 48_000.0;
-    let mut analyzer = Analyzer::new(rate);
     let feed = Feed::new(SLOTS);
+    let mut analyzer = Analyzer::new(rate, &feed);
     // on a bin, a hundred and second times as many hertz as the bins are apart
     let hz = 102.0 * rate / analyzer.heard.len() as f32;
     let frames: Vec<[f32; 2]> = (0..analyzer.heard.len() * 2)

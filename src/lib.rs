@@ -50,13 +50,14 @@ pub struct CanWeTalk {
 
 impl Default for CanWeTalk {
   fn default() -> Self {
-    // the host's rate arrives in `activate`, which builds the shifter again
+    // the host's rate arrives in `activate`, which builds the shifter and the analyzer again
     let sample_rate = 48_000.0;
     let params = Arc::<CanWeTalkParams>::default();
+    let feed = Feed::new(SLOTS);
     Self {
       shifter: Shifter::new(sample_rate, params.detect.value()),
-      analyzer: Analyzer::new(sample_rate),
-      feed: Feed::new(SLOTS),
+      analyzer: Analyzer::new(sample_rate, &feed),
+      feed,
       params,
       sample_rate,
       settings: Vec::with_capacity(BLOCK),
@@ -109,7 +110,7 @@ impl Plugin for CanWeTalk {
   ) -> bool {
     self.sample_rate = buffer_config.sample_rate;
     self.shifter = Shifter::new(self.sample_rate, self.params.detect.value());
-    self.analyzer = Analyzer::new(self.sample_rate);
+    self.analyzer = Analyzer::new(self.sample_rate, &self.feed);
     true
   }
 
@@ -424,7 +425,7 @@ mod tests {
     }
     plugin.sample_rate = rate;
     plugin.shifter = Shifter::new(rate, plugin.params.detect.value());
-    plugin.analyzer = Analyzer::new(rate);
+    plugin.analyzer = Analyzer::new(rate, &plugin.feed);
     let mut output = Vec::with_capacity(input.len());
     let mut sizes = sizes.iter().cycle();
     while output.len() < input.len() {
