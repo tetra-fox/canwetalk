@@ -41,7 +41,7 @@ each parameter and shows the input's spectrum and the note nearest its detected 
 | Expression | Pressure to Level | 0 to 100%         | 0       | Share of a note's level its pressure sets                         |
 | Expression | Slide to Formant  | -24 to 24 st      | 0       | Formant shift at either end of a note's slide                     |
 | Expression | MPE Bend Range    | 1 to 96 st        | 48      | Reach of pitch bend on channels 2 to 16                           |
-|            | Detection Range   | High, Mid, Bass   | Mid     | Span of input pitches looked for                                  |
+|            | Detection Range   | Bass, Mid, High   | Mid     | Span of input pitches looked for                                  |
 |            | Anchor Grains     | on, off           | on      | Grains start where the input's cycles do, found from its waveform |
 |            | Mix               | 0 to 100%         | 100     | Shifted signal against the input                                  |
 

@@ -3,11 +3,13 @@
 use std::sync::Arc;
 
 use nice_plug::midi::{Channel, Key};
+use nice_plug::plugin::ParamValue;
 use nice_plug::prelude::*;
 use potpot_window::Feed;
 
 use crate::notes::Note;
 use crate::params::CanWeTalkParams;
+use crate::pitch::Range;
 use crate::shifter::{BLOCK, Settings, Shifter};
 use crate::spectrum::{Analyzer, SLOTS};
 
@@ -91,6 +93,23 @@ impl Plugin for CanWeTalk {
   type Editor = editor::Editor;
   type SysExMessage = ();
   type BackgroundTask = ();
+
+  fn filter_state(state: &mut PluginState) {
+    // a session saved before the detection ranges had ids holds the index of one in the order
+    // they had then. the key is the id the parameter has in `params`
+    const SAVED_ORDER: [Range; 3] = [Range::High, Range::Mid, Range::Bass];
+    let Some(value) = state.params.get_mut("detect") else {
+      return;
+    };
+    if let ParamValue::I32(index) = *value
+      && let Some(range) = usize::try_from(index)
+        .ok()
+        .and_then(|at| SAVED_ORDER.get(at))
+    {
+      let ids = Range::ids().expect("the detection ranges have ids");
+      *value = ParamValue::String(ids[range.to_index()].to_owned());
+    }
+  }
 
   fn params(&self) -> Arc<dyn Params> {
     self.params.clone()
@@ -812,7 +831,7 @@ mod tests {
         "bass",
         Take {
           played: vec![on(300, 0, 33)],
-          set: vec![(0, "detect", 2.0)],
+          set: vec![(0, "detect", 0.0)],
           ..Take::new(RATE, voice(RATE, 1.0, 45.0))
         },
       ),
@@ -820,7 +839,7 @@ mod tests {
         "bass at 192 kHz",
         Take {
           played: vec![on(300, 0, 33)],
-          set: vec![(0, "detect", 2.0)],
+          set: vec![(0, "detect", 0.0)],
           ..Take::new(192_000.0, voice(192_000.0, 0.75, 45.0))
         },
       ),
@@ -828,7 +847,7 @@ mod tests {
         "high",
         Take {
           played: vec![on(300, 0, 81), on(400, 0, 93)],
-          set: vec![(0, "detect", 0.0)],
+          set: vec![(0, "detect", 2.0)],
           ..Take::new(RATE, voice(RATE, 1.0, 440.0))
         },
       ),
@@ -836,7 +855,7 @@ mod tests {
         "detection range changes",
         Take {
           played: chord(),
-          set: vec![(500, "detect", 2.0)],
+          set: vec![(500, "detect", 0.0)],
           ..second()
         },
       ),
@@ -1097,6 +1116,26 @@ mod tests {
     // in a gate mode with no note held nothing sounds
     let (gated, _) = run(&take(set(3.0)), &[512]);
     assert_eq!(gated.shifter.formant_followed(), None);
+  }
+
+  /// a session saved while the detection ranges were kept by their index in the order high,
+  /// mid, bass loads with the range it was saved with
+  #[test]
+  fn an_old_session_keeps_its_detection_range() {
+    for (index, range) in [(0, Range::High), (1, Range::Mid), (2, Range::Bass)] {
+      let mut state = PluginState {
+        version: String::new(),
+        params: [("detect".to_owned(), ParamValue::I32(index))].into(),
+        fields: Default::default(),
+      };
+      CanWeTalk::filter_state(&mut state);
+      let id = Range::ids().expect("the detection ranges have ids")[range.to_index()];
+      let loaded = &state.params["detect"];
+      assert!(
+        matches!(loaded, ParamValue::String(saved) if saved == id),
+        "{index} loads as {loaded:?}"
+      );
+    }
   }
 
   #[test]

@@ -4,12 +4,16 @@
 
 use nice_plug::prelude::Enum;
 
-/// the span of pitches looked for, which is also a parameter the host sets
+/// the span of pitches looked for, which is also a parameter the host sets. a session keeps it
+/// by its id, which leaves the order free to change
 #[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Range {
-  High,
-  Mid,
+  #[id = "bass"]
   Bass,
+  #[id = "mid"]
+  Mid,
+  #[id = "high"]
+  High,
 }
 
 struct RangeSpec {
