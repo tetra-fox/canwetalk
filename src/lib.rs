@@ -139,9 +139,16 @@ impl Plugin for CanWeTalk {
 
   fn reset(&mut self) {
     self.shifter.reset();
-    self.heard.reset(&self.feed);
-    self.made.reset(&self.feed);
-    write_played(&self.feed, None, None, &[0.0; VOICES]);
+    self.rest_feed();
+  }
+
+  // the screen shows nothing heard or played while the host does not process
+  fn stop_processing(&mut self) {
+    self.rest_feed();
+  }
+
+  fn deactivate(&mut self) {
+    self.rest_feed();
   }
 
   fn process(
@@ -223,6 +230,14 @@ fn note(channel: Channel, key: Key) -> Option<Note> {
 }
 
 impl CanWeTalk {
+  /// forgets what the editor's spectra have heard and writes to the feed that nothing is heard
+  /// or played. fills in place and stores, so the audio thread can call it
+  fn rest_feed(&mut self) {
+    self.heard.reset(&self.feed);
+    self.made.reset(&self.feed);
+    write_played(&self.feed, None, None, &[0.0; VOICES]);
+  }
+
   /// passes on what the host sent about notes and their channels. the rest is ignored
   fn handle(&mut self, event: PluginNoteEvent<Self>) {
     let notes = &mut self.shifter.notes;
