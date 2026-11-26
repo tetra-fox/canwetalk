@@ -59,9 +59,11 @@ const CHOICE_TALL: f32 = 5.0;
 /// their far ends
 const HEADING_TALL: f32 = 5.5;
 const RULE_DROP: f32 = 6.0;
-/// the strip along the bottom that carries the plugin's name
+/// the strip along the bottom that carries the plugin's name: its middle down the panel, how
+/// high it stands and how tall it is
 const STRIP_Y: f32 = HEIGHT - 29.0;
 const STRIP_UP: f32 = 1.5;
+const STRIP_TALL: f32 = 34.0;
 /// the lamp at the end of the strip, and how wide it is
 const LAMP: Vec2 = Vec2::new(WIDTH - 54.0, STRIP_Y);
 const LAMP_SIZE: f32 = 11.0;
@@ -121,26 +123,14 @@ struct Row {
   window: f32,
 }
 
-const ROWS: [Row; 3] = [
-  Row {
-    heading: 13.0,
-    middle: 92.0,
-    name: 150.0,
-    window: 174.0,
-  },
-  Row {
-    heading: 206.0,
-    middle: 245.0,
-    name: 286.0,
-    window: 305.0,
-  },
-  Row {
-    heading: 335.0,
-    middle: 374.0,
-    name: 415.0,
-    window: 434.0,
-  },
-];
+/// the room over the first row, at the top of the panel, and under the last, over the strip
+const TOP_MARGIN: f32 = 10.0;
+const STRIP_CLEAR: f32 = 8.0;
+/// the room in a row between the drops at the ends of its rules and the tops of its controls,
+/// between the controls and the names under them, and between the names and the windows
+const OVER_GAP: f32 = 6.75;
+const UNDER_GAP: f32 = 14.0;
+const NAME_GAP: f32 = 6.0;
 
 /// the groups of controls in each row, left to right, each under its name. the one group of
 /// the first row keeps to the left, beside the screen, and the groups of the others are
@@ -209,6 +199,23 @@ impl Kind {
       Self::Shift => 140.0,
       Self::Knob | Self::Selector { .. } => 76.0,
       Self::Switch => 60.0,
+    }
+  }
+
+  /// how far a part of this kind reaches up the panel from its middle, and down, flat on the
+  /// panel
+  fn reach(self) -> [f32; 2] {
+    match self {
+      // over the figure at the top of its scale, and under the ring it stands in
+      Self::Shift => [64.25, 43.6],
+      // over the marks of its scale, and under the ring it stands in
+      Self::Knob => [26.5, 20.6],
+      // over the name of the choice at the top, and under the names at the ends of its turn
+      Self::Selector { printed: true, .. } => [30.5, 22.3],
+      // over the long mark at the top, and under the marks at the ends of its turn
+      Self::Selector { printed: false, .. } => [26.0, 18.4],
+      // over and under the collar
+      Self::Switch => [14.52, 14.52],
     }
   }
 
@@ -299,10 +306,51 @@ struct Heading {
   ends: [f32; 2],
 }
 
-/// where each control is, in the order of [`Control::ALL`], and the names of the groups
-fn layout() -> ([Spot; Control::ALL.len()], Vec<Heading>) {
+/// where each control is, in the order of [`Control::ALL`], and the names of the groups and
+/// of the screen. `border` is the width of the screen's bezel
+fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Heading>) {
   let mut spots = [None; Control::ALL.len()];
   let mut headings = Vec::new();
+  // each row's parts down the panel, from its heading to its windows
+  let bands = GROUPS.map(|groups| {
+    let kinds =
+      || (groups.iter()).flat_map(|(_, controls)| controls.iter().map(|control| control.kind()));
+    let largest = |of: fn(Kind) -> f32| kinds().map(of).fold(0.0, f32::max);
+    let (name_gap, window) = if kinds().any(Kind::has_window) {
+      (NAME_GAP, WINDOW.y + WINDOW_FRAME)
+    } else {
+      (0.0, 0.0)
+    };
+    [
+      HEADING_TALL,
+      // the drop starts at the middle of the letters
+      RULE_DROP - HEADING_TALL / 2.0,
+      OVER_GAP,
+      largest(|kind| kind.reach()[0]),
+      largest(|kind| kind.reach()[1]),
+      UNDER_GAP,
+      largest(|kind| kind.name_size().0),
+      name_gap,
+      window,
+    ]
+  });
+  // the rows spread from the top margin to the strip, the first reaching at least to the foot
+  // of the screen's bezel
+  let mut tall = bands.map(|bands| bands.iter().sum::<f32>());
+  tall[0] = tall[0].max(SCREEN_AT.y + SCREEN_SIZE.y / 2.0 + border - TOP_MARGIN);
+  let down = [TOP_MARGIN, STRIP_Y - STRIP_TALL / 2.0 - STRIP_CLEAR];
+  let rows: Vec<Row> = (pack(down, &tall, Pack::Spread).into_iter().zip(bands))
+    .map(|(span, bands)| {
+      let placed = <[_; 9]>::try_from(pack(span, &bands, Pack::Start));
+      let [letters, _, _, over, _, _, name, _, window] = placed.expect("a place for each band");
+      Row {
+        heading: middle(letters),
+        middle: over[1],
+        name: middle(name),
+        window: middle(window),
+      }
+    })
+    .collect();
   let slots = |controls: &[Control]| -> Vec<f32> {
     controls
       .iter()
@@ -316,7 +364,7 @@ fn layout() -> ([Spot; Control::ALL.len()], Vec<Heading>) {
     ([LEFT, RIGHT], Pack::Spread),
     ([LEFT, RIGHT], Pack::Spread),
   ];
-  for ((row, groups), (room, how)) in ROWS.into_iter().zip(GROUPS).zip(rooms) {
+  for ((&row, groups), (room, how)) in rows.iter().zip(GROUPS).zip(rooms) {
     let widths: Vec<f32> = (groups.iter())
       .map(|(_, controls)| slots(controls).iter().sum())
       .collect();
@@ -337,6 +385,12 @@ fn layout() -> ([Spot; Control::ALL.len()], Vec<Heading>) {
       }
     }
   }
+  let over_screen = SCREEN_SIZE.x / 2.0 + border - 6.0;
+  headings.push(Heading {
+    name: "INPUT",
+    y: rows[0].heading,
+    ends: [SCREEN_AT.x - over_screen, SCREEN_AT.x + over_screen],
+  });
   (
     spots.map(|spot| spot.expect("every control is in a group")),
     headings,
@@ -574,7 +628,8 @@ struct Front {
 
 impl Front {
   fn new() -> Self {
-    let (spots, headings) = layout();
+    let screen = Screen::new(SCREEN_SIZE.x, SCREEN_SIZE.y);
+    let (spots, headings) = layout(screen.border);
     let mut fixed = Drawn::default();
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material, target| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
@@ -646,14 +701,7 @@ impl Front {
 
     // each group of controls has its name over it, between two rules that turn down at their
     // far ends, and so does the screen
-    let screen = Screen::new(SCREEN_SIZE.x, SCREEN_SIZE.y);
-    let over_screen = SCREEN_SIZE.x / 2.0 + screen.border - 6.0;
-    let screen_heading = Heading {
-      name: "INPUT",
-      y: ROWS[0].heading,
-      ends: [SCREEN_AT.x - over_screen, SCREEN_AT.x + over_screen],
-    };
-    for Heading { name, y, ends } in headings.into_iter().chain([screen_heading]) {
+    for Heading { name, y, ends } in headings {
       let [from, to] = ends;
       let at = (from + to) / 2.0;
       let letters = parts::legend(name, HEADING_TALL, 1.0);
@@ -779,7 +827,7 @@ impl Front {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, target);
     };
     put(
-      parts::slab(WIDTH - 2.0 * EAR - 8.0, 34.0, STRIP_UP, 4.0),
+      parts::slab(WIDTH - 2.0 * EAR - 8.0, STRIP_TALL, STRIP_UP, 4.0),
       middle,
       STRIP_Y,
       0.0,
