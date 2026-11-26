@@ -691,11 +691,15 @@ impl Front {
           // a mark at each choice past the pointer's tip, long unless the choice's name is
           // printed past it, which leaves the room for it
           let radius = pointed_knob().radius;
-          let (long_every, outer) = if printed { (0, 9.0) } else { (1, 11.0) };
+          let (long_every, [inner, outer]) = if printed {
+            (0, [4.0, 8.0])
+          } else {
+            (1, [5.0, 11.0])
+          };
           let marks = parts::ticks(
             choices.len() as u32,
             parts::KNOB_SWEEP,
-            radius + 5.0,
+            radius + inner,
             radius + outer,
             long_every,
           );
@@ -704,8 +708,13 @@ impl Front {
             // each name is pushed to the side its mark leans to, by as much of its half
             // width as the mark leans, which keeps a name beside the knob clear of it
             for (place, name) in choices.iter().enumerate() {
-              let turn = place as f32 / (choices.len() - 1) as f32;
-              let at = around(Vec2::new(x, y), turn, radius + 14.0);
+              // from one end of the turn to the other, as `ticks` spreads the marks, which
+              // puts a lone choice in the middle
+              let turn = match choices.len() {
+                1 => 0.5,
+                count => place as f32 / (count - 1) as f32,
+              };
+              let at = around(Vec2::new(x, y), turn, radius + 13.0);
               let side = ((turn - 0.5) * parts::KNOB_SWEEP).sin();
               let half = stroke::width(name.chars().count(), CHOICE_TALL) / 2.0;
               let legend = parts::legend(name, CHOICE_TALL, 1.0);
