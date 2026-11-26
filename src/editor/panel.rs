@@ -110,8 +110,8 @@ const STRIP_Y: f32 = HEIGHT - 29.0;
 const STRIP_UP: f32 = 2.0;
 const STRIP_TALL: f32 = 34.0;
 /// the light on the strip that is as bright as the output is loud, and how wide it is
-const EFFECT: Vec2 = Vec2::new(WIDTH - 66.0, STRIP_Y);
-const EFFECT_SIZE: f32 = 7.0;
+const LOUD_LIGHT: Vec2 = Vec2::new(WIDTH - 66.0, STRIP_Y);
+const LOUD_LIGHT_SIZE: f32 = 7.0;
 /// the level meters on the strip: how long each is and how many lights it has, the quietest
 /// level they show in decibels, and the level they turn orange from
 const METER_LONG: f32 = 120.0;
@@ -784,7 +784,7 @@ struct Front {
   arcs: Vec<Option<Kept<[f32; 2]>>>,
   /// the light at each stop of a selector
   stop_light: Arc<Mesh>,
-  effect: Arc<Mesh>,
+  loud_light: Arc<Mesh>,
   meter: Meter,
   meter_light: Arc<Mesh>,
   /// where the input's meter and the output's lie, each from its quiet end
@@ -992,7 +992,7 @@ impl Front {
 
     // a strip of darker metal between the ears along the bottom. the plugin's name is lit on
     // it over a line of light, between two vents with light coming through them, and to the
-    // right is the light that shows the effect
+    // right is the light that shows how loud the output is
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, None);
     };
@@ -1054,12 +1054,10 @@ impl Front {
         ..seat
       }));
     }
-    let label = lit_legend("EFFECT", 4.2);
-    put(label, EFFECT.x - 30.0, STRIP_Y, STRIP_UP, lit(LABEL_LIT));
     put(
-      parts::led_seat(EFFECT_SIZE),
-      EFFECT.x,
-      EFFECT.y,
+      parts::led_seat(LOUD_LIGHT_SIZE),
+      LOUD_LIGHT.x,
+      LOUD_LIGHT.y,
       STRIP_UP,
       hole,
     );
@@ -1080,7 +1078,7 @@ impl Front {
       arc,
       arcs: Control::ALL.map(|_| None).into(),
       stop_light: Arc::new(stop.light()),
-      effect: Arc::new(parts::led(EFFECT_SIZE)),
+      loud_light: Arc::new(parts::led(LOUD_LIGHT_SIZE)),
       meter_light: Arc::new(meter.segment()),
       meter,
       meters,
@@ -1203,18 +1201,18 @@ impl Front {
     // the light is as bright as the output is loud
     let [_, loud] = levels;
     drawn.put(
-      &self.effect,
-      EFFECT.extend(STRIP_UP),
-      parts::led_material(CYAN, loud, EFFECT_SIZE),
+      &self.loud_light,
+      LOUD_LIGHT.extend(STRIP_UP),
+      parts::led_material(CYAN, loud, LOUD_LIGHT_SIZE),
       None,
     );
-    let over = EFFECT.extend(STRIP_UP + EFFECT_SIZE);
+    let over = LOUD_LIGHT.extend(STRIP_UP + LOUD_LIGHT_SIZE);
     lamps.push(parts::led_lamp(
       over,
       CYAN,
       loud,
-      EFFECT_SIZE,
-      EFFECT_SIZE * 5.0,
+      LOUD_LIGHT_SIZE,
+      LOUD_LIGHT_SIZE * 5.0,
     ));
     let scene = Scene {
       size: Vec2::new(WIDTH, HEIGHT),
