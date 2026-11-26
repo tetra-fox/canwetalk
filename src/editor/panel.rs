@@ -948,8 +948,8 @@ impl Front {
     fixed.extend(grid);
 
     // a strip of darker metal between the ears along the bottom. the plugin's name is lit on
-    // it over a line of light, between two vents with light coming through them. what it is
-    // is to the left, and to the right a maker's plate and the light that shows the effect
+    // it over a line of light, between two vents with light coming through them, and to the
+    // right is the light that shows the effect
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, None);
     };
@@ -984,42 +984,6 @@ impl Front {
       let x = half_wide + side * (logo_half + 22.0 + vent_half);
       put(vent.slots(), x, STRIP_Y, STRIP_UP, hole);
       put(vent.holes(), x, STRIP_Y, STRIP_UP, lit(0.55));
-    }
-    for (line, y, tall) in [
-      ("PROFESSIONAL", -4.5, 4.4),
-      ("PITCH + FORMANT SHIFTER", 4.0, 5.0),
-    ] {
-      put(
-        lit_legend(line, tall),
-        170.0,
-        STRIP_Y + y,
-        STRIP_UP,
-        lit(LABEL_LIT),
-      );
-    }
-    let plate = Vec3::new(WIDTH - 190.0, STRIP_Y, STRIP_UP);
-    let plate_mesh = parts::chamfered_slab(96.0, 22.0, 1.2, 0.5, 1.5);
-    put(
-      plate_mesh,
-      plate.x,
-      plate.y,
-      plate.z,
-      Material::brushed(Vec3::splat(0.3)),
-    );
-    for (line, y) in [("MODEL CWT-3", -4.2), ("SERIAL NO 004217", 4.2)] {
-      let engraved = lit_legend(line, 3.6);
-      put(
-        engraved,
-        plate.x,
-        plate.y + y,
-        plate.z + 1.2,
-        lit(LABEL_LIT),
-      );
-    }
-    for side in [-1.0, 1.0] {
-      let x = plate.x + side * 43.0;
-      put(parts::cap_screw(1.6), x, plate.y, plate.z + 1.2, chrome);
-      put(parts::hex_socket(1.6), x, plate.y, plate.z + 1.2, hole);
     }
     let label = lit_legend("EFFECT", 4.2);
     put(label, EFFECT.x - 30.0, STRIP_Y, STRIP_UP, lit(LABEL_LIT));
