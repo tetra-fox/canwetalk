@@ -1200,6 +1200,24 @@ mod tests {
     assert!(made[2..].iter().all(|&hz| hz == 0.0), "{made:?}");
   }
 
+  /// in a gate mode a note plays on through its release, and is published until the release
+  /// has run out
+  #[test]
+  fn a_released_note_is_published_until_it_falls_silent() {
+    let take = |seconds: f32| Take {
+      played: vec![on(50, 0, 57), off(200, 0, 57)],
+      set: vec![(0, "midi", 3.0), (0, "release", 500.0)],
+      ..Take::new(RATE, tone((RATE * seconds) as usize))
+    };
+    let (releasing, _) = run(&take(0.4), &[512]);
+    assert!(
+      releasing.shifter.made_hz()[0] > 0.0,
+      "silent in the release"
+    );
+    let (released, _) = run(&take(0.9), &[512]);
+    assert_eq!(released.shifter.made_hz(), [0.0; VOICES]);
+  }
+
   /// with no note held and no pitch in the input, no voice plays: the one that follows the
   /// input still sounds at the pitch it last had, but nothing of it is published
   #[test]

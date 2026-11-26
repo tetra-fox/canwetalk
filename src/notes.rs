@@ -392,12 +392,16 @@ impl Notes {
     }
   }
 
-  /// the voices that play something: each that is held, and the one that follows the input
-  /// while `input_voiced`, which is whether the input has a pitch to follow. without one that
-  /// voice's pitch is the last one found, or the lowest of the range before any was
+  /// the voices that play something: each with a note, until it falls silent after the note
+  /// is let go, and the one that follows the input while `input_voiced`, which is whether the
+  /// input has a pitch to follow. without one that voice's pitch is the last one found, or the
+  /// lowest of the range before any was
   fn playing(&self, input_voiced: bool) -> impl Iterator<Item = &Voice> {
-    (self.voices.iter())
-      .filter(move |voice| voice.held().is_some() || (input_voiced && voice.sounding))
+    (self.voices.iter()).filter(move |voice| match voice.note {
+      // the same end the voice itself stops at
+      Some(_) => voice.sounding || !voice.envelope.is_silent(),
+      None => input_voiced && voice.sounding,
+    })
   }
 
   /// octaves the formants of the playing voice that started last follow its pitch by, as its
