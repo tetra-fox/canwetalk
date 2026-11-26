@@ -60,8 +60,8 @@ pub(crate) struct Shifter {
   detector: Detector,
   /// the last detected pitch, held while the input is unvoiced
   input_pitch: f64,
-  /// samples since the detector last held a pitch, which stops counting at `follow_hold`,
-  /// the samples in `FOLLOW_HOLD_SECONDS`
+  /// samples since the detector last held a pitch, and the samples in `FOLLOW_HOLD_SECONDS`.
+  /// the count goes on past `follow_hold` and stops only where a `usize` ends
   unvoiced_for: usize,
   follow_hold: usize,
   smear: Smear,
