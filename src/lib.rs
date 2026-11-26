@@ -1045,9 +1045,9 @@ mod tests {
     );
   }
 
-  /// with CANWETALK_PICTURE naming a png file, draws the editor there at twice its size after
-  /// a voice has played through the plugin, so that its screen shows the voice's spectrum and
-  /// note and the ring around the formant what formant follow adds
+  /// draws the editor after a voice has played through the plugin, so that its screen shows
+  /// the voice's spectrum and note and the ring around the formant what formant follow adds.
+  /// `just picture` writes it to a png file
   #[test]
   #[ignore = "needs a graphics device"]
   fn the_editor_draws_what_the_plugin_hears() {

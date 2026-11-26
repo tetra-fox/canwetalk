@@ -16,6 +16,11 @@ editor *args="--backend dummy":
 test:
     cargo test
 
+# draw the editor to a png at twice its size, after a voice has played through the plugin with
+# formant follow on: `just picture out.png`. needs a graphics device
+picture file:
+    CANWETALK_PICTURE="{{ file }}" cargo test the_editor_draws_what_the_plugin_hears -- --ignored
+
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
