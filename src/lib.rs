@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use nice_plug::midi::{Channel, Key};
 use nice_plug::prelude::*;
+use potpot_window::Feed;
 
 use crate::notes::Note;
 use crate::params::CanWeTalkParams;
 use crate::shifter::{BLOCK, Settings, Shifter};
+use crate::spectrum::{Analyzer, SLOTS};
 
 mod editor;
 mod effects;
@@ -22,6 +24,7 @@ mod ring;
 mod shifter;
 #[cfg(test)]
 mod signals;
+mod spectrum;
 mod voice;
 
 /// semitones the first channel's pitch bend reaches either way. it bends every note, as a
@@ -37,6 +40,9 @@ const INPUT_LIMIT: f32 = 1e6;
 pub struct CanWeTalk {
   params: Arc<CanWeTalkParams>,
   shifter: Shifter,
+  analyzer: Analyzer,
+  /// what the editor draws the spectrum and the detected pitch from
+  feed: Feed,
   sample_rate: f32,
   /// the settings for each sample of a block, kept only for the room it has for them
   settings: Vec<Settings>,
@@ -49,6 +55,8 @@ impl Default for CanWeTalk {
     let params = Arc::<CanWeTalkParams>::default();
     Self {
       shifter: Shifter::new(sample_rate, params.detect.value()),
+      analyzer: Analyzer::new(sample_rate),
+      feed: Feed::new(SLOTS),
       params,
       sample_rate,
       settings: Vec::with_capacity(BLOCK),
@@ -88,7 +96,7 @@ impl Plugin for CanWeTalk {
   }
 
   fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
-    editor::editor(self.params.clone())
+    editor::editor(self.params.clone(), self.feed.clone())
       .inspect_err(|error| nice_error!("the plugin has no editor: {error}"))
       .ok()
   }
@@ -101,11 +109,13 @@ impl Plugin for CanWeTalk {
   ) -> bool {
     self.sample_rate = buffer_config.sample_rate;
     self.shifter = Shifter::new(self.sample_rate, self.params.detect.value());
+    self.analyzer = Analyzer::new(self.sample_rate);
     true
   }
 
   fn reset(&mut self) {
     self.shifter.reset();
+    self.analyzer.reset(&self.feed);
   }
 
   fn process(
@@ -156,6 +166,8 @@ impl Plugin for CanWeTalk {
       }
       let mut wet = dry;
       self.shifter.process(&mut wet[..count], &self.settings);
+      let pitch = self.shifter.detected_hz();
+      (self.analyzer).take(&dry[..count], pitch, &self.feed);
       for (index, (dry, wet)) in dry.iter().zip(wet).take(count).enumerate() {
         let mix = self.params.mix.smoothed.next();
         for ((channel, dry), wet) in channels.iter_mut().zip(dry).zip(wet) {
@@ -407,6 +419,7 @@ mod tests {
     }
     plugin.sample_rate = rate;
     plugin.shifter = Shifter::new(rate, plugin.params.detect.value());
+    plugin.analyzer = Analyzer::new(rate);
     let mut output = Vec::with_capacity(input.len());
     let mut sizes = sizes.iter().cycle();
     while output.len() < input.len() {

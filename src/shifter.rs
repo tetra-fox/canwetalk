@@ -144,6 +144,12 @@ impl Shifter {
       + self.stereo.longest_delay()
   }
 
+  /// the input's pitch in hertz while the detector has one
+  pub(crate) fn detected_hz(&self) -> Option<f32> {
+    let hz = self.input_pitch * self.sample_rate / 2.0;
+    self.detector.voiced().then_some(hz as f32)
+  }
+
   /// the effect alone on up to `BLOCK` frames, each with its own settings, with no latency
   /// against the input. the mode and latch of the settings are given to `notes` beforehand,
   /// ahead of the notes of the first frame, and no note comes with a later one

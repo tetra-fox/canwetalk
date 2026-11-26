@@ -190,6 +190,12 @@ impl Detector {
     self.range
   }
 
+  /// whether the last estimate stands, which it does until a later one scores too low, the
+  /// crossings stop or the input falls silent
+  pub(crate) fn voiced(&self) -> bool {
+    self.held.is_some()
+  }
+
   /// also forgets everything heard so far
   pub(crate) fn set_range(&mut self, range: Range) {
     let spec = range.spec();

@@ -30,6 +30,8 @@ nice-plug = { version = "0.4.2", features = ["unsafe_flush_denormals"] }
 potpot = { git = "https://github.com/tetra-fox/potpot", branch = "main" }
 potpot-controls = { git = "https://github.com/tetra-fox/potpot", branch = "main" }
 potpot-window = { git = "https://github.com/tetra-fox/potpot", branch = "main" }
+# the fourier transform the editor's spectrum is taken with
+realfft = "3.5.1"
 
 # the audio code is too slow to try out unoptimized
 [profile.dev]
