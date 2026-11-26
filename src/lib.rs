@@ -11,7 +11,9 @@ use crate::notes::{Note, VOICES};
 use crate::params::CanWeTalkParams;
 use crate::pitch::Range;
 use crate::shifter::{BLOCK, Settings, Shifter};
-use crate::spectrum::{Analyzer, INPUT_BANDS, OUTPUT_BANDS, SLOTS, write_played};
+use crate::spectrum::{
+  Analyzer, INPUT_BANDS, INPUT_LEVEL, OUTPUT_BANDS, OUTPUT_LEVEL, SLOTS, write_played,
+};
 
 mod editor;
 mod effects;
@@ -60,8 +62,8 @@ impl Default for CanWeTalk {
     let feed = Feed::new(SLOTS);
     Self {
       shifter: Shifter::new(sample_rate, params.detect.value()),
-      heard: Analyzer::new(sample_rate, INPUT_BANDS, &feed),
-      made: Analyzer::new(sample_rate, OUTPUT_BANDS, &feed),
+      heard: Analyzer::new(sample_rate, INPUT_BANDS, INPUT_LEVEL, &feed),
+      made: Analyzer::new(sample_rate, OUTPUT_BANDS, OUTPUT_LEVEL, &feed),
       feed,
       params,
       sample_rate,
@@ -132,8 +134,8 @@ impl Plugin for CanWeTalk {
   ) -> bool {
     self.sample_rate = buffer_config.sample_rate;
     self.shifter = Shifter::new(self.sample_rate, self.params.detect.value());
-    self.heard = Analyzer::new(self.sample_rate, INPUT_BANDS, &self.feed);
-    self.made = Analyzer::new(self.sample_rate, OUTPUT_BANDS, &self.feed);
+    self.heard = Analyzer::new(self.sample_rate, INPUT_BANDS, INPUT_LEVEL, &self.feed);
+    self.made = Analyzer::new(self.sample_rate, OUTPUT_BANDS, OUTPUT_LEVEL, &self.feed);
     true
   }
 
@@ -475,8 +477,8 @@ mod tests {
     }
     plugin.sample_rate = rate;
     plugin.shifter = Shifter::new(rate, plugin.params.detect.value());
-    plugin.heard = Analyzer::new(rate, INPUT_BANDS, &plugin.feed);
-    plugin.made = Analyzer::new(rate, OUTPUT_BANDS, &plugin.feed);
+    plugin.heard = Analyzer::new(rate, INPUT_BANDS, INPUT_LEVEL, &plugin.feed);
+    plugin.made = Analyzer::new(rate, OUTPUT_BANDS, OUTPUT_LEVEL, &plugin.feed);
     let mut output = Vec::with_capacity(input.len());
     let mut sizes = sizes.iter().cycle();
     while output.len() < input.len() {
