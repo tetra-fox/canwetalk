@@ -56,9 +56,11 @@ enum Kind {
   /// a large knob with figures around it
   Shift,
   Knob,
-  /// a pointed knob that stops at each of a few choices
+  /// a pointed knob that stops at each of the choices it has the names of. a printed one has
+  /// them printed around it, one at each stop, in place of a window its value shows in
   Selector {
-    choices: usize,
+    choices: &'static [&'static str],
+    printed: bool,
   },
   /// a push switch that stays in while it is on
   Switch,
@@ -98,13 +100,16 @@ impl Control {
       Self::Pitch | Self::Formant => Kind::Shift,
       Self::VibratoSync | Self::Latch | Self::GlideNotesOnly | Self::Anchor => Kind::Switch,
       Self::VibratoDivision => Kind::Selector {
-        choices: Division::variants().len(),
+        choices: Division::variants(),
+        printed: false,
       },
       Self::Mode => Kind::Selector {
-        choices: Mode::variants().len(),
+        choices: Mode::variants(),
+        printed: false,
       },
       Self::Detect => Kind::Selector {
-        choices: Range::variants().len(),
+        choices: Range::variants(),
+        printed: true,
       },
       Self::FormantFollow
       | Self::Smooth

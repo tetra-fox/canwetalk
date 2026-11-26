@@ -47,6 +47,8 @@ pub(super) const READOUT_LETTERS: usize = {
   letters
 };
 const READOUT_COLOR: Vec3 = Vec3::new(1.0, 0.66, 0.14);
+/// how tall the names of a selector's choices are printed around it
+const CHOICE_TALL: f32 = 5.0;
 /// the strip along the bottom that carries the plugin's name
 const STRIP_Y: f32 = HEIGHT - 29.0;
 const STRIP_UP: f32 = 1.5;
@@ -196,8 +198,17 @@ impl Kind {
     match self {
       Self::Shift => Some(Turned::Shift),
       Self::Knob => Some(Turned::Small),
-      Self::Selector { choices } => Some(Turned::Pointed { choices }),
+      Self::Selector { choices, printed } => Some(Turned::Pointed { choices, printed }),
       Self::Switch => None,
+    }
+  }
+
+  /// whether a control of this kind has a window its value shows in, which it is typed into
+  fn has_window(self) -> bool {
+    match self {
+      Self::Shift | Self::Knob => true,
+      Self::Selector { printed, .. } => !printed,
+      Self::Switch => false,
     }
   }
 
@@ -438,12 +449,22 @@ fn pointed_knob() -> parts::Knob {
   parts::Knob::chicken_head(15.0, 16.0)
 }
 
-/// the knob a control is turned by, and for a pointed one how many choices it stops at
+/// the knob a control is turned by, and for a pointed one the names of the choices it stops at
+/// and whether they are printed around it
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Turned {
   Shift,
   Small,
-  Pointed { choices: usize },
+  Pointed {
+    choices: &'static [&'static str],
+    printed: bool,
+  },
+}
+
+/// the point `out` from a knob's middle where the knob points at `turn` of its sweep
+fn around(middle: Vec2, turn: f32, out: f32) -> Vec2 {
+  let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
+  middle + Vec2::new(sin, -cos) * out
 }
 
 /// meshes and what each is made of
@@ -651,30 +672,36 @@ impl Front {
           let figures = ["-24", "-12", "0", "+12", "+24"];
           for (place, figure) in figures.iter().enumerate() {
             let turn = place as f32 / (figures.len() - 1) as f32;
-            let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
-            let out = radius + 25.0;
-            put(
-              parts::legend(figure, 6.5, 0.95),
-              x + out * sin,
-              y - out * cos,
-              0.0,
-              ink,
-              None,
-            );
+            let at = around(Vec2::new(x, y), turn, radius + 25.0);
+            put(parts::legend(figure, 6.5, 0.95), at.x, at.y, 0.0, ink, None);
           }
         }
         Some(Turned::Small) => ringed(small_knob().radius, 4.6, 11, 5, [7.5, 10.5]),
-        Some(Turned::Pointed { choices }) => {
-          // a long mark at each choice, past the pointer's tip
+        Some(Turned::Pointed { choices, printed }) => {
+          // a mark at each choice past the pointer's tip, long unless the choice's name is
+          // printed past it, which leaves the room for it
           let radius = pointed_knob().radius;
+          let (long_every, outer) = if printed { (0, 9.0) } else { (1, 11.0) };
           let marks = parts::ticks(
-            choices as u32,
+            choices.len() as u32,
             parts::KNOB_SWEEP,
-            radius + 6.0,
-            radius + 11.0,
-            1,
+            radius + 5.0,
+            radius + outer,
+            long_every,
           );
           put(marks, x, y, 0.0, ink, None);
+          if printed {
+            // each name is pushed to the side its mark leans to, by as much of its half
+            // width as the mark leans, which keeps a name beside the knob clear of it
+            for (place, name) in choices.iter().enumerate() {
+              let turn = place as f32 / (choices.len() - 1) as f32;
+              let at = around(Vec2::new(x, y), turn, radius + 14.0);
+              let side = ((turn - 0.5) * parts::KNOB_SWEEP).sin();
+              let half = stroke::width(name.chars().count(), CHOICE_TALL) / 2.0;
+              let legend = parts::legend(name, CHOICE_TALL, 1.0);
+              put(legend, at.x + side * half, at.y, 0.0, ink, None);
+            }
+          }
         }
         None => {
           put(switch.plunger.seat(1.2), x, y, 0.0, hole, None);
@@ -686,7 +713,7 @@ impl Front {
       put(name, x, spot.row.name, 0.0, ink, None);
       // the bezel of the window its value shows in. the glass set down in it changes with
       // what it shows
-      if kind != Kind::Switch {
+      if kind.has_window() {
         put(
           parts::frame(WINDOW.x + 6.0, WINDOW.y + 6.0, 3.0, 2.2, 3.5),
           x,
@@ -873,9 +900,11 @@ impl Front {
           ..light
         }));
       }
-      let edit = edit.filter(|edit| edit.control == index);
-      let Reading { text, unit, .. } = reading;
-      self.readout(&mut drawn, index, spot.window(), (text, unit), edit);
+      if control.kind().has_window() {
+        let edit = edit.filter(|edit| edit.control == index);
+        let Reading { text, unit, .. } = reading;
+        self.readout(&mut drawn, index, spot.window(), (text, unit), edit);
+      }
     }
 
     let Vec2 { x, y } = SCREEN_AT;
@@ -1164,7 +1193,7 @@ mod tests {
           "{control:?} at {at}"
         );
       }
-      if control.kind() != Kind::Switch {
+      if control.kind().has_window() {
         let at = spot.window().truncate();
         for off in [Vec2::ZERO, Vec2::X * (WINDOW.x / 2.0 - 2.0)] {
           assert_eq!(
