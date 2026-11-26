@@ -33,6 +33,8 @@ const LEFT: f32 = EAR + 14.0;
 const RIGHT: f32 = WIDTH - EAR - 14.0;
 /// the windows the controls' values show in
 const WINDOW: Vec2 = Vec2::new(66.0, 17.0);
+/// how much wider and taller the frame around a window is than the window
+const WINDOW_FRAME: f32 = 6.0;
 /// how high the glass of a window is, which what it shows is lit on
 const GLASS_UP: f32 = 0.5;
 /// the figures a window shows its value in: how tall, and how wide their strokes. a unit
@@ -53,6 +55,10 @@ pub(super) const READOUT_LETTERS: usize = {
 const READOUT_COLOR: Vec3 = Vec3::new(1.0, 0.66, 0.14);
 /// how tall the names of a selector's choices are printed around it
 const CHOICE_TALL: f32 = 5.0;
+/// how tall the letters of a group's name are, and how far the rules beside it turn down at
+/// their far ends
+const HEADING_TALL: f32 = 5.5;
+const RULE_DROP: f32 = 6.0;
 /// the strip along the bottom that carries the plugin's name
 const STRIP_Y: f32 = HEIGHT - 29.0;
 const STRIP_UP: f32 = 1.5;
@@ -61,8 +67,10 @@ const LAMP: Vec2 = Vec2::new(WIDTH - 54.0, STRIP_Y);
 const LAMP_SIZE: f32 = 11.0;
 const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.45, 0.08);
 /// the screen at the top right, by the middle and the size of its face
-const SCREEN_AT: Vec2 = Vec2::new(RIGHT - 7.0 - SCREEN_SIZE.x / 2.0, 104.0);
+const SCREEN_AT: Vec2 = Vec2::new(RIGHT - SCREEN_CLEAR - SCREEN_SIZE.x / 2.0, 104.0);
 const SCREEN_SIZE: Vec2 = Vec2::new(352.0, 136.0);
+/// the room kept clear across the panel at each side of the screen's face
+const SCREEN_CLEAR: f32 = 7.0;
 /// the room on the screen the spectrum is drawn in, from its top left corner to its bottom
 /// right, and the middle of the column beside it that the note is written in
 const PLOT: [Vec2; 2] = [
@@ -302,7 +310,7 @@ fn layout() -> ([Spot; Control::ALL.len()], Vec<Heading>) {
       .collect()
   };
   // the room each row's groups share, and how
-  let screen = SCREEN_AT.x - SCREEN_SIZE.x / 2.0 - 7.0;
+  let screen = SCREEN_AT.x - SCREEN_SIZE.x / 2.0 - SCREEN_CLEAR;
   let rooms = [
     ([LEFT, screen], Pack::Start),
     ([LEFT, RIGHT], Pack::Spread),
@@ -648,8 +656,9 @@ impl Front {
     for Heading { name, y, ends } in headings.into_iter().chain([screen_heading]) {
       let [from, to] = ends;
       let at = (from + to) / 2.0;
-      put(parts::legend(name, 5.5, 1.0), at, y, 0.0, ink, None);
-      let clear = stroke::width(name.len(), 5.5) / 2.0 + 6.0;
+      let letters = parts::legend(name, HEADING_TALL, 1.0);
+      put(letters, at, y, 0.0, ink, None);
+      let clear = stroke::width(name.len(), HEADING_TALL) / 2.0 + 6.0;
       for (near, far) in [(at - clear, from), (at + clear, to)] {
         let rule = Mesh::cuboid(
           Vec3::new(near.min(far), y - 0.4, 0.0),
@@ -658,7 +667,7 @@ impl Front {
         put(rule, 0.0, 0.0, 0.0, ink, None);
         let drop = Mesh::cuboid(
           Vec3::new(far - 0.4, y - 0.4, 0.0),
-          Vec3::new(far + 0.4, y + 6.0, 0.25),
+          Vec3::new(far + 0.4, y + RULE_DROP, 0.25),
         );
         put(drop, 0.0, 0.0, 0.0, ink, None);
       }
@@ -742,8 +751,9 @@ impl Front {
       // the bezel of the window its value shows in. the glass set down in it changes with
       // what it shows
       if kind.has_window() {
+        let frame = WINDOW + WINDOW_FRAME;
         put(
-          parts::frame(WINDOW.x + 6.0, WINDOW.y + 6.0, 3.0, 2.2, 3.5),
+          parts::frame(frame.x, frame.y, 3.0, 2.2, 3.5),
           x,
           spot.row.window,
           0.0,
