@@ -150,22 +150,67 @@ impl Analyzer {
 mod tests {
   use super::*;
 
+  const RATE: f32 = 48_000.0;
+
+  /// `samples` of a full scale sine at `hz`
+  fn sine(hz: f32, samples: usize) -> Vec<[f32; 2]> {
+    (0..samples)
+      .map(|index| [(TAU * hz * index as f32 / RATE).sin(); 2])
+      .collect()
+  }
+
+  /// the band a frequency in hertz is drawn in
+  fn band(hz: f32) -> usize {
+    (HERTZ.turn(hz) * BANDS as f32) as usize
+  }
+
   #[test]
-  fn a_full_scale_sine_reads_nothing_under_full_scale_in_its_band() {
-    let rate = 48_000.0;
+  fn a_full_scale_sine_reads_full_scale_in_its_band_and_little_far_from_it() {
     let feed = Feed::new(SLOTS);
-    let mut analyzer = Analyzer::new(rate, &feed);
-    // on a bin, a hundred and second times as many hertz as the bins are apart
-    let hz = 102.0 * rate / analyzer.heard.len() as f32;
-    let frames: Vec<[f32; 2]> = (0..analyzer.heard.len() * 2)
-      .map(|index| [(TAU * hz * index as f32 / rate).sin(); 2])
-      .collect();
-    analyzer.take(&frames, Some(hz), None, &feed);
-    let band = (HERTZ.turn(hz) * BANDS as f32) as usize;
-    let level = analyzer.shown[band];
-    assert!(level.abs() < 0.1, "{level} dB");
-    // far from it the window lets almost nothing through
-    let far = (HERTZ.turn(hz * 8.0) * BANDS as f32) as usize;
-    assert!(analyzer.shown[far] < -60.0, "{} dB", analyzer.shown[far]);
+    let mut analyzer = Analyzer::new(RATE, &feed);
+    let length = analyzer.heard.len();
+    // between two bins, where the window gives up some of a sine's level, and for a run that
+    // ends with the oldest sample partway along the ring
+    let hz = 102.3 * RATE / length as f32;
+    analyzer.take(&sine(hz, 2 * length + 3 * length / 4), None, None, &feed);
+    let level = analyzer.shown[band(hz)];
+    assert!((-1.5..0.1).contains(&level), "{level} dB");
+    // far from it the window lets almost nothing through, which a ring read out of order
+    // would, at the step it puts in the sine
+    let far = analyzer.shown[band(hz * 8.0)];
+    assert!(far < -75.0, "{far} dB");
+  }
+
+  #[test]
+  fn a_band_falls_back_at_its_rate_once_its_sound_stops() {
+    let feed = Feed::new(SLOTS);
+    let mut analyzer = Analyzer::new(RATE, &feed);
+    let (length, hop) = (analyzer.heard.len(), analyzer.hop);
+    let hz = 1000.0;
+    analyzer.take(&sine(hz, 2 * length), None, None, &feed);
+    // once the ring holds nothing of the sine, every transform finds the band at the floor
+    analyzer.take(&vec![[0.0; 2]; length], None, None, &feed);
+    let from = analyzer.shown[band(hz)];
+    let hops = 10;
+    analyzer.take(&vec![[0.0; 2]; hops * hop], None, None, &feed);
+    let fallen = from - analyzer.shown[band(hz)];
+    let seconds = (hops * hop) as f32 / RATE;
+    assert!(
+      (fallen / seconds - FALL_DB).abs() < 0.01,
+      "{fallen} dB in {seconds} s"
+    );
+  }
+
+  #[test]
+  fn a_reset_forgets_what_was_heard() {
+    let feed = Feed::new(SLOTS);
+    let mut analyzer = Analyzer::new(RATE, &feed);
+    let hop = analyzer.hop;
+    analyzer.take(&sine(1000.0, 3 * hop), None, None, &feed);
+    analyzer.reset(&feed);
+    assert!(analyzer.shown.iter().all(|&level| level == FLOOR_DB));
+    // the next transform finds nothing of the sine in the ring
+    analyzer.take(&vec![[0.0; 2]; hop], None, None, &feed);
+    assert!(analyzer.shown.iter().all(|&level| level == FLOOR_DB));
   }
 }
