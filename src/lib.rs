@@ -7,11 +7,11 @@ use nice_plug::plugin::ParamValue;
 use nice_plug::prelude::*;
 use potpot_window::Feed;
 
-use crate::notes::Note;
+use crate::notes::{Note, VOICES};
 use crate::params::CanWeTalkParams;
 use crate::pitch::Range;
 use crate::shifter::{BLOCK, Settings, Shifter};
-use crate::spectrum::{Analyzer, SLOTS};
+use crate::spectrum::{Analyzer, INPUT_BANDS, OUTPUT_BANDS, SLOTS, write_played};
 
 mod editor;
 mod effects;
@@ -42,8 +42,10 @@ const INPUT_LIMIT: f32 = 1e6;
 pub struct CanWeTalk {
   params: Arc<CanWeTalkParams>,
   shifter: Shifter,
-  analyzer: Analyzer,
-  /// what the editor draws the spectrum and the detected pitch from
+  /// the spectra of the input and of the output, after the mix
+  heard: Analyzer,
+  made: Analyzer,
+  /// what the editor draws the spectra, the detected pitch and the voices' pitches from
   feed: Feed,
   sample_rate: f32,
   /// the settings for each sample of a block, kept only for the room it has for them
@@ -52,13 +54,14 @@ pub struct CanWeTalk {
 
 impl Default for CanWeTalk {
   fn default() -> Self {
-    // the host's rate arrives in `activate`, which builds the shifter and the analyzer again
+    // the host's rate arrives in `activate`, which builds the shifter and the analyzers again
     let sample_rate = 48_000.0;
     let params = Arc::<CanWeTalkParams>::default();
     let feed = Feed::new(SLOTS);
     Self {
       shifter: Shifter::new(sample_rate, params.detect.value()),
-      analyzer: Analyzer::new(sample_rate, &feed),
+      heard: Analyzer::new(sample_rate, INPUT_BANDS, &feed),
+      made: Analyzer::new(sample_rate, OUTPUT_BANDS, &feed),
       feed,
       params,
       sample_rate,
@@ -129,13 +132,16 @@ impl Plugin for CanWeTalk {
   ) -> bool {
     self.sample_rate = buffer_config.sample_rate;
     self.shifter = Shifter::new(self.sample_rate, self.params.detect.value());
-    self.analyzer = Analyzer::new(self.sample_rate, &self.feed);
+    self.heard = Analyzer::new(self.sample_rate, INPUT_BANDS, &self.feed);
+    self.made = Analyzer::new(self.sample_rate, OUTPUT_BANDS, &self.feed);
     true
   }
 
   fn reset(&mut self) {
     self.shifter.reset();
-    self.analyzer.reset(&self.feed);
+    self.heard.reset(&self.feed);
+    self.made.reset(&self.feed);
+    write_played(&self.feed, None, None, &[0.0; VOICES]);
   }
 
   fn process(
@@ -186,14 +192,23 @@ impl Plugin for CanWeTalk {
       }
       let mut wet = dry;
       self.shifter.process(&mut wet[..count], &self.settings);
-      let (pitch, followed) = (self.shifter.detected_hz(), self.shifter.formant_followed());
-      (self.analyzer).take(&dry[..count], pitch, followed, &self.feed);
-      for (index, (dry, wet)) in dry.iter().zip(wet).take(count).enumerate() {
+      let mut mixed = [[0.0; 2]; BLOCK];
+      let frames = dry.iter().zip(wet).zip(&mut mixed).take(count);
+      for (index, ((dry, wet), mixed)) in frames.enumerate() {
         let mix = self.params.mix.smoothed.next();
-        for ((channel, dry), wet) in channels.iter_mut().zip(dry).zip(wet) {
-          channel[start + index] = dry + (wet - dry) * mix;
+        let sides = channels.iter_mut().zip(dry).zip(wet).zip(mixed.iter_mut());
+        for (((channel, dry), wet), mixed) in sides {
+          *mixed = dry + (wet - dry) * mix;
+          channel[start + index] = *mixed;
+        }
+        if mono {
+          mixed[1] = mixed[0];
         }
       }
+      self.heard.take(&dry[..count], &self.feed);
+      self.made.take(&mixed[..count], &self.feed);
+      let (pitch, followed) = (self.shifter.detected_hz(), self.shifter.formant_followed());
+      write_played(&self.feed, pitch, followed, &self.shifter.made_hz());
       start += count;
     }
 
@@ -444,7 +459,8 @@ mod tests {
     }
     plugin.sample_rate = rate;
     plugin.shifter = Shifter::new(rate, plugin.params.detect.value());
-    plugin.analyzer = Analyzer::new(rate, &plugin.feed);
+    plugin.heard = Analyzer::new(rate, INPUT_BANDS, &plugin.feed);
+    plugin.made = Analyzer::new(rate, OUTPUT_BANDS, &plugin.feed);
     let mut output = Vec::with_capacity(input.len());
     let mut sizes = sizes.iter().cycle();
     while output.len() < input.len() {
@@ -1136,6 +1152,24 @@ mod tests {
         "{index} loads as {loaded:?}"
       );
     }
+  }
+
+  /// each sounding voice is published at the pitch it makes, the shift and all, the latest
+  /// note first
+  #[test]
+  fn the_voices_are_published_at_the_pitches_they_make() {
+    let take = Take {
+      played: vec![on(50, 0, 57), on(100, 0, 64)],
+      set: vec![(0, "pitch", 7.0)],
+      ..Take::new(RATE, tone(RATE as usize / 2))
+    };
+    let (plugin, _) = run(&take, &[512]);
+    let made = plugin.shifter.made_hz();
+    let shifted = |key: f32| 440.0 * 2f32.powf((key + 7.0 - 69.0) / 12.0);
+    for (made, key) in made.iter().zip([64.0, 57.0]) {
+      assert!((made - shifted(key)).abs() < 0.01, "{made} for key {key}");
+    }
+    assert!(made[2..].iter().all(|&hz| hz == 0.0), "{made:?}");
   }
 
   #[test]

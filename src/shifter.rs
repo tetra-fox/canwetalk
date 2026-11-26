@@ -11,7 +11,7 @@ use crate::effects::{Amounts, Detune, Smear, Stereo};
 use crate::envelope::Adsr;
 use crate::grains::Shape;
 use crate::marks::{Cycle, Marks};
-use crate::notes::{Notes, Play};
+use crate::notes::{Notes, Play, VOICES};
 use crate::pitch::{Detector, Range};
 use crate::ring::Ring;
 use crate::voice::Expression;
@@ -154,6 +154,13 @@ impl Shifter {
   /// sounds
   pub(crate) fn formant_followed(&self) -> Option<f32> {
     (self.notes.followed()).map(|octaves| (12.0 * octaves) as f32)
+  }
+
+  /// the pitch in hertz each voice that is held or follows the input makes, the voice that
+  /// started last first, and after the last of them zero
+  pub(crate) fn made_hz(&self) -> [f32; VOICES] {
+    let hertz = self.sample_rate / 2.0;
+    (self.notes.made_pitches()).map(|pitch| (pitch * hertz) as f32)
   }
 
   /// the effect alone on up to `BLOCK` frames, each with its own settings, with no latency

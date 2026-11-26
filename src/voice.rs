@@ -149,6 +149,11 @@ impl Voice {
     *key_pitch = Last::default();
   }
 
+  /// the pitch the voice makes, after its shift, glide and vibrato, as of its last grain
+  pub(crate) fn made_pitch(&self) -> f64 {
+    self.engine.pitch()
+  }
+
   /// octaves the formants of the voice's last grain moved by to follow its pitch
   pub(crate) fn followed(&self) -> f64 {
     self.engine.followed()

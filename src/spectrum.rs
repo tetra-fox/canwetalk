@@ -1,5 +1,6 @@
-//! the input's spectrum, its detected pitch and what formant follow does, taken on the audio
-//! thread and written to the feed the editor draws them from
+//! the spectra of the input and the output, the detected pitch, what formant follow does and
+//! the pitch each voice makes, taken on the audio thread and written to the feed the editor
+//! draws them from
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -7,17 +8,25 @@ use std::sync::Arc;
 use potpot_controls::axis::Axis;
 use potpot_controls::spectrum;
 use potpot_window::Feed;
+
+use crate::notes::VOICES;
 use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
 /// how many bands the spectrum is drawn in
 pub(crate) const BANDS: usize = 120;
-/// the feed's slots: each band's level in decibels, then the detected pitch in hertz, which is
-/// zero while there is none, then the semitones formant follow moves the formants of the voice
-/// that started last by, which is zero while none sounds
-pub(crate) const PITCH_SLOT: usize = BANDS;
-pub(crate) const FOLLOW_SLOT: usize = BANDS + 1;
-pub(crate) const SLOTS: usize = BANDS + 2;
+/// the feed's slots. first each band's level in decibels, of the input and then of the output
+pub(crate) const INPUT_BANDS: usize = 0;
+pub(crate) const OUTPUT_BANDS: usize = BANDS;
+/// the detected pitch in hertz, zero while there is none
+pub(crate) const PITCH_SLOT: usize = 2 * BANDS;
+/// the semitones formant follow moves the formants of the voice that started last by, zero
+/// while none sounds
+pub(crate) const FOLLOW_SLOT: usize = 2 * BANDS + 1;
+/// the pitch in hertz each sounding voice makes, the voice that started last first, then zeros.
+/// a voice that has made no grain yet is zero too
+pub(crate) const VOICE_SLOTS: std::ops::Range<usize> = 2 * BANDS + 2..2 * BANDS + 2 + VOICES;
+pub(crate) const SLOTS: usize = VOICE_SLOTS.end;
 /// the frequencies the bands are laid along
 pub(crate) const HERTZ: Axis = Axis::log([20.0, 20_000.0]);
 /// the quietest level a band shows, in decibels against a full scale sine
@@ -25,9 +34,10 @@ pub(crate) const FLOOR_DB: f32 = -90.0;
 /// how fast a band falls back once its level has passed, in decibels a second
 const FALL_DB: f32 = 40.0;
 
-/// takes the spectrum of the input, which the pitch is detected in, so that the detected pitch
-/// is drawn over one of its peaks
+/// takes the spectrum of a signal and writes its bands to the feed
 pub(crate) struct Analyzer {
+  /// the slot of the feed the first band goes in
+  first: usize,
   fft: Arc<dyn RealToComplex<f32>>,
   /// a hann window as long as the transform, scaled so that a full scale sine comes out at
   /// one in its bin
@@ -52,9 +62,10 @@ pub(crate) struct Analyzer {
 }
 
 impl Analyzer {
-  /// writes what it shows before it hears anything to `feed`, the spectrum at its floor and no
-  /// pitch, so that the editor never draws the zeros a new feed holds
-  pub(crate) fn new(sample_rate: f32, feed: &Feed) -> Self {
+  /// writes its bands to `feed` from the slot `first` on. writes what it shows before it hears
+  /// anything there at once, every band at the floor, so that the editor never draws the zeros
+  /// a new feed holds
+  pub(crate) fn new(sample_rate: f32, first: usize, feed: &Feed) -> Self {
     // about a twelfth of a second at every rate, which keeps bins 12 hertz apart or closer
     let length = ((sample_rate / 12.0) as usize).next_power_of_two();
     let fft = RealFftPlanner::<f32>::new().plan_fft_forward(length);
@@ -66,6 +77,7 @@ impl Analyzer {
       .collect();
     let hop = length / 4;
     let analyzer = Self {
+      first,
       window,
       heard: vec![0.0; length],
       next: 0,
@@ -81,7 +93,7 @@ impl Analyzer {
       sample_rate,
       fft,
     };
-    analyzer.write(feed, None, None);
+    analyzer.write(feed);
     analyzer
   }
 
@@ -91,19 +103,12 @@ impl Analyzer {
     self.next = 0;
     self.until = self.hop;
     self.shown.fill(FLOOR_DB);
-    self.write(feed, None, None);
+    self.write(feed);
   }
 
-  /// takes in frames of input and writes the spectrum to `feed` each time a transform is due,
-  /// with `pitch` in hertz if one is detected and the semitones formant follow moves the
-  /// formants by, if a voice sounds. does not allocate
-  pub(crate) fn take(
-    &mut self,
-    frames: &[[f32; 2]],
-    pitch: Option<f32>,
-    followed: Option<f32>,
-    feed: &Feed,
-  ) {
+  /// takes in frames of the signal and writes the spectrum to `feed` each time a transform is
+  /// due. does not allocate
+  pub(crate) fn take(&mut self, frames: &[[f32; 2]], feed: &Feed) {
     for [left, right] in frames {
       self.heard[self.next] = 0.5 * (left + right);
       self.next = (self.next + 1) % self.heard.len();
@@ -111,7 +116,7 @@ impl Analyzer {
       if self.until == 0 {
         self.until = self.hop;
         self.transform();
-        self.write(feed, pitch, followed);
+        self.write(feed);
       }
     }
   }
@@ -137,12 +142,26 @@ impl Analyzer {
     }
   }
 
-  fn write(&self, feed: &Feed, pitch: Option<f32>, followed: Option<f32>) {
-    for (slot, shown) in self.shown.iter().enumerate() {
+  fn write(&self, feed: &Feed) {
+    for (slot, shown) in (self.first..).zip(&self.shown) {
       feed.set(slot, *shown);
     }
-    feed.set(PITCH_SLOT, pitch.unwrap_or(0.0));
-    feed.set(FOLLOW_SLOT, followed.unwrap_or(0.0));
+  }
+}
+
+/// writes to `feed` the detected pitch in hertz, the semitones formant follow adds, and the
+/// pitch each sounding voice makes in hertz, the voice that started last first and zero past the
+/// last that sounds. does not allocate
+pub(crate) fn write_played(
+  feed: &Feed,
+  pitch: Option<f32>,
+  followed: Option<f32>,
+  voices: &[f32; VOICES],
+) {
+  feed.set(PITCH_SLOT, pitch.unwrap_or(0.0));
+  feed.set(FOLLOW_SLOT, followed.unwrap_or(0.0));
+  for (slot, hz) in VOICE_SLOTS.zip(voices) {
+    feed.set(slot, *hz);
   }
 }
 
@@ -167,12 +186,12 @@ mod tests {
   #[test]
   fn a_full_scale_sine_reads_full_scale_in_its_band_and_little_far_from_it() {
     let feed = Feed::new(SLOTS);
-    let mut analyzer = Analyzer::new(RATE, &feed);
+    let mut analyzer = Analyzer::new(RATE, INPUT_BANDS, &feed);
     let length = analyzer.heard.len();
     // between two bins, where the window gives up some of a sine's level, and for a run that
     // ends with the oldest sample partway along the ring
     let hz = 102.3 * RATE / length as f32;
-    analyzer.take(&sine(hz, 2 * length + 3 * length / 4), None, None, &feed);
+    analyzer.take(&sine(hz, 2 * length + 3 * length / 4), &feed);
     let level = analyzer.shown[band(hz)];
     assert!((-1.5..0.1).contains(&level), "{level} dB");
     // far from it the window lets almost nothing through, which a ring read out of order
@@ -184,15 +203,15 @@ mod tests {
   #[test]
   fn a_band_falls_back_at_its_rate_once_its_sound_stops() {
     let feed = Feed::new(SLOTS);
-    let mut analyzer = Analyzer::new(RATE, &feed);
+    let mut analyzer = Analyzer::new(RATE, INPUT_BANDS, &feed);
     let (length, hop) = (analyzer.heard.len(), analyzer.hop);
     let hz = 1000.0;
-    analyzer.take(&sine(hz, 2 * length), None, None, &feed);
+    analyzer.take(&sine(hz, 2 * length), &feed);
     // once the ring holds nothing of the sine, every transform finds the band at the floor
-    analyzer.take(&vec![[0.0; 2]; length], None, None, &feed);
+    analyzer.take(&vec![[0.0; 2]; length], &feed);
     let from = analyzer.shown[band(hz)];
     let hops = 10;
-    analyzer.take(&vec![[0.0; 2]; hops * hop], None, None, &feed);
+    analyzer.take(&vec![[0.0; 2]; hops * hop], &feed);
     let fallen = from - analyzer.shown[band(hz)];
     let seconds = (hops * hop) as f32 / RATE;
     assert!(
@@ -204,13 +223,13 @@ mod tests {
   #[test]
   fn a_reset_forgets_what_was_heard() {
     let feed = Feed::new(SLOTS);
-    let mut analyzer = Analyzer::new(RATE, &feed);
+    let mut analyzer = Analyzer::new(RATE, INPUT_BANDS, &feed);
     let hop = analyzer.hop;
-    analyzer.take(&sine(1000.0, 3 * hop), None, None, &feed);
+    analyzer.take(&sine(1000.0, 3 * hop), &feed);
     analyzer.reset(&feed);
     assert!(analyzer.shown.iter().all(|&level| level == FLOOR_DB));
     // the next transform finds nothing of the sine in the ring
-    analyzer.take(&vec![[0.0; 2]; hop], None, None, &feed);
+    analyzer.take(&vec![[0.0; 2]; hop], &feed);
     assert!(analyzer.shown.iter().all(|&level| level == FLOOR_DB));
   }
 }

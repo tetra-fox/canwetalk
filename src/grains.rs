@@ -142,6 +142,11 @@ impl Engine {
     };
   }
 
+  /// the pitch the grains are spaced at, as of the last grain, in cycles per two samples
+  pub(crate) fn pitch(&self) -> f64 {
+    self.output_step
+  }
+
   pub(crate) fn followed(&self) -> f64 {
     self.followed
   }

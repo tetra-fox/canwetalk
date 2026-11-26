@@ -8,7 +8,7 @@ use crate::ring::Ring;
 use crate::shifter::Settings;
 use crate::voice::{SLIDE_REST, Scratch, Voice};
 
-const VOICES: usize = 16;
+pub(crate) const VOICES: usize = 16;
 /// notes that wait for a voice while more are held than there are voices
 const MAX_WAITING: usize = 16;
 /// channels a note can be on
@@ -399,6 +399,20 @@ impl Notes {
       .filter(|voice| voice.sounding)
       .max_by_key(|voice| voice.started)
       .map(Voice::followed)
+  }
+
+  /// the pitch each voice that is held or follows the input makes, as of its last grain, the
+  /// voice that started last first, and after the last of them zero. a voice that has made no
+  /// grain yet is zero too
+  pub(crate) fn made_pitches(&self) -> [f64; VOICES] {
+    let mut sounding = [None; VOICES];
+    let voices = self.voices.iter().filter(|voice| voice.sounding);
+    for (slot, voice) in sounding.iter_mut().zip(voices) {
+      *slot = Some((voice.started, voice.made_pitch()));
+    }
+    // the latest start first, and none after every one there is
+    sounding.sort_unstable_by_key(|slot| std::cmp::Reverse(slot.map(|(started, _)| started)));
+    sounding.map(|slot| slot.map_or(0.0, |(_, pitch)| pitch))
   }
 
   /// adds every voice to the samples of `out`, of which `input` already holds every one's
