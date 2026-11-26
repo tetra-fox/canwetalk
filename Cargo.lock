@@ -1794,7 +1794,7 @@ dependencies = [
 [[package]]
 name = "potpot"
 version = "0.1.0"
-source = "git+https://github.com/tetra-fox/potpot?branch=main#03df3391aebdaf341a2d837bedbfae771c141298"
+source = "git+https://github.com/tetra-fox/potpot?branch=main#66df989e98c7de336be0ac68ba99d4a4ead826b5"
 dependencies = [
  "bytemuck",
  "glam",
@@ -1805,12 +1805,12 @@ dependencies = [
 [[package]]
 name = "potpot-controls"
 version = "0.1.0"
-source = "git+https://github.com/tetra-fox/potpot?branch=main#03df3391aebdaf341a2d837bedbfae771c141298"
+source = "git+https://github.com/tetra-fox/potpot?branch=main#66df989e98c7de336be0ac68ba99d4a4ead826b5"
 
 [[package]]
 name = "potpot-window"
 version = "0.1.0"
-source = "git+https://github.com/tetra-fox/potpot?branch=main#03df3391aebdaf341a2d837bedbfae771c141298"
+source = "git+https://github.com/tetra-fox/potpot?branch=main#66df989e98c7de336be0ac68ba99d4a4ead826b5"
 dependencies = [
  "arboard",
  "baseview",
