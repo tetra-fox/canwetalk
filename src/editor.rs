@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 
 use nice_plug::prelude::*;
 use potpot_controls::interaction::Readout;
-use potpot_window::nice_plug::{Bound, NotOurs};
+use potpot_window::nice_plug::{Bound, Misbound};
 use potpot_window::{Remembered, Settings};
 
 use self::panel::{HEIGHT, READOUT_LETTERS, WIDTH};
@@ -48,7 +48,7 @@ impl Control {
 
 /// the editor of a plugin with these parameters. the size the user gives its window is kept
 /// with them
-pub(crate) fn editor(params: Arc<CanWeTalkParams>) -> Result<Editor, NotOurs> {
+pub(crate) fn editor(params: Arc<CanWeTalkParams>) -> Result<Editor, Misbound> {
   let mut settings = Settings::new("CanWeTalk", [WIDTH, HEIGHT]);
   // the window is no smaller and no larger than this many times the panel's size
   settings.scales = [0.75, 3.0];
