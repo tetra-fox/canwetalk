@@ -392,21 +392,28 @@ impl Notes {
     }
   }
 
-  /// octaves the formants of the voice that started last follow its pitch by, as its last
-  /// grain had them, while any voice is held or follows the input
-  pub(crate) fn followed(&self) -> Option<f64> {
+  /// the voices that play something: each that is held, and the one that follows the input
+  /// while `input_voiced`, which is whether the input has a pitch to follow. without one that
+  /// voice's pitch is the last one found, or the lowest of the range before any was
+  fn playing(&self, input_voiced: bool) -> impl Iterator<Item = &Voice> {
     (self.voices.iter())
-      .filter(|voice| voice.sounding)
+      .filter(move |voice| voice.held().is_some() || (input_voiced && voice.sounding))
+  }
+
+  /// octaves the formants of the playing voice that started last follow its pitch by, as its
+  /// last grain had them, if a voice plays. `input_voiced` is as `playing` takes it
+  pub(crate) fn followed(&self, input_voiced: bool) -> Option<f64> {
+    (self.playing(input_voiced))
       .max_by_key(|voice| voice.started)
       .map(Voice::followed)
   }
 
-  /// the pitch each voice that is held or follows the input makes, as of its last grain, the
-  /// voice that started last first, and after the last of them zero. a voice that has made no
-  /// grain yet is zero too
-  pub(crate) fn made_pitches(&self) -> [f64; VOICES] {
+  /// the pitch each playing voice makes, as of its last grain, the voice that started last
+  /// first, and after the last of them zero. a voice that has made no grain yet is zero too.
+  /// `input_voiced` is as `playing` takes it
+  pub(crate) fn made_pitches(&self, input_voiced: bool) -> [f64; VOICES] {
     let mut sounding = [None; VOICES];
-    let voices = self.voices.iter().filter(|voice| voice.sounding);
+    let voices = self.playing(input_voiced);
     for (slot, voice) in sounding.iter_mut().zip(voices) {
       *slot = Some((voice.started, voice.made_pitch()));
     }

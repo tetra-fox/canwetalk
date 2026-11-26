@@ -8,10 +8,10 @@ use std::sync::Arc;
 use potpot_controls::axis::Axis;
 use potpot_controls::spectrum;
 use potpot_window::Feed;
-
-use crate::notes::VOICES;
 use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
+
+use crate::notes::VOICES;
 
 /// how many bands the spectrum is drawn in
 pub(crate) const BANDS: usize = 120;
@@ -21,14 +21,16 @@ pub(crate) const OUTPUT_BANDS: usize = BANDS;
 /// the detected pitch in hertz, zero while there is none
 pub(crate) const PITCH_SLOT: usize = 2 * BANDS;
 /// the semitones formant follow moves the formants of the voice that started last by, zero
-/// while none sounds
+/// while none plays
 pub(crate) const FOLLOW_SLOT: usize = 2 * BANDS + 1;
-/// the pitch in hertz each sounding voice makes, the voice that started last first, then zeros.
-/// a voice that has made no grain yet is zero too
+/// the pitch in hertz each playing voice makes, the voice that started last first, then zeros.
+/// a voice that has made no grain yet is zero too. a voice plays while it has a note, or follows
+/// the input while a pitch is detected in it
 pub(crate) const VOICE_SLOTS: std::ops::Range<usize> = 2 * BANDS + 2..2 * BANDS + 2 + VOICES;
 pub(crate) const SLOTS: usize = VOICE_SLOTS.end;
-/// the frequencies the bands are laid along
-pub(crate) const HERTZ: Axis = Axis::log([20.0, 20_000.0]);
+/// the frequencies the bands are laid along, from the lowest to the highest in hertz
+pub(crate) const HERTZ: Axis = Axis::log(HERTZ_ENDS);
+pub(crate) const HERTZ_ENDS: [f32; 2] = [20.0, 20_000.0];
 /// the quietest level a band shows, in decibels against a full scale sine
 pub(crate) const FLOOR_DB: f32 = -90.0;
 /// how fast a band falls back once its level has passed, in decibels a second
@@ -150,8 +152,7 @@ impl Analyzer {
 }
 
 /// writes to `feed` the detected pitch in hertz, the semitones formant follow adds, and the
-/// pitch each sounding voice makes in hertz, the voice that started last first and zero past the
-/// last that sounds. does not allocate
+/// pitch each playing voice makes in hertz, as `VOICE_SLOTS` has them. does not allocate
 pub(crate) fn write_played(
   feed: &Feed,
   pitch: Option<f32>,

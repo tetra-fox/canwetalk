@@ -1179,6 +1179,20 @@ mod tests {
     assert!(made[2..].iter().all(|&hz| hz == 0.0), "{made:?}");
   }
 
+  /// with no note held and no pitch in the input, no voice plays: the one that follows the
+  /// input still sounds at the pitch it last had, but nothing of it is published
+  #[test]
+  fn a_silent_input_with_no_note_publishes_no_voice() {
+    let take = Take {
+      set: vec![(0, "pitch", -24.0), (0, "formant_follow", 0.8)],
+      ..Take::new(RATE, vec![[0.0; 2]; RATE as usize / 2])
+    };
+    let (plugin, _) = run(&take, &[512]);
+    assert_eq!(plugin.shifter.detected_hz(), None);
+    assert_eq!(plugin.shifter.made_hz(), [0.0; VOICES]);
+    assert_eq!(plugin.shifter.formant_followed(), None);
+  }
+
   #[test]
   fn output_does_not_depend_on_how_the_host_splits_buffers() {
     let take = Take {
