@@ -117,6 +117,8 @@ const METER_LONG: f32 = 120.0;
 const METER_LIGHTS: u32 = 24;
 const METER_FLOOR_DB: f32 = -60.0;
 const METER_WARN_DB: f32 = -3.0;
+/// the name over the screen, which shows both spectra and the notes
+const SCREEN_NAME: &str = "SPECTRUM";
 /// the screen at the top right, by the middle and the size of its face
 const SCREEN_AT: Vec2 = Vec2::new(RIGHT - SCREEN_CLEAR - SCREEN_SIZE.x / 2.0, 106.0);
 const SCREEN_SIZE: Vec2 = Vec2::new(352.0, 136.0);
@@ -537,7 +539,7 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
     }
   }
   fields.push(Field {
-    name: "SPECTRUM",
+    name: SCREEN_NAME,
     across: screen,
     down: rows[0].field,
     y: rows[0].heading,
@@ -1634,14 +1636,14 @@ mod tests {
     }
 
     // the screen and its bezel lie in their field, under its name
-    let input = (fields.iter())
-      .find(|field| field.name == "INPUT")
+    let screen_field = (fields.iter())
+      .find(|field| field.name == SCREEN_NAME)
       .expect("a field for the screen");
     let half = SCREEN_SIZE / 2.0 + screen.border;
-    let [left, right] = input.across;
+    let [left, right] = screen_field.across;
     assert!(SCREEN_AT.x - half.x >= left + FIELD_BORDER);
     assert!(SCREEN_AT.x + half.x <= right - FIELD_BORDER);
-    assert!(SCREEN_AT.y - half.y > input.y + RULE_DROP);
-    assert!(SCREEN_AT.y + half.y <= input.down[1] - FIELD_BORDER);
+    assert!(SCREEN_AT.y - half.y > screen_field.y + RULE_DROP);
+    assert!(SCREEN_AT.y + half.y <= screen_field.down[1] - FIELD_BORDER);
   }
 }
