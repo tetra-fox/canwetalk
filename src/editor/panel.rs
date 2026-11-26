@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use potpot::glam::{Mat4, Vec2, Vec3};
-use potpot::parts::{self, Handle, LedArc, LedRing, PushSwitch, Screen, Vent};
+use potpot::parts::{self, Handle, LedArc, LedRing, LedStops, PushSwitch, Screen, Vent};
 use potpot::{Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::axis::Axis;
 use potpot_controls::flat::{Color, Flat};
@@ -85,8 +85,10 @@ const PIP_OUT: f32 = 22.0;
 const PIP: f32 = 4.0;
 const CHOICE_OUT: f32 = 31.0;
 const CHOICE_TALL: f32 = 5.0;
-/// how bright a selector's light is at a stop it is not at
-const PIP_DARK: f32 = 0.1;
+/// how bright a light is that is off: a selector's at a stop it is not at, and a switch's
+const DARK: f32 = 0.1;
+/// how bright a shift's ring is over what formant follow adds to the shift
+const FOLLOW_LIT: f32 = 0.35;
 /// the field each group of controls is set in: how wide its rim is, how high and the radius
 /// of its corners, and the room inside it over the group's name and under its windows
 const FIELD_BORDER: f32 = 3.0;
@@ -262,6 +264,18 @@ fn knob_arc() -> LedArc {
   LedArc::new(SMALL_RADIUS * SKIRT + 5.0, 2.4)
 }
 
+/// the lights at the stops of a selector with these choices
+fn selector_stops(choices: &[&str]) -> LedStops {
+  LedStops {
+    dim: DARK,
+    ..LedStops::new(
+      u32::try_from(choices.len()).expect("a handful of choices"),
+      PIP_OUT,
+      PIP,
+    )
+  }
+}
+
 /// how far down from a knob's middle a point `out` from it is at either end of its turn
 fn down_at_ends(out: f32) -> f32 {
   -out * (parts::KNOB_SWEEP / 2.0).cos()
@@ -273,9 +287,9 @@ impl Kind {
     match self {
       Self::Shift => 140.0,
       // room for the names printed out to its sides
-      Self::Selector { printed: true, .. } => 88.0,
+      Self::Selector { printed: true, .. } => 94.0,
       Self::Knob | Self::Selector { printed: false, .. } => 76.0,
-      Self::Switch => 64.0,
+      Self::Switch => 70.0,
     }
   }
 
@@ -301,11 +315,13 @@ impl Kind {
         CHOICE_OUT + CHOICE_TALL / 2.0,
         down_at_ends(CHOICE_OUT) + CHOICE_TALL / 2.0,
       ],
-      // over the light at the top, and under those at the ends of its turn or the skirt
-      Self::Selector { printed: false, .. } => {
-        let pip = PIP / 2.0 * 1.12;
-        let ends = down_at_ends(PIP_OUT) + pip;
-        [PIP_OUT + pip, ends.max(SMALL_RADIUS * SKIRT)]
+      // over and under its lights, or under the skirt if that is lower
+      Self::Selector {
+        choices,
+        printed: false,
+      } => {
+        let [up, down] = selector_stops(choices).reach();
+        [up, down.max(SMALL_RADIUS * SKIRT)]
       }
       // over and under the collar
       Self::Switch => {
@@ -660,15 +676,6 @@ fn around(middle: Vec2, turn: f32, out: f32) -> Vec2 {
   middle + Vec2::new(sin, -cos) * out
 }
 
-/// the place of its turn each of `count` stops of a selector is at, from one end to the
-/// other, which puts a lone stop in the middle
-fn stop_turn(stop: usize, count: usize) -> f32 {
-  match count {
-    1 => 0.5,
-    count => stop as f32 / (count - 1) as f32,
-  }
-}
-
 /// the middle of the name of a choice printed at `turn` of the sweep of a selector around
 /// `middle`. each name is pushed to the side its stop leans to, by as much of its half width as
 /// the stop leans, which keeps a name beside the knob clear of it
@@ -683,9 +690,13 @@ type Parts = Vec<(Arc<Mesh>, Material)>;
 
 /// the meshes of a knob that turn with it: its glossy black body and the lit line on it
 fn knob_parts(knob: parts::Knob) -> Parts {
+  // black plastic with a tight, faint highlight and little of the room in it, which keeps a
+  // knob's top black where the near light's mirror image falls on it
   let body = Material {
-    reflect: 0.9,
-    ..Material::glossy(Vec3::splat(0.02))
+    specular: 0.3,
+    shininess: 600.0,
+    reflect: 0.1,
+    ..Material::glossy(Vec3::splat(0.008))
   };
   vec![
     (Arc::new(knob.body()), body),
@@ -718,7 +729,7 @@ struct Front {
   /// the lit arc around each control, kept for as long as it is lit over the same run
   arcs: Vec<Option<Kept<[f32; 2]>>>,
   /// the light at each stop of a selector
-  pip: Arc<Mesh>,
+  stop_light: Arc<Mesh>,
   effect: Arc<Mesh>,
   glass: Arc<Mesh>,
   /// the lettering of what each window shows, kept for as long as it shows that
@@ -747,7 +758,16 @@ impl Front {
     };
     let hole = Material::matte(Vec3::splat(0.01));
     let chrome = Material::chrome(Vec3::splat(0.75));
-    let steel = Material::brushed(Vec3::splat(0.55));
+    // polished on a lathe, which catches the light in bright wedges around the knob
+    let skirt_chrome = Material {
+      spun: 1.0,
+      ..Material::chrome(Vec3::splat(0.95))
+    };
+    // polished steel brushed along the bar, which stands out from the darker metal of the panel
+    let steel = Material {
+      brushed: 0.6,
+      ..Material::chrome(Vec3::splat(0.85))
+    };
     // the far side of anything cut into the plate, which the light reaches
     let lip = Material::matte(GUNMETAL.lerp(Vec3::ONE, 0.3));
     let (half_wide, half_tall) = (WIDTH / 2.0, HEIGHT / 2.0);
@@ -771,7 +791,7 @@ impl Front {
     // a rack ear at each end, marked off by a groove, with a handle on two blocks down its
     // middle and a socket screw through a long hole near its top and its bottom, each
     // socket at another angle
-    let handle = Handle::new(260.0, 18.0, 5.0);
+    let handle = Handle::new(260.0, 22.0, 8.0);
     for x in [EAR, WIDTH - EAR] {
       for (from, to, up, material) in [(0.5, 1.2, 0.1, lip), (-0.5, 0.5, 0.2, hole)] {
         let groove = Mesh::cuboid(Vec3::new(from, 5.0, 0.0), Vec3::new(to, HEIGHT - 5.0, up));
@@ -779,7 +799,12 @@ impl Front {
       }
     }
     for x in [EAR / 2.0, WIDTH - EAR / 2.0] {
-      put(handle.mounts(), flat(x, half_tall), steel, None);
+      put(
+        handle.mounts(),
+        flat(x, half_tall),
+        Material::brushed(Vec3::splat(0.4)),
+        None,
+      );
       put(handle.bar(), flat(x, half_tall), steel, None);
     }
     for (x, y, turn) in [
@@ -845,37 +870,45 @@ impl Front {
     let switch = switch();
     let ring = shift_ring();
     let ring_seat = Arc::new(ring.seat());
-    let pip_seat = Arc::new(parts::led_seat(PIP));
+    // every selector's lights are the same size, whatever its count of stops
+    let stop = selector_stops(&[]);
+    let stop_seat = Arc::new(stop.seat());
     for (index, (control, spot)) in Control::ALL.into_iter().zip(spots).enumerate() {
       let kind = control.kind();
       let Vec2 { x, y } = spot.middle();
       match kind {
         Kind::Shift => {
-          fixed.put(&Arc::new(skirt(shift_knob())), flat(x, y), chrome, None);
+          fixed.put(
+            &Arc::new(skirt(shift_knob())),
+            flat(x, y),
+            skirt_chrome,
+            None,
+          );
           fixed.extend(ring.seats(&ring_seat, x, y));
-          // figures outside the ring, spread evenly from one end of the turn to the other
-          let figures = ["-24", "-12", "0", "+12", "+24"];
-          for (place, figure) in figures.iter().enumerate() {
-            let turn = stop_turn(place, figures.len());
-            let at = around(Vec2::new(x, y), turn, FIGURES_OUT);
-            let figure = Arc::new(lit_legend(figure, FIGURES_TALL));
+          // figures outside the ring, each where the knob points at that shift
+          for share in [-1.0, -0.5, 0.0, 0.5, 1.0_f32] {
+            let figure = match share * SHIFT_SEMITONES {
+              0.0 => "0".to_owned(),
+              semitones => format!("{semitones:+}"),
+            };
+            let at = around(Vec2::new(x, y), (share + 1.0) / 2.0, FIGURES_OUT);
+            let figure = Arc::new(lit_legend(&figure, FIGURES_TALL));
             fixed.put(&figure, at.extend(0.0), lit(LABEL_LIT), None);
           }
         }
         Kind::Knob => {
           let skirt = Arc::new(skirt(small_knob()));
-          fixed.put(&skirt, flat(x, y), chrome, None);
+          fixed.put(&skirt, flat(x, y), skirt_chrome, None);
         }
         Kind::Selector { choices, printed } => {
           let skirt = Arc::new(skirt(small_knob()));
-          fixed.put(&skirt, flat(x, y), chrome, None);
-          for (stop, name) in choices.iter().enumerate() {
-            let turn = stop_turn(stop, choices.len());
-            let at = around(Vec2::new(x, y), turn, PIP_OUT);
-            fixed.put(&pip_seat, at.extend(0.0), hole, None);
-            if printed {
+          fixed.put(&skirt, flat(x, y), skirt_chrome, None);
+          let stops = selector_stops(choices);
+          fixed.extend(stops.seats(&stop_seat, x, y));
+          if printed {
+            for (stop, name) in (0..).zip(choices) {
               let legend = Arc::new(lit_legend(name, CHOICE_TALL));
-              let at = choice_at(Vec2::new(x, y), turn, name);
+              let at = choice_at(Vec2::new(x, y), stops.turn(stop), name);
               fixed.put(&legend, at.extend(0.0), lit(LABEL_LIT), None);
             }
           }
@@ -940,12 +973,17 @@ impl Front {
       STRIP_UP,
       lit(0.7),
     );
-    let vent = Vent::new(7, 4.0, 20.0);
+    // holes coarse enough to show at the panel's size
+    let vent = Vent {
+      hole: 1.2,
+      hole_pitch: 1.9,
+      ..Vent::new(7, 5.0, 22.0)
+    };
     let vent_half = vent.pitch * (vent.slots - 1) as f32 / 2.0 + vent.width / 2.0;
     for side in [-1.0, 1.0] {
       let x = half_wide + side * (logo_half + 22.0 + vent_half);
       put(vent.slots(), x, STRIP_Y, STRIP_UP, hole);
-      put(vent.holes(), x, STRIP_Y, STRIP_UP, lit(0.3));
+      put(vent.holes(), x, STRIP_Y, STRIP_UP, lit(0.55));
     }
     for (line, y, tall) in [
       ("PROFESSIONAL", -4.5, 4.4),
@@ -1006,7 +1044,7 @@ impl Front {
       arc_meshes: [Arc::new(arc.seat()), Arc::new(arc.lens())],
       arc,
       arcs: Control::ALL.map(|_| None).into(),
-      pip: Arc::new(parts::led(PIP)),
+      stop_light: Arc::new(stop.light()),
       effect: Arc::new(parts::led(EFFECT_SIZE)),
       glass: Arc::new(Mesh::cuboid(
         (-WINDOW / 2.0).extend(0.0),
@@ -1042,17 +1080,20 @@ impl Front {
       let target = Some(Target::Control(index));
       let knob = match control.kind() {
         Kind::Shift => {
-          // lit from nothing to the shift that is heard: the knob's own, and for the formant
-          // what formant follow adds to the formants of the voice that started last. a run
+          // lit from nothing to the knob's shift, and for the formant more dimly on from there
+          // by what formant follow adds to the formants of the voice that started last. a run
           // past either end of the scale stops there, which is as far as the ring shows,
           // though the shifter moves the formants further
           let followed = match control {
             Control::Formant => feed[FOLLOW_SLOT] / (2.0 * SHIFT_SEMITONES),
             _ => 0.0,
           };
-          let run = [control.rest(), reading.value + followed];
-          let lights = (self.ring).lights(&self.ring_light, x, y, run, CYAN);
-          drawn.extend(lights);
+          let shift = self.ring.levels([control.rest(), reading.value]);
+          let follow = (self.ring).levels([reading.value, reading.value + followed]);
+          let levels = shift
+            .zip(follow)
+            .map(|(shift, follow)| shift.max(follow * FOLLOW_LIT));
+          drawn.extend((self.ring).lit(&self.ring_light, x, y, levels, CYAN));
           &self.shift_knob
         }
         Kind::Knob => {
@@ -1068,16 +1109,8 @@ impl Front {
           &self.small_knob
         }
         Kind::Selector { choices, .. } => {
-          // the stop the selector is at is lit, and the others barely
-          let count = choices.len();
-          let at = (reading.value * (count - 1) as f32).round() as usize;
-          for stop in 0..count {
-            let turn = stop_turn(stop, count);
-            let pip = around(Vec2::new(x, y), turn, PIP_OUT);
-            let level = if stop == at { 1.0 } else { PIP_DARK };
-            let material = parts::led_material(CYAN, level, PIP);
-            drawn.put(&self.pip, pip.extend(0.0), material, None);
-          }
+          let stops = selector_stops(choices);
+          drawn.extend(stops.lights(&self.stop_light, x, y, reading.value, CYAN));
           &self.small_knob
         }
         Kind::Switch => {
@@ -1085,7 +1118,7 @@ impl Front {
           // around it. one that is off is lit barely
           let on = reading.value > 0.5;
           let depth = Push::Latching.depth(on, held == Some(index));
-          let level = if on { 1.0 } else { PIP_DARK };
+          let level = if on { 1.0 } else { DARK };
           drawn.place(
             &self.plunger,
             self.switch.transform(x, y, depth),
@@ -1175,6 +1208,9 @@ impl Front {
     let target = Some(Target::Readout(index));
     let glass = Material {
       reflect: 0.2,
+      // the key light is near and its mirror image falls on the windows at the top left,
+      // which a pane's full shine would grey over
+      specular: 0.08,
       // sized as a much larger pane, which keeps the sheen to one corner
       ..Material::pane(FACE, WINDOW.x * 3.5)
     };
@@ -1225,9 +1261,10 @@ pub(super) fn furniture() -> (MenuLook, GripLook) {
 /// the face of the screen, which what it shows is lit on
 fn screen_glass() -> Material {
   Material {
-    // smoked dark enough that the sheen stays faint
+    // smoked glass, which mirrors less of the room than clear
     reflect: 0.15,
-    ..Material::screen(FACE, (SCREEN_SIZE.x + SCREEN_SIZE.y) * 3.0)
+    // sized as a much larger pane, which keeps the sheen to the corner over the top of the plot
+    ..Material::screen(FACE, SCREEN_SIZE.length() * 5.5)
   }
 }
 
@@ -1548,8 +1585,9 @@ mod tests {
         );
         assert!(spot.row.middle - up > field.y + RULE_DROP, "{control:?}");
         assert!(spot.row.middle + down < spot.row.name, "{control:?}");
-        // and the names on it clear of the rim of the field at either end of a row
-        let room = kind.slot() / 2.0 - FIELD_BORDER;
+        // and the names on it clear of the rim of the field at either end of a row, by a few
+        // points
+        let room = kind.slot() / 2.0 - FIELD_BORDER - 4.0;
         assert!(
           lit_width(control.name(), kind.name_tall()) / 2.0 <= room,
           "{control:?}"
@@ -1559,8 +1597,8 @@ mod tests {
           printed: true,
         } = kind
         {
-          for (stop, name) in choices.iter().enumerate() {
-            let at = choice_at(Vec2::ZERO, stop_turn(stop, choices.len()), name);
+          for (stop, name) in (0..).zip(choices) {
+            let at = choice_at(Vec2::ZERO, selector_stops(choices).turn(stop), name);
             let half = lit_width(name, CHOICE_TALL) / 2.0;
             assert!(at.x.abs() + half <= room, "{control:?} {name}");
           }
