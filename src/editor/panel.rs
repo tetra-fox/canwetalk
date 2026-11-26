@@ -16,7 +16,8 @@ use potpot_window::{Gpu, Skin, View, wgpu};
 use super::{Control, Kind, note};
 use crate::params::SHIFT_SEMITONES;
 use crate::spectrum::{
-  BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, INPUT_BANDS, OUTPUT_BANDS, PITCH_SLOT, VOICE_SLOTS,
+  BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, HERTZ_ENDS, INPUT_BANDS, OUTPUT_BANDS, PITCH_SLOT,
+  VOICE_SLOTS,
 };
 
 pub(super) const WIDTH: f32 = 920.0;
@@ -1074,9 +1075,14 @@ fn spectrum(feed: &[f32]) -> Flat {
   flat.curve(&heard, 1.5, EDGE);
   // the output is an edge alone over the input's, which leaves the input's fill to show
   flat.curve(&curve(OUTPUT_BANDS), 1.2, MADE);
+  // a pitch past either end of the plot has no line, which the axis would draw at that end,
+  // and is still named beside it
   let up = |flat: &mut Flat, hz: f32, color: Color| {
-    let across = HERTZ.turn(hz);
-    flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, color);
+    let [lowest, highest] = HERTZ_ENDS;
+    if (lowest..=highest).contains(&hz) {
+      let across = HERTZ.turn(hz);
+      flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, color);
+    }
   };
   let made: Vec<f32> = (feed[VOICE_SLOTS].iter().copied())
     .filter(|&hz| hz > 0.0)
@@ -1169,6 +1175,7 @@ impl Skin for Panel {
 
 #[cfg(test)]
 mod tests {
+  use potpot_controls::flat::Shape;
   use potpot_controls::interaction::{Control as Handled, Dial, Interaction, Readout};
 
   use super::*;
@@ -1209,6 +1216,32 @@ mod tests {
     let half = stroke::width("C#-1".len(), NOTE_TALL) / 2.0;
     let edge = SCREEN_AT.x + SCREEN_SIZE.x / 2.0;
     assert!(NOTE_X - half > NOTE_LINE && NOTE_X + half < edge, "{half}");
+  }
+
+  /// a voice made under the lowest frequency the plot shows, or over its highest, has no line.
+  /// the axis puts such a pitch at the end it is past, where a line would say it is that end's
+  #[test]
+  fn a_pitch_past_the_plot_draws_no_line_off_it() {
+    let mut feed = vec![FLOOR_DB; SLOTS];
+    feed[PITCH_SLOT] = 220.0;
+    // key 28 shifted down two octaves, and one past the highest
+    let made = [10.3, 440.0, 21_000.0];
+    for (slot, hz) in VOICE_SLOTS.zip(made) {
+      feed[slot] = hz;
+    }
+    let flat = spectrum(&feed);
+    let edge = SCREEN_AT.x + SCREEN_SIZE.x / 2.0;
+    let mut pitch_lines = 0;
+    for shape in flat.shapes() {
+      if let Shape::Line { from, to, .. } = shape {
+        for [x, _] in [from, to] {
+          assert!((PLOT[0].x..=edge).contains(x), "a line at {x}");
+        }
+        pitch_lines += usize::from(from[1] == PLOT[1].y && to[1] == PLOT[0].y);
+      }
+    }
+    // the input's and the one voice inside the plot's, and none for the others
+    assert_eq!(pitch_lines, 2);
   }
 
   /// the scene with every control halfway, nothing typed and a pitch on the screen
