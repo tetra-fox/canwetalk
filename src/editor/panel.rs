@@ -30,8 +30,8 @@ const LEAN: Vec2 = Vec2::new(0.0, -0.3);
 /// how wide the rack ear at each end of the plate is
 const EAR: f32 = 32.0;
 /// the ends of the room the controls have across the panel, clear of the ears
-const LEFT: f32 = EAR + 14.0;
-const RIGHT: f32 = WIDTH - EAR - 14.0;
+const LEFT: f32 = EAR + 10.0;
+const RIGHT: f32 = WIDTH - EAR - 10.0;
 /// the light built into the hardware
 const CYAN: Vec3 = Vec3::new(0.2, 0.85, 1.0);
 /// the color of the caret and the selection while a value is typed
@@ -49,10 +49,10 @@ const LIT_WEIGHT: f32 = 0.13;
 const HEADING_LIT: f32 = 1.0;
 const LABEL_LIT: f32 = 0.85;
 /// the windows the controls' values show in
-const WINDOW: Vec2 = Vec2::new(66.0, 17.0);
+const WINDOW: Vec2 = Vec2::new(64.0, 17.0);
 /// how much wider and taller the rim around a window is than the window, and how high it
 /// stands over the glass
-const WINDOW_FRAME: f32 = 6.0;
+const WINDOW_FRAME: f32 = 4.0;
 const WINDOW_RIM: f32 = 1.8;
 /// how high the glass of a window is, which what it shows is lit on
 const GLASS_UP: f32 = 0.5;
@@ -93,7 +93,8 @@ const DARK: f32 = 0.1;
 /// how bright a shift's ring is over what formant follow adds to the shift
 const FOLLOW_LIT: f32 = 0.35;
 /// the field each group of controls is set in: how wide its rim is, how high and the radius
-/// of its corners, and the room inside it over the group's name and under its windows
+/// of its corners, and the room inside it over the group's name, under its windows and at
+/// either end of its controls
 const FIELD_BORDER: f32 = 3.0;
 const FIELD_UP: f32 = 1.6;
 const FIELD_CORNER: f32 = 6.0;
@@ -296,7 +297,7 @@ impl Kind {
       Self::Shift => 140.0,
       // room for the names printed out to its sides
       Self::Selector { printed: true, .. } => 94.0,
-      Self::Knob | Self::Selector { printed: false, .. } => 76.0,
+      Self::Knob | Self::Selector { printed: false, .. } => 72.0,
       Self::Switch => 70.0,
     }
   }
@@ -453,6 +454,21 @@ struct Field {
   y: f32,
 }
 
+/// the kinds of the controls in `groups`
+fn kinds(groups: &[(&str, &[Control])]) -> impl Iterator<Item = Kind> {
+  (groups.iter()).flat_map(|(_, controls)| controls.iter().map(|control| control.kind()))
+}
+
+/// the room down the panel a set of controls takes under their names for windows: the gap
+/// over the windows and the windows with their rims, or none if none of them has a window
+fn window_band(mut kinds: impl Iterator<Item = Kind>) -> [f32; 2] {
+  if kinds.any(Kind::has_window) {
+    [NAME_GAP, WINDOW.y + WINDOW_FRAME]
+  } else {
+    [0.0, 0.0]
+  }
+}
+
 /// where each control is, in the order of [`Control::ALL`], and the fields the groups of
 /// controls and the screen are set in. `border` is the width of the screen's bezel
 fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
@@ -460,14 +476,8 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
   let mut fields = Vec::new();
   // each row's parts down the panel, from the top of its fields to their foot
   let bands = GROUPS.map(|groups| {
-    let kinds =
-      || (groups.iter()).flat_map(|(_, controls)| controls.iter().map(|control| control.kind()));
-    let largest = |of: fn(Kind) -> f32| kinds().map(of).fold(0.0, f32::max);
-    let (name_gap, window) = if kinds().any(Kind::has_window) {
-      (NAME_GAP, WINDOW.y + WINDOW_FRAME)
-    } else {
-      (0.0, 0.0)
-    };
+    let largest = |of: fn(Kind) -> f32| kinds(groups).map(of).fold(0.0, f32::max);
+    let [name_gap, window] = window_band(kinds(groups));
     [
       FIELD_PAD,
       HEADING_TALL,
@@ -518,8 +528,9 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
   ];
   for ((&row, groups), (room, how)) in rows.iter().zip(GROUPS).zip(rooms) {
     let widths: Vec<f32> = (groups.iter())
-      .map(|(_, controls)| slots(controls).iter().sum())
+      .map(|(_, controls)| slots(controls).iter().sum::<f32>() + 2.0 * FIELD_PAD)
       .collect();
+    let row_window: f32 = window_band(kinds(groups)).iter().sum();
     for (&(name, controls), span) in groups.iter().zip(pack(room, &widths, how)) {
       fields.push(Field {
         name,
@@ -527,9 +538,21 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
         down: row.field,
         y: row.heading,
       });
+      // a group with no windows in a row that has them sits halfway down into the room the
+      // windows take, which sets it in the middle of its field
+      let drop = row_window
+        - window_band(controls.iter().map(|control| control.kind()))
+          .iter()
+          .sum::<f32>();
+      let row = Row {
+        middle: row.middle + drop / 2.0,
+        name: row.name + drop / 2.0,
+        ..row
+      };
+      let inside = [span[0] + FIELD_PAD, span[1] - FIELD_PAD];
       for (&control, slot) in controls
         .iter()
-        .zip(pack(span, &slots(controls), Pack::Start))
+        .zip(pack(inside, &slots(controls), Pack::Start))
       {
         spots[control as usize] = Some(Spot {
           x: middle(slot),
