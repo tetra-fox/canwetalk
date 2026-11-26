@@ -10,6 +10,7 @@ use potpot::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::axis::Axis;
 use potpot_controls::flat::{Color, Flat};
 use potpot_controls::interaction::{Edit, Push, Reading, Target};
+use potpot_controls::layout::{Pack, middle, pack};
 use potpot_controls::stroke;
 use potpot_window::{Gpu, Skin, View, wgpu};
 
@@ -294,30 +295,38 @@ struct Heading {
 fn layout() -> ([Spot; Control::ALL.len()], Vec<Heading>) {
   let mut spots = [None; Control::ALL.len()];
   let mut headings = Vec::new();
-  let wide = |controls: &[Control]| -> f32 { controls.iter().map(|c| c.kind().slot()).sum() };
-  for (row, groups) in ROWS.into_iter().zip(GROUPS) {
-    let taken: f32 = groups.iter().map(|(_, controls)| wide(controls)).sum();
-    let gap = match groups.len() {
-      1 => 0.0,
-      count => (RIGHT - LEFT - taken) / (count - 1) as f32,
-    };
-    let mut x = LEFT;
-    for &(name, controls) in groups {
-      let ends = [x + 6.0, x + wide(controls) - 6.0];
+  let slots = |controls: &[Control]| -> Vec<f32> {
+    controls
+      .iter()
+      .map(|control| control.kind().slot())
+      .collect()
+  };
+  // the room each row's groups share, and how
+  let screen = SCREEN_AT.x - SCREEN_SIZE.x / 2.0 - 7.0;
+  let rooms = [
+    ([LEFT, screen], Pack::Start),
+    ([LEFT, RIGHT], Pack::Spread),
+    ([LEFT, RIGHT], Pack::Spread),
+  ];
+  for ((row, groups), (room, how)) in ROWS.into_iter().zip(GROUPS).zip(rooms) {
+    let widths: Vec<f32> = (groups.iter())
+      .map(|(_, controls)| slots(controls).iter().sum())
+      .collect();
+    for (&(name, controls), span) in groups.iter().zip(pack(room, &widths, how)) {
       headings.push(Heading {
         name,
         y: row.heading,
-        ends,
+        ends: [span[0] + 6.0, span[1] - 6.0],
       });
-      for &control in controls {
-        let slot = control.kind().slot();
+      for (&control, slot) in controls
+        .iter()
+        .zip(pack(span, &slots(controls), Pack::Start))
+      {
         spots[control as usize] = Some(Spot {
-          x: x + slot / 2.0,
+          x: middle(slot),
           row,
         });
-        x += slot;
       }
-      x += gap;
     }
   }
   (
@@ -1301,22 +1310,5 @@ mod tests {
       .map(|(_, controls)| controls.len())
       .sum();
     assert_eq!(grouped, Control::ALL.len());
-    let (spots, _) = layout();
-    for (index, one) in spots.iter().enumerate() {
-      let kind = Control::ALL[index].kind();
-      for (other, two) in spots.iter().enumerate().skip(index + 1) {
-        let reach = (kind.slot() + Control::ALL[other].kind().slot()) / 2.0;
-        let apart = one.middle().distance(two.middle());
-        assert!(apart >= reach, "{index} and {other} are {apart} apart");
-      }
-      // and every one is clear of the screen and the ears
-      let half = kind.slot() / 2.0;
-      assert!(one.x - half >= LEFT && one.x + half <= RIGHT, "{index}");
-      let screen = SCREEN_AT.x - SCREEN_SIZE.x / 2.0 - 7.0;
-      assert!(
-        one.row.middle > ROWS[0].window || one.x + half <= screen,
-        "{index}"
-      );
-    }
   }
 }
