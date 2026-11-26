@@ -196,7 +196,7 @@ impl Kind {
     match self {
       Self::Shift => Some(Turned::Shift),
       Self::Knob => Some(Turned::Small),
-      Self::Selector { .. } => Some(Turned::Pointed),
+      Self::Selector { choices } => Some(Turned::Pointed { choices }),
       Self::Switch => None,
     }
   }
@@ -417,58 +417,62 @@ impl Lettering {
   }
 }
 
-/// the knobs the controls are turned by: the shifts' skirted and large, the others' small, and
-/// the selectors' pointed
+/// the knob the shifts are turned by, skirted and large
+fn shift_knob() -> parts::Knob {
+  parts::Knob {
+    skirt: 0.2,
+    ..parts::Knob::skirted(36.0, 30.0)
+  }
+}
+
+/// the knob the other controls that turn smoothly are turned by
+fn small_knob() -> parts::Knob {
+  parts::Knob {
+    top: parts::Top::Flat,
+    ..parts::Knob::knurled(16.0, 18.0)
+  }
+}
+
+/// the knob a selector is turned by, which points
+fn pointed_knob() -> parts::Knob {
+  parts::Knob::chicken_head(15.0, 16.0)
+}
+
+/// the knob a control is turned by, and for a pointed one how many choices it stops at
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Turned {
   Shift,
   Small,
-  Pointed,
+  Pointed { choices: usize },
 }
 
 /// meshes and what each is made of
 type Parts = Vec<(Arc<Mesh>, Material)>;
 
-impl Turned {
-  fn knob(self) -> parts::Knob {
-    match self {
-      Self::Shift => parts::Knob {
-        skirt: 0.2,
-        ..parts::Knob::skirted(36.0, 30.0)
-      },
-      Self::Small => parts::Knob {
-        top: parts::Top::Flat,
-        ..parts::Knob::knurled(16.0, 18.0)
-      },
-      Self::Pointed => parts::Knob::chicken_head(15.0, 16.0),
-    }
+/// the meshes of a knob: its body, the face let into it if it has `face`, and the line painted
+/// on it
+fn knob_parts(knob: parts::Knob, face: bool) -> Parts {
+  let body = Material {
+    reflect: 0.9,
+    ..Material::glossy(Vec3::new(0.06, 0.06, 0.065))
+  };
+  // tight enough that its bright wedges stay apart under the light, where it glances off the
+  // whole face at nearly one angle
+  let spun = Material {
+    specular: 1.0,
+    shininess: 160.0,
+    ..Material::spun(Vec3::new(0.42, 0.43, 0.46))
+  };
+  let line = Material::matte(Vec3::splat(0.92));
+  let mut parts = vec![(Arc::new(knob.body()), body)];
+  if face {
+    parts.push((Arc::new(knob.cap(0.74)), spun));
   }
-
-  /// the knob's body, the face let into it unless it is pointed, and the line painted on it
-  fn parts(self) -> Parts {
-    let knob = self.knob();
-    let body = Material {
-      reflect: 0.9,
-      ..Material::glossy(Vec3::new(0.06, 0.06, 0.065))
-    };
-    // tight enough that its bright wedges stay apart under the light, where it glances off the
-    // whole face at nearly one angle
-    let spun = Material {
-      specular: 1.0,
-      shininess: 160.0,
-      ..Material::spun(Vec3::new(0.42, 0.43, 0.46))
-    };
-    let line = Material::matte(Vec3::splat(0.92));
-    let mut parts = vec![(Arc::new(knob.body()), body)];
-    if self != Self::Pointed {
-      parts.push((Arc::new(knob.cap(0.74)), spun));
-    }
-    parts.push((Arc::new(knob.line()), line));
-    parts
-  }
+  parts.push((Arc::new(knob.line()), line));
+  parts
 }
 
-/// the parts of each knob, made once
+/// the parts of each knob, made once. a pointed knob has no face let into it
 struct Knobs {
   shift: Parts,
   small: Parts,
@@ -478,9 +482,9 @@ struct Knobs {
 impl Knobs {
   fn new() -> Self {
     Self {
-      shift: Turned::Shift.parts(),
-      small: Turned::Small.parts(),
-      pointed: Turned::Pointed.parts(),
+      shift: knob_parts(shift_knob(), true),
+      small: knob_parts(small_knob(), true),
+      pointed: knob_parts(pointed_knob(), false),
     }
   }
 
@@ -488,7 +492,7 @@ impl Knobs {
     match turned {
       Turned::Shift => &self.shift,
       Turned::Small => &self.small,
-      Turned::Pointed => &self.pointed,
+      Turned::Pointed { .. } => &self.pointed,
     }
   }
 }
@@ -624,47 +628,45 @@ impl Front {
     for (index, (control, spot)) in Control::ALL.into_iter().zip(spots).enumerate() {
       let kind = control.kind();
       let Vec2 { x, y } = spot.middle();
-      match kind {
-        Kind::Shift | Kind::Knob => {
-          // each knob stands in a polished ring, with a scale of marks around it
-          let (turned, ring, marks, long_every, ticks) = match kind {
-            Kind::Shift => (Turned::Shift, 7.6, 25, 6, [11.5, 14.5]),
-            _ => (Turned::Small, 4.6, 11, 5, [7.5, 10.5]),
-          };
-          let radius = turned.knob().radius;
-          // the formant's ring of lights stands on a low black ring where the others' polished
-          // one does
-          let (bezel, up) = match control {
-            Control::Formant => (hole, 0.3),
-            _ => (chrome, ring * 0.45),
-          };
-          let bezel_mesh = parts::bezel(radius + 0.9, radius + ring, up);
-          put(bezel_mesh, x, y, 0.0, bezel, None);
-          let [inner, outer] = ticks.map(|out| radius + out);
-          let scale = parts::ticks(marks, parts::KNOB_SWEEP, inner, outer, long_every);
-          put(scale, x, y, 0.0, ink, None);
-          // the shifts have figures outside their marks, spread evenly from one end of the turn
-          // to the other
-          if turned == Turned::Shift {
-            let figures = ["-24", "-12", "0", "+12", "+24"];
-            for (place, figure) in figures.iter().enumerate() {
-              let turn = place as f32 / (figures.len() - 1) as f32;
-              let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
-              let out = radius + 25.0;
-              put(
-                parts::legend(figure, 6.5, 0.95),
-                x + out * sin,
-                y - out * cos,
-                0.0,
-                ink,
-                None,
-              );
-            }
+      // each knob that turns smoothly stands in a polished ring, with a scale of marks around
+      // it at `ticks` out from its edge. the formant's ring of lights stands on a low black
+      // ring where the others' polished one does
+      let mut ringed = |radius: f32, ring: f32, marks: u32, long_every: u32, ticks: [f32; 2]| {
+        let (bezel, up) = match control {
+          Control::Formant => (hole, 0.3),
+          _ => (chrome, ring * 0.45),
+        };
+        let bezel_mesh = parts::bezel(radius + 0.9, radius + ring, up);
+        put(bezel_mesh, x, y, 0.0, bezel, None);
+        let [inner, outer] = ticks.map(|out| radius + out);
+        let scale = parts::ticks(marks, parts::KNOB_SWEEP, inner, outer, long_every);
+        put(scale, x, y, 0.0, ink, None);
+      };
+      match kind.turned() {
+        Some(Turned::Shift) => {
+          let radius = shift_knob().radius;
+          ringed(radius, 7.6, 25, 6, [11.5, 14.5]);
+          // the shifts have figures outside their marks, spread evenly from one end of the
+          // turn to the other
+          let figures = ["-24", "-12", "0", "+12", "+24"];
+          for (place, figure) in figures.iter().enumerate() {
+            let turn = place as f32 / (figures.len() - 1) as f32;
+            let (sin, cos) = ((turn - 0.5) * parts::KNOB_SWEEP).sin_cos();
+            let out = radius + 25.0;
+            put(
+              parts::legend(figure, 6.5, 0.95),
+              x + out * sin,
+              y - out * cos,
+              0.0,
+              ink,
+              None,
+            );
           }
         }
-        Kind::Selector { choices } => {
+        Some(Turned::Small) => ringed(small_knob().radius, 4.6, 11, 5, [7.5, 10.5]),
+        Some(Turned::Pointed { choices }) => {
           // a long mark at each choice, past the pointer's tip
-          let radius = Turned::Pointed.knob().radius;
+          let radius = pointed_knob().radius;
           let marks = parts::ticks(
             choices as u32,
             parts::KNOB_SWEEP,
@@ -674,7 +676,7 @@ impl Front {
           );
           put(marks, x, y, 0.0, ink, None);
         }
-        Kind::Switch => {
+        None => {
           put(switch.plunger.seat(1.2), x, y, 0.0, hole, None);
           put(switch.collar(), x, y, 0.0, chrome, None);
         }
@@ -795,7 +797,6 @@ impl Front {
     Self {
       spots,
       fixed,
-      // made for one control of each of those kinds
       knobs: Knobs::new(),
       plunger: Arc::new(switch.plunger()),
       ring_light: Arc::new(formant_ring().segment()),
@@ -974,7 +975,7 @@ impl Front {
 
 /// the lights around the formant's knob, one between each two of its marks
 fn formant_ring() -> LedRing {
-  let radius = Turned::Shift.knob().radius;
+  let radius = shift_knob().radius;
   LedRing::new(24, radius + 4.3, 4.0)
 }
 
