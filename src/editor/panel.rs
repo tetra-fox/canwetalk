@@ -15,7 +15,9 @@ use potpot_window::{Gpu, Skin, View, wgpu};
 
 use super::{Control, Kind, note};
 use crate::params::SHIFT_SEMITONES;
-use crate::spectrum::{BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, PITCH_SLOT};
+use crate::spectrum::{
+  BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, INPUT_BANDS, OUTPUT_BANDS, PITCH_SLOT, VOICE_SLOTS,
+};
 
 pub(super) const WIDTH: f32 = 920.0;
 pub(super) const HEIGHT: f32 = 500.0;
@@ -74,22 +76,29 @@ const PLOT: [Vec2; 2] = [
 const NOTE_X: f32 = SCREEN_AT.x + SCREEN_SIZE.x / 2.0 - 40.0;
 /// where across the panel the line is that sets the note's column apart
 const NOTE_LINE: f32 = PLOT[1].x + 6.0;
-/// how tall the note's name is written
-const NOTE_TALL: f32 = 18.0;
+/// how tall the input's note is written, and the notes the voices make
+const NOTE_TALL: f32 = 13.0;
+const MADE_TALL: f32 = 10.0;
+/// how many of the voices' notes are written, the latest first. the rest are counted
+const MADE_NAMES: usize = 3;
 /// the levels the spectrum is drawn over, in decibels, and the ones a line is drawn across at
 const LEVELS: Axis = Axis::linear([FLOOR_DB, 0.0]);
 const LEVEL_LINES: [f32; 4] = [-18.0, -36.0, -54.0, -72.0];
 /// the frequencies a line is drawn up at, those named under them
 const HERTZ_LINES: [f32; 8] = [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0];
 const HERTZ_NAMES: [(f32, &str); 3] = [(100.0, "100"), (1000.0, "1K"), (10_000.0, "10K")];
-/// the colors on the screen: its face, its lines, their names, the spectrum's fill under its
-/// edge, the edge and the detected pitch
+/// the colors on the screen: its face, its lines, their names, the input spectrum's fill under
+/// its edge, the edge and the detected pitch, then the output spectrum's edge, the pitches the
+/// voices make and the names of the output's lines
 const FACE: Vec3 = Vec3::new(0.014, 0.011, 0.008);
 const GRID: Color = [0.12, 0.075, 0.03, 1.0];
 const LABELS: Color = [0.42, 0.27, 0.08, 1.0];
 const FILL: Color = [0.3, 0.16, 0.03, 1.0];
 const EDGE: Color = [1.0, 0.66, 0.14, 1.0];
 const PITCH: Color = [1.0, 0.92, 0.75, 1.0];
+const MADE: Color = [0.45, 0.9, 1.0, 1.0];
+const MADE_PITCH: Color = [0.3, 0.62, 0.72, 1.0];
+const MADE_LABELS: Color = [0.16, 0.36, 0.42, 1.0];
 
 /// a row of controls across the panel, by where its parts are down it: the names of its
 /// groups, the middles of its controls, the names under them and the windows their values
@@ -1045,32 +1054,69 @@ fn lines() -> Flat {
   flat
 }
 
-/// what the screen shows of the feed: the level of each band of the spectrum as a curve over
-/// a fill, and beside it the note nearest the detected pitch, how many cents off it the pitch
-/// is and the pitch itself. the pitch is marked on the spectrum too. with none detected the
-/// note is two dashes
+/// what the screen shows of the feed: the level of each band of the input's spectrum as a
+/// curve over a fill, the output's as a curve over that, and a line up at the detected pitch
+/// and at each pitch a voice makes. beside them are the note nearest the detected pitch, how
+/// many cents off it the pitch is and the pitch itself, and under those the notes the latest
+/// voices make, with a count of the others. a note there is none of is two dashes
 fn spectrum(feed: &[f32]) -> Flat {
   let mut flat = Flat::default();
-  let curve: Vec<[f32; 2]> = (feed[..BANDS].iter().enumerate())
-    .map(|(band, level)| {
-      let across = (band as f32 + 0.5) / BANDS as f32;
-      plotted([across, LEVELS.turn(*level)])
-    })
+  let curve = |first: usize| -> Vec<[f32; 2]> {
+    (feed[first..first + BANDS].iter().enumerate())
+      .map(|(band, level)| {
+        let across = (band as f32 + 0.5) / BANDS as f32;
+        plotted([across, LEVELS.turn(*level)])
+      })
+      .collect()
+  };
+  let heard = curve(INPUT_BANDS);
+  flat.area(&heard, PLOT[1].y, FILL);
+  flat.curve(&heard, 1.5, EDGE);
+  // the output is an edge alone over the input's, which leaves the input's fill to show
+  flat.curve(&curve(OUTPUT_BANDS), 1.2, MADE);
+  let up = |flat: &mut Flat, hz: f32, color: Color| {
+    let across = HERTZ.turn(hz);
+    flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, color);
+  };
+  let made: Vec<f32> = (feed[VOICE_SLOTS].iter().copied())
+    .filter(|&hz| hz > 0.0)
     .collect();
-  flat.area(&curve, PLOT[1].y, FILL);
-  flat.curve(&curve, 1.5, EDGE);
+  for &hz in &made {
+    up(&mut flat, hz, MADE_PITCH);
+  }
+
+  // the column beside the plot: the input's note over the notes the voices make
+  flat.centered("IN", [NOTE_X, SCREEN_AT.y - 56.0], 5.0, 1.0, LABELS);
   let hz = feed[PITCH_SLOT];
   if hz > 0.0 {
-    let across = HERTZ.turn(hz);
-    flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, PITCH);
+    up(&mut flat, hz, PITCH);
     let (name, cents) = note::nearest(hz);
-    flat.centered(&name, [NOTE_X, SCREEN_AT.y - 24.0], NOTE_TALL, 2.6, EDGE);
+    flat.centered(&name, [NOTE_X, SCREEN_AT.y - 42.0], NOTE_TALL, 2.2, EDGE);
     let cents = format!("{cents:+} CT");
-    flat.centered(&cents, [NOTE_X, SCREEN_AT.y + 8.0], 7.0, 1.3, EDGE);
+    flat.centered(&cents, [NOTE_X, SCREEN_AT.y - 28.0], 5.5, 1.1, EDGE);
     let hertz = format!("{hz:.1} HZ");
-    flat.centered(&hertz, [NOTE_X, SCREEN_AT.y + 24.0], 5.5, 1.1, LABELS);
+    flat.centered(&hertz, [NOTE_X, SCREEN_AT.y - 19.0], 5.0, 1.0, LABELS);
   } else {
-    flat.centered("--", [NOTE_X, SCREEN_AT.y - 24.0], NOTE_TALL, 2.6, LABELS);
+    flat.centered("--", [NOTE_X, SCREEN_AT.y - 42.0], NOTE_TALL, 2.2, LABELS);
+  }
+  flat.centered("OUT", [NOTE_X, SCREEN_AT.y - 4.0], 5.0, 1.0, MADE_LABELS);
+  if made.is_empty() {
+    flat.centered(
+      "--",
+      [NOTE_X, SCREEN_AT.y + 10.0],
+      MADE_TALL,
+      1.8,
+      MADE_LABELS,
+    );
+  }
+  for (row, &hz) in made.iter().take(MADE_NAMES).enumerate() {
+    let (name, _) = note::nearest(hz);
+    let y = SCREEN_AT.y + 10.0 + 14.0 * row as f32;
+    flat.centered(&name, [NOTE_X, y], MADE_TALL, 1.8, MADE);
+  }
+  if let Some(more) = made.len().checked_sub(MADE_NAMES).filter(|&more| more > 0) {
+    let more = format!("+{more}");
+    flat.centered(&more, [NOTE_X, SCREEN_AT.y + 51.0], 5.5, 1.1, MADE_LABELS);
   }
   flat
 }

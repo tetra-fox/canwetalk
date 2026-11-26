@@ -1080,13 +1080,20 @@ mod tests {
     );
   }
 
-  /// draws the editor after a voice has played through the plugin, so that its screen shows
-  /// the voice's spectrum and note and the ring around the formant what formant follow adds.
+  /// draws the editor after a voice has played through the plugin under four held notes,
+  /// shifted, so that its screen shows the spectra of the voice and of the output, the voice's
+  /// note and the notes played, and the ring around the formant what formant follow adds.
   /// `just picture` writes it to a png file
   #[test]
   #[ignore = "needs a graphics device"]
   fn the_editor_draws_what_the_plugin_hears() {
     let take = Take {
+      played: vec![
+        on(200, 0, 57),
+        on(300, 0, 60),
+        on(400, 0, 64),
+        on(500, 0, 67),
+      ],
       set: vec![
         (0, "pitch", 7.0),
         (0, "formant", -5.0),
