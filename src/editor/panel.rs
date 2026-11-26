@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use potpot::glam::{Mat4, Vec2, Vec3};
-use potpot::parts::{self, PushSwitch, Screen};
+use potpot::parts::{self, LedRing, PushSwitch, Screen};
 use potpot::{Lamp, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::axis::Axis;
 use potpot_controls::flat::{Color, Flat};
@@ -14,7 +14,8 @@ use potpot_controls::stroke;
 use potpot_window::{Gpu, Skin, View, wgpu};
 
 use super::{Control, Kind, note};
-use crate::spectrum::{BANDS, FLOOR_DB, HERTZ, PITCH_SLOT};
+use crate::params::SHIFT_SEMITONES;
+use crate::spectrum::{BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, PITCH_SLOT};
 
 pub(super) const WIDTH: f32 = 920.0;
 pub(super) const HEIGHT: f32 = 500.0;
@@ -223,7 +224,7 @@ impl Control {
     match self {
       Self::Pitch => "PITCH",
       Self::Formant => "FORMANT",
-      Self::FormantFollow => "FOLLOW",
+      Self::FormantFollow => "F. FOLLOW",
       Self::Smooth => "SMOOTH",
       Self::Detune => "DETUNE",
       Self::Smear => "SMEAR",
@@ -462,6 +463,8 @@ struct Front {
   knobs: [Vec<(Arc<Mesh>, Material)>; 3],
   switch: PushSwitch,
   plunger: Arc<Mesh>,
+  /// one light of the ring around the formant's knob
+  ring_light: Arc<Mesh>,
   lamp: Arc<Mesh>,
   glass: Arc<Mesh>,
   /// the lettering of what each window shows, kept for as long as it shows that
@@ -585,14 +588,14 @@ impl Front {
             Kind::Shift => (7.6, 25, 6, [11.5, 14.5]),
             _ => (4.6, 11, 5, [7.5, 10.5]),
           };
-          put(
-            parts::bezel(radius + 0.9, radius + ring, ring * 0.45),
-            x,
-            y,
-            0.0,
-            chrome,
-            None,
-          );
+          // the formant's ring of lights stands on a low black ring where the others' polished
+          // one does
+          let (bezel, up) = match control {
+            Control::Formant => (hole, 0.3),
+            _ => (chrome, ring * 0.45),
+          };
+          let bezel_mesh = parts::bezel(radius + 0.9, radius + ring, up);
+          put(bezel_mesh, x, y, 0.0, bezel, None);
           let [inner, outer] = ticks.map(|out| radius + out);
           let scale = parts::ticks(marks, parts::KNOB_SWEEP, inner, outer, long_every);
           put(scale, x, y, 0.0, ink, None);
@@ -657,6 +660,7 @@ impl Front {
     let grid = parts::picture(&lines(), x, y, glass, 0);
     let grid_objects = grid.len();
     fixed.extend(grid);
+    let ring = formant_ring();
 
     // a black strip between the ears along the bottom. the plugin's name is on it in
     // slanted letters over a red stroke, then what it is, a maker's plate riveted on, and
@@ -751,6 +755,7 @@ impl Front {
       // made for one control of each of those kinds
       knobs: [Control::Pitch, Control::Mix, Control::Detect].map(|one| knob_parts(one.kind())),
       plunger: Arc::new(switch.plunger()),
+      ring_light: Arc::new(ring.segment()),
       switch,
       lamp: Arc::new(parts::led(LAMP_SIZE)),
       glass: Arc::new(Mesh::cuboid(
@@ -811,6 +816,20 @@ impl Front {
       let transform = parts::knob_transform(x, y, reading.value, parts::KNOB_SWEEP);
       for (mesh, material) in knob {
         drawn.place(mesh, transform, *material, target);
+      }
+      if control == Control::Formant {
+        // lit from where the knob points on by what formant follow adds to the formants of
+        // the voice that started last. a run past either end of the scale stops there, which
+        // is as far as the ring shows, though the shifter moves the formants further
+        let followed = feed[FOLLOW_SLOT] / (2.0 * SHIFT_SEMITONES);
+        let run = [reading.value, reading.value + followed];
+        let ring = formant_ring();
+        let lights = ring.lights(&self.ring_light, x, y, run, LAMP_COLOR);
+        // stood on the black ring
+        drawn.extend(lights.map(|light| Object {
+          transform: Mat4::from_translation(Vec3::Z * 0.3) * light.transform,
+          ..light
+        }));
       }
       let edit = edit.filter(|edit| edit.control == index);
       let Reading { text, unit, .. } = reading;
@@ -910,6 +929,12 @@ impl Front {
     }
     self.readouts[index] = Some(lettering);
   }
+}
+
+/// the lights around the formant's knob, one between each two of its marks
+fn formant_ring() -> LedRing {
+  let radius = Kind::Shift.knob().expect("it is turned by a knob").radius;
+  LedRing::new(24, radius + 4.3, 4.0)
 }
 
 /// the face of the screen, which what it shows is lit on

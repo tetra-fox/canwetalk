@@ -12,7 +12,7 @@ use crate::shifter::{Settings, Vibrato};
 use crate::voice::Expression;
 
 /// the pitch and formant controls reach this far either way
-const SHIFT_SEMITONES: f32 = 24.0;
+pub(crate) const SHIFT_SEMITONES: f32 = 24.0;
 /// the time a smoothed control takes to reach a new value
 const RAMP: SmoothingStyle = SmoothingStyle::Linear(100.0);
 

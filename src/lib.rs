@@ -1046,11 +1046,19 @@ mod tests {
 
   /// with CANWETALK_PICTURE naming a png file, draws the editor there at twice its size after
   /// a voice has played through the plugin, so that its screen shows the voice's spectrum and
-  /// note
+  /// note and the ring around the formant what formant follow adds
   #[test]
   #[ignore = "needs a graphics device"]
   fn the_editor_draws_what_the_plugin_hears() {
-    let (plugin, _) = run(&Take::new(RATE, voice(RATE, 1.0, 220.0)), &[512]);
+    let take = Take {
+      set: vec![
+        (0, "pitch", 7.0),
+        (0, "formant", -5.0),
+        (0, "formant_follow", 0.8),
+      ],
+      ..Take::new(RATE, voice(RATE, 1.0, 220.0))
+    };
+    let (plugin, _) = run(&take, &[512]);
     let editor = editor::editor(plugin.params.clone(), plugin.feed.clone())
       .expect("every control is bound to one of the plugin's parameters");
     let picture = editor.picture(2.0).expect("the editor is drawn");
