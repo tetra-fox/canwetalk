@@ -312,6 +312,7 @@ mod tests {
 
   use nice_plug::context::process::SendEventError;
   use nice_plug::midi::VoiceID;
+  use nice_plug::params::internals::ParamPtr;
 
   use super::*;
   use crate::signals::vowel_sampled_at;
@@ -1152,12 +1153,17 @@ mod tests {
         fields: Default::default(),
       };
       CanWeTalk::filter_state(&mut state);
-      let id = Range::ids().expect("the detection ranges have ids")[range.to_index()];
-      let loaded = &state.params["detect"];
-      assert!(
-        matches!(loaded, ParamValue::String(saved) if saved == id),
-        "{index} loads as {loaded:?}"
-      );
+      let ParamValue::String(id) = &state.params["detect"] else {
+        panic!("{index} is not taken to an id");
+      };
+      // what nice-plug does with an id it loads for an enum parameter, to the parameter itself
+      let params = CanWeTalkParams::default();
+      let ParamPtr::EnumParam(detect) = params.detect.as_ptr() else {
+        panic!("the detection range is an enum parameter");
+      };
+      // SAFETY: the pointer is into `params`, which lives to the end of the loop's turn
+      assert!(unsafe { (*detect).set_from_id(id) }, "{id} is an id");
+      assert_eq!(params.detect.value(), range, "{index} loads as {id}");
     }
   }
 
