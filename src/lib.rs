@@ -1101,7 +1101,7 @@ mod tests {
   /// draws the editor after a voice has played through the plugin under four held notes,
   /// shifted, so that its screen shows the spectra of the voice and of the output, the voice's
   /// note and the notes played, and the ring around the formant what formant follow adds.
-  /// `just picture` writes it to a png file
+  /// `just picture` writes it to a png file, and its first sample to another if asked
   #[test]
   #[ignore = "needs a graphics device"]
   fn the_editor_draws_what_the_plugin_hears() {
@@ -1123,16 +1123,23 @@ mod tests {
     let editor = editor::editor(plugin.params.clone(), plugin.feed.clone())
       .expect("every control is bound to one of the plugin's parameters");
     let picture = editor.picture(2.0).expect("the editor is drawn");
-    let Some(path) = std::env::var_os("CANWETALK_PICTURE") else {
-      return;
-    };
-    let file = std::fs::File::create(path).expect("the png file can be made");
-    let [width, height] = picture.size;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().expect("the png header is written");
-    (writer.write_image_data(&picture.pixels)).expect("the png pixels are written");
+    // the picture refined until settled, and its first sample before that
+    let written = [
+      ("CANWETALK_PICTURE", &picture.pixels),
+      ("CANWETALK_FIRST_PICTURE", &picture.first),
+    ];
+    for (variable, pixels) in written {
+      let Some(path) = std::env::var_os(variable) else {
+        continue;
+      };
+      let file = std::fs::File::create(path).expect("the png file can be made");
+      let [width, height] = picture.size;
+      let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+      encoder.set_color(png::ColorType::Rgba);
+      encoder.set_depth(png::BitDepth::Eight);
+      let mut writer = encoder.write_header().expect("the png header is written");
+      (writer.write_image_data(pixels)).expect("the png pixels are written");
+    }
   }
 
   /// what the ring around the formant shows: the semitones formant follow adds to the formants

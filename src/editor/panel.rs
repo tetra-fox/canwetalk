@@ -1778,6 +1778,10 @@ impl Skin for Panel {
     self.renderer.changed()
   }
 
+  fn settled(&self) -> bool {
+    self.renderer.settled()
+  }
+
   fn target_at(&self, at: [f32; 2]) -> Option<Target> {
     let object = self.renderer.pick(at.into())?;
     self.targets[object]
