@@ -1101,7 +1101,8 @@ mod tests {
   /// draws the editor after a voice has played through the plugin under four held notes,
   /// shifted, so that its screen shows the spectra of the voice and of the output, the voice's
   /// note and the notes played, and the ring around the formant what formant follow adds.
-  /// `just picture` writes it to a png file, and its first sample to another if asked
+  /// `just picture` writes it to a png file, and its first sample goes to the file
+  /// `CANWETALK_FIRST_PICTURE` names, when it names one
   #[test]
   #[ignore = "needs a graphics device"]
   fn the_editor_draws_what_the_plugin_hears() {
