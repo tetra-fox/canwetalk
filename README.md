@@ -12,8 +12,11 @@ long. Each held note gets a voice at that note's pitch, up to 16 at once. While 
 one voice follows the input's own pitch. The spacing of the grains sets the pitch and the speed
 they are read at sets the formants, so the two move separately.
 
-The plugin adds no latency and runs on mono and stereo tracks. Its editor has a control for
-each parameter and shows the input's spectrum and the note nearest its detected pitch.
+The plugin runs on mono and stereo tracks and reports 20 ms of latency to the host. It finds
+the pitch of each sound in that time, before cutting the sound into grains. Live turns the
+latency off for playing through the plugin as it happens, and the first few milliseconds of
+each sound are then cut at the pitch found before it. The editor has a control for each
+parameter and shows the input's spectrum and the note nearest its detected pitch.
 
 https://github.com/user-attachments/assets/6167cec1-cfab-46a3-8f7f-073d8812b617
 
