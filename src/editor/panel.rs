@@ -26,7 +26,7 @@ use crate::spectrum::{
   OUTPUT_LEVEL, PITCH_SLOT, VOICE_SLOTS,
 };
 
-pub(super) const WIDTH: f32 = 920.0;
+pub(super) const WIDTH: f32 = 936.0;
 pub(super) const HEIGHT: f32 = 525.0;
 /// how far a point slides across the picture for each unit of its height: seen a little
 /// from in front
@@ -296,7 +296,10 @@ const ROWS: [&[&[Group]]; 2] = [
           Control::BendRange,
         ],
       ),
-      Group::new("DETECTION", &[Control::Detect, Control::Anchor]),
+      Group::new(
+        "DETECTION",
+        &[Control::Detect, Control::Anchor, Control::Live],
+      ),
     ],
   ],
 ];
@@ -451,6 +454,7 @@ impl Control {
       Self::BendRange => "BEND",
       Self::Detect => "RANGE",
       Self::Anchor => "ANCHOR",
+      Self::Live => "LIVE",
       Self::Mix => "MIX",
     }
   }
@@ -481,6 +485,7 @@ impl Control {
       | Self::BendRange
       | Self::Detect
       | Self::Anchor
+      | Self::Live
       | Self::Mix => 0.0,
     }
   }

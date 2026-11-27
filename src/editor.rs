@@ -47,6 +47,7 @@ enum Control {
   BendRange,
   Detect,
   Anchor,
+  Live,
   Mix,
 }
 
@@ -70,7 +71,7 @@ enum Kind {
 }
 
 impl Control {
-  const ALL: [Self; 25] = [
+  const ALL: [Self; 26] = [
     Self::Pitch,
     Self::Formant,
     Self::FormantFollow,
@@ -95,13 +96,16 @@ impl Control {
     Self::BendRange,
     Self::Detect,
     Self::Anchor,
+    Self::Live,
     Self::Mix,
   ];
 
   fn kind(self) -> Kind {
     match self {
       Self::Pitch | Self::Formant => Kind::Shift,
-      Self::VibratoSync | Self::Latch | Self::GlideNotesOnly | Self::Anchor => Kind::Switch,
+      Self::VibratoSync | Self::Latch | Self::GlideNotesOnly | Self::Anchor | Self::Live => {
+        Kind::Switch
+      }
       Self::VibratoDivision => Kind::Selector {
         choices: Division::variants(),
         printed: false,
@@ -171,6 +175,7 @@ impl Control {
       Self::BendRange => Bound::new(&expression.bend_range, readout),
       Self::Detect => Bound::new(&params.detect, readout),
       Self::Anchor => Bound::new(&params.anchor, readout),
+      Self::Live => Bound::new(&params.live, readout),
       Self::Mix => Bound::new(&params.mix, readout),
     };
     // the shifts in semitones move a whole one at a time, unless turned finely
