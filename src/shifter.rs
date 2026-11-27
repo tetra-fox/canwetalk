@@ -126,6 +126,7 @@ impl Shifter {
         Cycle {
           pitch: 0.0,
           phase: None,
+          onset: false,
         },
         0.0,
       ); BLOCK],
@@ -267,6 +268,7 @@ impl Shifter {
     if let Some(period) = self.detector.push(live[0] + live[1]) {
       self.input_pitch = (2.0 / f64::from(period)).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end());
     }
+    let onset = self.detector.voiced() && self.unvoiced_for > 0;
     self.unvoiced_for = if self.detector.voiced() {
       0
     } else {
@@ -300,6 +302,7 @@ impl Shifter {
     let unmarked = Cycle {
       pitch: self.input_pitch,
       phase: None,
+      onset,
     };
     let cycle = match settings
       .anchor
@@ -308,6 +311,7 @@ impl Shifter {
       Some(Some((period, phase))) => Cycle {
         pitch: (2.0 / period).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end()),
         phase: Some(phase),
+        onset,
       },
       _ => unmarked,
     };
@@ -1173,5 +1177,82 @@ mod tests {
         );
       }
     }
+  }
+
+  /// silence and then a vowel, which the detector finds the pitch of within the lookahead.
+  /// the samples are the input, and the sample the vowel sounds from
+  fn vowel_out_of_silence(hz: f32) -> (Vec<f32>, usize) {
+    let mut input = vec![0.0; RATE as usize / 4];
+    input.extend(vowel_at(RATE as usize / 4, |_| hz));
+    let sounds = input
+      .iter()
+      .position(|&x| x != 0.0)
+      .expect("the vowel sounds");
+    (input, sounds)
+  }
+
+  /// a voice that follows the input makes its grains at the input pitch, shifted. the grains
+  /// of a new sound start as soon as its pitch is found, and not where the spacing of those for
+  /// the silence before it, at the lowest pitch of the range, would put the next one
+  #[test]
+  fn a_voice_following_the_input_starts_a_sound_at_its_pitch() {
+    let (hz, shift) = (200.0, 5.0 / 12.0);
+    let settings = Settings {
+      shape: Shape {
+        pitch: shift,
+        ..NEUTRAL.shape
+      },
+      ..NEUTRAL
+    };
+    let (input, sounds) = vowel_out_of_silence(hz);
+    let mut shifter = shifter_in(&settings);
+    let mut made = Vec::new();
+    for (index, &x) in input.iter().enumerate() {
+      shifter.process(&mut [[x, x]], &mut [[0.0; 2]], &[settings]);
+      if index == sounds + shifter.latency() {
+        made = (shifter.notes.made_pitches(true).iter())
+          .map(|pitch| pitch * f64::from(RATE) / 2.0)
+          .collect();
+      }
+    }
+    let expected = f64::from(hz) * 2f64.powf(shift);
+    assert!(
+      (made[0] / expected - 1.0).abs() < 0.01,
+      "{made:?} Hz where the sound reaches the voice"
+    );
+  }
+
+  /// grains are two input periods long, and those cut in silence are of the lowest pitch of
+  /// the range. a held note's voice spaces them at its own pitch, so many of them overlap, and
+  /// a sound that started under them would be heard several times over until they ended
+  #[test]
+  fn a_sound_out_of_silence_starts_at_its_own_level() {
+    let gated = Settings {
+      play: Play {
+        mode: Mode::PolyGate,
+        ..NEUTRAL.play
+      },
+      envelope: Adsr {
+        attack: 0.0,
+        ..NEUTRAL.envelope
+      },
+      ..NEUTRAL
+    };
+    let level =
+      |signal: &[f32]| (signal.iter().map(|x| x * x).sum::<f32>() / signal.len() as f32).sqrt();
+    let (input, sounds) = vowel_out_of_silence(200.0);
+    let mut shifter = shifter_in(&gated);
+    shifter.notes.on(key(57));
+    let output = run(&mut shifter, &input, &gated);
+    let reached = sounds + shifter.latency();
+    let ms = RATE as usize / 1000;
+    let (first, settled) = (
+      level(&output[reached..reached + 30 * ms]),
+      level(&output[reached + 100 * ms..reached + 200 * ms]),
+    );
+    assert!(
+      first < 1.25 * settled,
+      "{first} over the first 30 ms, {settled} once settled"
+    );
   }
 }

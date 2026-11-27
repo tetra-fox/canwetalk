@@ -49,6 +49,7 @@ impl Scratch {
       cycle: Cycle {
         pitch: 0.0,
         phase: None,
+        onset: false,
       },
       target: 0.0,
       shape: Shape::default(),

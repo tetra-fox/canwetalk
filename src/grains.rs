@@ -161,7 +161,29 @@ impl Engine {
     scratch: &mut Scratch,
     out: &mut [[f32; 2]],
   ) {
+    // a block with a new sound in it is taken in two, so that every grain sounding there is
+    // there at the start of the second
+    if let Some(onset) = (wanted.iter().skip(1)).position(|wanted| wanted.cycle.onset) {
+      let (before, from) = out.split_at_mut(onset + 1);
+      self.tick(
+        &wanted[..=onset],
+        input,
+        after + from.len(),
+        scratch,
+        before,
+      );
+      self.tick(&wanted[onset + 1..], input, after, scratch, from);
+      return;
+    }
     let (held, count) = (after + out.len(), out.len());
+    if let Some(onset) = wanted.first().filter(|wanted| wanted.cycle.onset) {
+      // the grains were cut at the pitch of the sound before, and give way to the new one's
+      // as they rise over one of its periods
+      let period = 2.0 / onset.cycle.pitch;
+      for grain in &mut self.grains {
+        grain.end_within(period);
+      }
+    }
     for sums in &mut scratch.sums {
       sums[..count].fill(0.0);
     }
@@ -235,8 +257,12 @@ impl Engine {
       }
     }
     self.output_phase += self.output_step;
-    let wrapped = self.output_phase >= 1.0;
-    if wrapped {
+    // a new sound starts a grain at once, at its own pitch, and not where the spacing of the
+    // grains for the sound before would put the next one
+    let wrapped = self.output_phase >= 1.0 || cycle.onset;
+    if cycle.onset {
+      self.output_phase = -1.0;
+    } else if wrapped {
       self.output_phase -= 2.0;
     }
     if wrapped || sounding == 0 {
@@ -347,6 +373,15 @@ fn raised_cosine(quarters: f64) -> f64 {
 }
 
 impl Grain {
+  /// shortens the grain to end within `samples`, from the level it is at. one still rising
+  /// goes over to where its fall is at that level
+  fn end_within(&mut self, samples: f64) {
+    if self.window_phase < self.peak {
+      self.window_phase = self.peak + (1.0 - self.peak) * (1.0 - self.window_phase / self.peak);
+    }
+    self.window_step = self.window_step.max((1.0 - self.window_phase) / samples);
+  }
+
   /// adds the grain to the sums of `scratch` over `samples`, a sample at a time until it
   /// ends, and gives how far into them it ended if it did. `input` holds `newer` samples
   /// that came after the first of them

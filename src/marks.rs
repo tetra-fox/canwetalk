@@ -48,6 +48,9 @@ pub(crate) struct Cycle {
   /// how far through its cycle the input is, 0 to 1, where the cycles are marked. otherwise
   /// the grains count it off by the pitch themselves
   pub(crate) phase: Option<f64>,
+  /// whether the input's pitch is found here after none was, where a new sound starts. grains
+  /// cut before it were cut at the pitch of another
+  pub(crate) onset: bool,
 }
 
 impl Marks {
