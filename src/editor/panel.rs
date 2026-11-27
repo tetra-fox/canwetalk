@@ -177,7 +177,7 @@ const RANGE_DASH: Dashes = Dashes {
   gap: 2.0,
 };
 /// the clear amber over the range, which covers this much of what the screen shows under it
-const RANGE_TINT: Color = [AMBER.x, AMBER.y, AMBER.z, 0.03];
+const RANGE_TINT: Color = [AMBER.x, AMBER.y, AMBER.z, 0.14];
 const LABELS: Color = [0.12, 0.42, 0.52, 1.0];
 const FILL: Color = [0.02, 0.12, 0.16, 1.0];
 const EDGE: Color = [CYAN.x, CYAN.y, CYAN.z, 1.0];
