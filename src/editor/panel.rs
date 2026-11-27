@@ -8,7 +8,7 @@ use potpot::glam::{Mat4, Vec2, Vec3};
 use potpot::parts::{self, Handle, LedArc, LedRing, LedStops, Meter, PushSwitch, Screen, Vent};
 use potpot::{Anisotropy, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::axis::Axis;
-use potpot_controls::flat::{Color, Flat};
+use potpot_controls::flat::{Color, Dashes, Flat};
 use potpot_controls::furniture::{GripLook, MenuLook};
 use potpot_controls::interaction::{Edit, Push, Reading, Target};
 use potpot_controls::layout::{Pack, middle, pack};
@@ -172,9 +172,12 @@ const GRID: Color = [0.035, 0.11, 0.14, 1.0];
 /// the dashed lines at the ends of the range of pitches detection looks for: their color, and
 /// how long each dash is and the gap after it
 const RANGE_EDGE: Color = [AMBER.x * 0.8, AMBER.y * 0.8, AMBER.z * 0.8, 1.0];
-const RANGE_DASH: [f32; 2] = [4.0, 3.0];
-/// how much of the dashes' amber the screen's colors take within the range
-const RANGE_TINT: f32 = 0.14;
+const RANGE_DASH: Dashes = Dashes {
+  length: 5.0,
+  gap: 2.0,
+};
+/// the clear amber over the range, which covers this much of what the screen shows under it
+const RANGE_TINT: Color = [AMBER.x, AMBER.y, AMBER.z, 0.03];
 const LABELS: Color = [0.12, 0.42, 0.52, 1.0];
 const FILL: Color = [0.02, 0.12, 0.16, 1.0];
 const EDGE: Color = [CYAN.x, CYAN.y, CYAN.z, 1.0];
@@ -730,6 +733,7 @@ impl Drawn {
       mesh: Arc::clone(mesh),
       transform,
       material,
+      picture: Vec::new(),
     });
     self.targets.push(target);
   }
@@ -979,6 +983,12 @@ struct Kept<T> {
   objects: Vec<Object>,
 }
 
+/// a layer of a screen's picture, kept for as long as what it is drawn from is the same
+struct KeptLayer<T> {
+  of: T,
+  layer: Arc<Flat>,
+}
+
 /// everything the panel is drawn from, apart from the renderer that draws it
 struct Front {
   spots: [Spot; Control::ALL.len()],
@@ -990,7 +1000,9 @@ struct Front {
   /// the envelope's screen, and its shape as last drawn, kept for as long as its controls and
   /// its light are the same
   display: Display,
-  shape: Option<Kept<[f32; 5]>>,
+  shape: Option<KeptLayer<[f32; 5]>>,
+  /// where the envelope's screen's face is among the objects that never move
+  display_face: usize,
   /// the parts of a shift's knob and of the others
   shift_knob: Parts,
   selector_knob: Parts,
@@ -1021,9 +1033,11 @@ struct Front {
   readouts: Vec<Option<Lettering>>,
   caret: Arc<Mesh>,
   screen: Screen,
-  /// how many objects the screen's lines and their names are, which what it shows lies over
-  grid: usize,
-  shown: Option<Kept<(Vec<f32>, [f32; 2])>>,
+  /// where the screen's face is among the objects that never move
+  screen_face: usize,
+  /// the screen's lines and their names, which what it shows lies over
+  lines: Arc<Flat>,
+  shown: Option<KeptLayer<(Vec<f32>, [f32; 2])>>,
 }
 
 impl Front {
@@ -1031,8 +1045,10 @@ impl Front {
     let screen = Screen::new(SCREEN_SIZE.x, SCREEN_SIZE.y);
     let (spots, fields) = layout(screen.border);
     let mut fixed = Drawn::default();
+    // each returns where what it put is among the objects
     let mut put = |mesh: Mesh, at: Vec3, material: Material, target| {
       fixed.put(&Arc::new(mesh), at, material, target);
+      fixed.objects.len() - 1
     };
     let flat = |x: f32, y: f32| Vec3::new(x, y, 0.0);
     // bead blasted more than brushed
@@ -1109,7 +1125,7 @@ impl Front {
     // each group of controls and the screen are set in a field with a cut rim, with the name
     // over them between two lines of light that turn down at their far ends
     let mut dimmed = Vec::new();
-    let mut envelope_display = None;
+    let (mut envelope_display, mut display_face) = (None, None);
     for Field {
       name,
       across: [left, right],
@@ -1147,7 +1163,7 @@ impl Front {
       // only the envelope's field has its screen
       if let Some(display) = shown_at {
         let (screen, at) = (display.screen(), display.at.extend(0.0));
-        put(screen.face(), at, screen_glass(), None);
+        display_face = Some(put(screen.face(), at, screen_glass(), None));
         put(screen.bezel(), at, Material::satin(STRIP_METAL), None);
         envelope_display = Some(display);
         dimmed.extend((lights.into_iter()).map(|(mesh, at, level)| (Arc::new(mesh), at, level)));
@@ -1225,16 +1241,16 @@ impl Front {
     }
 
     // the screen in its bezel, with lines across and up it that the spectrum is drawn over
-    let mut put = |mesh: Mesh, at: Vec3, material: Material| {
-      fixed.put(&Arc::new(mesh), at, material, None);
-    };
-    let glass = screen_glass();
     let Vec2 { x, y } = SCREEN_AT;
-    put(screen.face(), flat(x, y), glass);
-    put(screen.bezel(), flat(x, y), Material::satin(STRIP_METAL));
-    let grid = parts::picture(&lines(), x, y, glass, 0);
-    let grid_objects = grid.len();
-    fixed.extend(grid);
+    let screen_face = fixed.objects.len();
+    fixed.put(&Arc::new(screen.face()), flat(x, y), screen_glass(), None);
+    let bezel = screen.bezel();
+    fixed.put(
+      &Arc::new(bezel),
+      flat(x, y),
+      Material::satin(STRIP_METAL),
+      None,
+    );
 
     // a strip of darker metal between the ears along the bottom, with the parts `strip` places.
     // the plugin's name is lit over a line of light, light comes through the vents, and the
@@ -1340,12 +1356,14 @@ impl Front {
       dimmed,
       display: envelope_display.expect("a field for the envelope"),
       shape: None,
+      display_face: display_face.expect("a field for the envelope"),
       caret: Arc::new(Mesh::cuboid(
         Vec3::new(-0.6, -READOUT_TALL / 2.0 - 2.0, 0.0),
         Vec3::new(0.6, READOUT_TALL / 2.0 + 2.0, 0.3),
       )),
       screen,
-      grid: grid_objects,
+      screen_face,
+      lines: Arc::new(lines()),
       shown: None,
     }
   }
@@ -1449,15 +1467,15 @@ impl Front {
     }
 
     let Vec2 { x, y } = SCREEN_AT;
-    let glass = screen_glass();
     let looked = chosen::<Detected>(&controls[Control::Detect as usize]).hz();
     let shown = (self.shown.take())
       .filter(|shown| shown.of.0 == feed && shown.of.1 == looked)
-      .unwrap_or_else(|| Kept {
+      .unwrap_or_else(|| KeptLayer {
         of: (feed.to_vec(), looked),
-        objects: parts::picture(&spectrum(feed, looked), x, y, glass, self.grid),
+        layer: Arc::new(spectrum(feed, looked)),
       });
-    drawn.extend(shown.objects.iter().cloned());
+    drawn.objects[self.screen_face].picture =
+      vec![Arc::clone(&self.lines), Arc::clone(&shown.layer)];
     self.shown = Some(shown);
     lamps.extend(self.screen.lamps(x, y, CYAN, 0.3));
 
@@ -1473,17 +1491,15 @@ impl Front {
     let Vec2 { x, y } = display.at;
     let shape = (self.shape.take())
       .filter(|shape| shape.of == of)
-      .unwrap_or_else(|| Kept {
+      .unwrap_or_else(|| KeptLayer {
         of,
-        objects: parts::picture(
-          &envelope_shape(display, [attack, decay, sustain, release], envelope_light),
-          x,
-          y,
-          screen_glass(),
-          0,
-        ),
+        layer: Arc::new(envelope_shape(
+          display,
+          [attack, decay, sustain, release],
+          envelope_light,
+        )),
       });
-    drawn.extend(shape.objects.iter().cloned());
+    drawn.objects[self.display_face].picture = vec![Arc::clone(&shape.layer)];
     self.shape = Some(shape);
     lamps.extend((display.screen()).lamps(x, y, CYAN, 0.2 * envelope_light));
 
@@ -1657,11 +1673,18 @@ fn plotted([across, up]: [f32; 2]) -> [f32; 2] {
   ]
 }
 
-/// the lines the screen's spectrum is drawn over, the names of the frequencies under them, and
-/// the line that sets the note's column apart
+/// the lines of the plot across and up it that the screen's spectrum is drawn over, the names of
+/// the frequencies under them, and the line that sets the note's column apart
 fn lines() -> Flat {
   let mut flat = Flat::default();
-  grid(&mut flat, [0.0, 1.0], GRID);
+  for hz in HERTZ_LINES {
+    let across = HERTZ.turn(hz);
+    flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, GRID);
+  }
+  for level in LEVEL_LINES {
+    let up = LEVELS.turn(level);
+    flat.line(plotted([0.0, up]), plotted([1.0, up]), 1.0, GRID);
+  }
   for (hz, name) in HERTZ_NAMES {
     let [x, y] = plotted([HERTZ.turn(hz), 0.0]);
     flat.centered(name, [x, y + 7.0], 5.0, 1.0, LABELS);
@@ -1670,28 +1693,6 @@ fn lines() -> Flat {
   let top = [NOTE_LINE, SCREEN_AT.y - half];
   flat.line(top, [NOTE_LINE, SCREEN_AT.y + half], 1.0, GRID);
   flat
-}
-
-/// the lines of the plot across and up it, from `from` to `to` of the way across, in `color`
-fn grid(flat: &mut Flat, [from, to]: [f32; 2], color: Color) {
-  for hz in HERTZ_LINES {
-    let across = HERTZ.turn(hz);
-    if (from..=to).contains(&across) {
-      flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, color);
-    }
-  }
-  for level in LEVEL_LINES {
-    let up = LEVELS.turn(level);
-    flat.line(plotted([from, up]), plotted([to, up]), 1.0, color);
-  }
-}
-
-/// a color of the screen as it shows within the range detection looks for
-fn tinted([red, green, blue, cover]: Color) -> Color {
-  let [red, green, blue] = Vec3::new(red, green, blue)
-    .lerp(AMBER, RANGE_TINT)
-    .to_array();
-  [red, green, blue, cover]
 }
 
 /// what the screen shows of the feed: the range of pitches detection looks for, tinted amber, the
@@ -1711,32 +1712,15 @@ fn spectrum(feed: &[f32], [lowest, highest]: [f32; 2]) -> Flat {
       .collect()
   };
   let heard = curve(INPUT_BANDS);
-  // the range of pitches detection looks for, from `lowest` to `highest` hertz, tinted amber.
-  // a picture's shapes cover what is under them, with no clear colors, so the face, the grid and
-  // the input's fill within the range are each drawn again in their tinted colors
-  // TODO: one clear amber rect over the range once potpot's screen pictures blend
-  let [low, high] = [HERTZ.turn(lowest), HERTZ.turn(highest)];
-  let face = [FACE.x, FACE.y, FACE.z, 1.0];
-  flat.rect(plotted([low, 1.0]), plotted([high, 0.0]), tinted(face));
-  grid(&mut flat, [low, high], tinted(GRID));
   flat.area(&heard, PLOT[1].y, FILL);
-  let [left, right] = [plotted([low, 0.0])[0], plotted([high, 0.0])[0]];
-  let within: Vec<[f32; 2]> = (heard.iter())
-    .filter(|[x, _]| (left..=right).contains(x))
-    .copied()
-    .collect();
-  flat.area(&within, PLOT[1].y, tinted(FILL));
-  // a dashed line up at each end of the range, dashing from the foot of the plot, over the fill
-  // and under the curves
-  let [dash, gap] = RANGE_DASH;
-  let top = plotted([0.0, 1.0])[1];
-  for hz in [lowest, highest] {
-    let [x, foot] = plotted([HERTZ.turn(hz), 0.0]);
-    let mut y = foot;
-    while y > top {
-      flat.line([x, y], [x, (y - dash).max(top)], 1.0, RANGE_EDGE);
-      y -= dash + gap;
-    }
+  // the range of pitches detection looks for, from `lowest` to `highest` hertz, under clear
+  // amber that tints the lines and the fill, with a dashed line up at each end of it from the
+  // foot of the plot, under the curves
+  let [low, high] = [HERTZ.turn(lowest), HERTZ.turn(highest)];
+  flat.rect(plotted([low, 1.0]), plotted([high, 0.0]), RANGE_TINT);
+  for across in [low, high] {
+    let line = [plotted([across, 0.0]), plotted([across, 1.0])];
+    flat.dashed(&line, 1.0, RANGE_DASH, RANGE_EDGE);
   }
   flat.curve(&heard, 1.5, EDGE);
   // the output is an edge alone over the input's, which leaves the input's fill to show
