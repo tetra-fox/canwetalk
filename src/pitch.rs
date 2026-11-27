@@ -427,36 +427,44 @@ impl Detector {
   }
 
   /// the best lag of the shortest range the crossings suggest that scores nearly as well as
-  /// the best of them. crossings come twice a period, so a stretch of them that splits into
-  /// equal halves spans whole periods, and the lag is looked for around half its length
+  /// the best of them. a crossing comes at the same point of every cycle, so a stretch that
+  /// ends at one of the newest two crossings and has a crossing half way along it spans whole
+  /// periods, and the lag is looked for around half its length. the halves are found by time
+  /// and not by counting crossings, since where a sound starts and where a harmonic rides
+  /// across zero there are more than two a period
   fn suggested(&self) -> Option<(usize, f32)> {
     let times = &self.crossings[..self.crossing_count];
-    let [.., third_last, second_last, last] = *times else {
-      return None;
-    };
+    // each of the two ends has a stretch from every other crossing at most
     let mut ranges = [None; MAX_CROSSINGS];
-    for (range, (index, &start)) in ranges
-      .iter_mut()
-      .zip(times.iter().enumerate().take(times.len().saturating_sub(5)))
-    {
-      let middle = index + (times.len() - 2 - index) / 2;
-      let splits_evenly = [middle, middle + 1].iter().any(|&at| {
-        let (earlier, later) = (times[at] - start, second_last - times[at]);
-        let apart = earlier.abs_diff(later);
-        // the times are whole analysis samples, so equal halves can come out one apart
-        apart <= 1 || apart * 100 < HALVES_PERCENT * later
-      });
-      let lags = ((third_last - start) / 2) as usize..((last - start) / 2) as usize;
-      if splits_evenly && self.in_range(&lags) {
-        *range = self.best_of(lags);
+    let mut ranges_found = ranges.iter_mut();
+    for end in (times.len().saturating_sub(2)..times.len()).rev() {
+      let end_time = times[end];
+      // crossings go up and down by turns, and a period runs from one to the next that goes
+      // the same way, which is an even count of crossings on
+      for (index, &start) in times[..end].iter().enumerate().rev().skip(1).step_by(2) {
+        let halves = times[index + 2..end].iter().step_by(2).find_map(|&at| {
+          let (earlier, later) = (at - start, end_time - at);
+          let apart = earlier.abs_diff(later);
+          // the times are whole analysis samples, so equal halves can come out one apart
+          (apart <= 1 || apart * 100 < HALVES_PERCENT * later).then_some((earlier, later))
+        });
+        let Some((earlier, later)) = halves else {
+          continue;
+        };
+        let (shorter, longer) = (earlier.min(later), earlier.max(later));
+        let lags = (shorter * (100 - HALVES_PERCENT) / 100) as usize
+          ..(longer * (100 + HALVES_PERCENT) / 100) as usize + 2;
+        if self.in_range(&lags) {
+          let range = ranges_found.next().expect("a range for every stretch");
+          *range = self.best_of(lags);
+        }
       }
     }
     let found = ranges.iter().flatten();
     let best = found.clone().map(|range| range.1).max_by(f32::total_cmp)?;
-    // later crossings start shorter stretches, so the last range is the shortest
     found
-      .rev()
-      .find(|range| range.1 > SHORTER_WINS_ABOVE * best)
+      .filter(|range| range.1 > SHORTER_WINS_ABOVE * best)
+      .min_by_key(|range| range.0)
       .copied()
   }
 
@@ -486,6 +494,7 @@ impl Detector {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::signals::vowel_sampled_at;
 
   const RATE: f32 = 48_000.0;
 
@@ -627,5 +636,43 @@ mod tests {
       "{actual} Hz detected as {detected} Hz"
     );
     assert_eq!(lost, 0, "the pitch was dropped on the way");
+  }
+
+  /// periods of `hz` from the first sound of a vowel that starts out of silence to the first
+  /// estimate within a percent of it, if there is one
+  fn periods_to_find(rate: f32, range: Range, hz: f32) -> Option<f32> {
+    let lead = rate as usize / 4;
+    let mut signal = vec![0.0; lead];
+    signal.extend(vowel_sampled_at(rate, rate as usize / 4, |_| hz));
+    let sounds = signal.iter().position(|&x| x != 0.0)?;
+    let mut detector = Detector::new(rate, range);
+    let found = signal.iter().enumerate().position(|(index, &x)| {
+      let estimate = detector.push(2.0 * x);
+      index >= sounds && estimate.is_some_and(|period| (rate / period / hz - 1.0).abs() < 0.01)
+    })?;
+    Some((found - sounds) as f32 * hz / rate)
+  }
+
+  /// a voice is found within two and a half periods of where it starts, though the crossings
+  /// that come first are not yet at one point of its cycle. this vowel's pulses all go one
+  /// way, so its mean steps up where it starts and the crossings take some milliseconds more
+  /// to settle around it, which only low pitches have the periods to spare for
+  #[test]
+  fn a_voice_is_found_soon_after_it_starts() {
+    for rate in [44_100.0, 48_000.0, 96_000.0] {
+      for (range, hz) in [
+        (Range::Bass, 45.0),
+        (Range::Bass, 70.0),
+        (Range::Mid, 70.0),
+        (Range::Mid, 100.0),
+        (Range::Mid, 125.0),
+      ] {
+        let periods = periods_to_find(rate, range, hz);
+        assert!(
+          periods.is_some_and(|periods| periods <= 2.5),
+          "{hz} Hz in {range:?} at {rate} Hz is found after {periods:?} periods"
+        );
+      }
+    }
   }
 }
