@@ -18,8 +18,10 @@ use crate::voice::Expression;
 
 /// seconds of input the voices can read back over. the longest grains are cut to fit
 const HISTORY_SECONDS: f32 = 4.5;
-/// seconds the voice that follows the input is still shown for after the input's pitch is
-/// lost, which bridges the gaps between a voice's words
+/// seconds after the input's pitch is lost that the voice is taken to go on, which bridges
+/// the gaps between a voice's words and the moments the detector loses a pitch within one.
+/// the voice that follows the input is still shown, and a pitch found again is of the same
+/// sound
 const FOLLOW_HOLD_SECONDS: f64 = 0.2;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
@@ -268,7 +270,7 @@ impl Shifter {
     if let Some(period) = self.detector.push(live[0] + live[1]) {
       self.input_pitch = (2.0 / f64::from(period)).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end());
     }
-    let onset = self.detector.voiced() && self.unvoiced_for > 0;
+    let onset = self.detector.voiced() && !self.following();
     self.unvoiced_for = if self.detector.voiced() {
       0
     } else {
@@ -1254,5 +1256,28 @@ mod tests {
       first < 1.25 * settled,
       "{first} over the first 30 ms, {settled} once settled"
     );
+  }
+
+  /// the detector loses a voice's pitch for moments within a sound, which grains cut at the
+  /// pitch held through them still fit. only a pitch found after it was lost for longer than
+  /// the hold starts a new sound
+  #[test]
+  fn only_a_pitch_lost_past_the_hold_starts_a_new_sound() {
+    let ms = RATE as usize / 1000;
+    for (gap, starts) in [(50, 1), (300, 2)] {
+      let mut input = vowel_at(300 * ms, |_| VOWEL_HZ);
+      input.extend(vec![0.0; gap * ms]);
+      input.extend(vowel_at(300 * ms, |_| VOWEL_HZ));
+      let mut shifter = shifter_in(&NEUTRAL);
+      let mut onsets = 0;
+      for &x in &input {
+        shifter.process(&mut [[x, x]], &mut [[0.0; 2]], &[NEUTRAL]);
+        onsets += usize::from(shifter.heard[0].0.onset);
+      }
+      assert_eq!(
+        onsets, starts,
+        "{onsets} sounds started over a gap of {gap} ms"
+      );
+    }
   }
 }
