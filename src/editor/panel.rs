@@ -20,6 +20,7 @@ use nice_plug::prelude::Enum;
 use super::{Control, Kind, note};
 use crate::notes::Mode;
 use crate::params::SHIFT_SEMITONES;
+use crate::pitch::Range as Detected;
 use crate::spectrum::{
   BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, HERTZ_ENDS, INPUT_BANDS, INPUT_LEVEL, OUTPUT_BANDS,
   OUTPUT_LEVEL, PITCH_SLOT, VOICE_SLOTS,
@@ -168,6 +169,9 @@ const HERTZ_NAMES: [(f32, &str); 3] = [(100.0, "100"), (1000.0, "1K"), (10_000.0
 /// pitches the voices make and the names of the output's lines
 const FACE: Vec3 = Vec3::new(0.008, 0.014, 0.018);
 const GRID: Color = [0.035, 0.11, 0.14, 1.0];
+/// the lines within the range of pitches detection looks for, and at its ends
+const RANGE_GRID: Color = [0.06, 0.19, 0.24, 1.0];
+const RANGE_EDGE: Color = [0.1, 0.36, 0.45, 1.0];
 const LABELS: Color = [0.12, 0.42, 0.52, 1.0];
 const FILL: Color = [0.02, 0.12, 0.16, 1.0];
 const EDGE: Color = [CYAN.x, CYAN.y, CYAN.z, 1.0];
@@ -1016,7 +1020,7 @@ struct Front {
   screen: Screen,
   /// how many objects the screen's lines and their names are, which what it shows lies over
   grid: usize,
-  shown: Option<Kept<Vec<f32>>>,
+  shown: Option<Kept<(Vec<f32>, [f32; 2])>>,
 }
 
 impl Front {
@@ -1443,11 +1447,12 @@ impl Front {
 
     let Vec2 { x, y } = SCREEN_AT;
     let glass = screen_glass();
+    let looked = chosen::<Detected>(&controls[Control::Detect as usize]).hz();
     let shown = (self.shown.take())
-      .filter(|shown| shown.of == feed)
+      .filter(|shown| shown.of.0 == feed && shown.of.1 == looked)
       .unwrap_or_else(|| Kept {
-        of: feed.to_vec(),
-        objects: parts::picture(&spectrum(feed), x, y, glass, self.grid),
+        of: (feed.to_vec(), looked),
+        objects: parts::picture(&spectrum(feed, looked), x, y, glass, self.grid),
       });
     drawn.extend(shown.objects.iter().cloned());
     self.shown = Some(shown);
@@ -1600,8 +1605,13 @@ fn screen_glass() -> Material {
 
 /// whether the mode a reading of the mode's control is at plays notes through the envelope
 fn plays_envelope(mode: &Reading) -> bool {
-  let last = Mode::variants().len() - 1;
-  Mode::from_index((mode.value * last as f32).round() as usize).is_gated()
+  chosen::<Mode>(mode).is_gated()
+}
+
+/// the choice a reading of a selector is at
+fn chosen<E: Enum>(reading: &Reading) -> E {
+  let last = E::variants().len() - 1;
+  E::from_index((reading.value * last as f32).round() as usize)
 }
 
 /// the envelope's shape on its screen, lit at `light` of its full light.
@@ -1666,13 +1676,34 @@ fn lines() -> Flat {
   flat
 }
 
-/// what the screen shows of the feed: the level of each band of the input's spectrum as a
-/// curve over a fill, the output's as a curve over that, and a line up at the detected pitch
+/// what the screen shows of the feed: over the range of pitches detection looks for, the level
+/// of each band of the input's spectrum as a curve over a fill, the output's as a curve over that, and a line up at the detected pitch
 /// and at each pitch a voice makes. beside them are the note nearest the detected pitch, how
 /// many cents off it the pitch is and the pitch itself, and under those the notes the latest
 /// voices make, with a count of the others. a note there is none of is two dashes
-fn spectrum(feed: &[f32]) -> Flat {
+fn spectrum(feed: &[f32], [lowest, highest]: [f32; 2]) -> Flat {
   let mut flat = Flat::default();
+  // the range of pitches detection looks for, from `lowest` to `highest` hertz: the lines within
+  // it lit brighter over those under, and a line at each end
+  let [low, high] = [HERTZ.turn(lowest), HERTZ.turn(highest)];
+  for hz in HERTZ_LINES {
+    let across = HERTZ.turn(hz);
+    if (low..=high).contains(&across) {
+      flat.line(
+        plotted([across, 0.0]),
+        plotted([across, 1.0]),
+        1.0,
+        RANGE_GRID,
+      );
+    }
+  }
+  for level in LEVEL_LINES {
+    let up = LEVELS.turn(level);
+    flat.line(plotted([low, up]), plotted([high, up]), 1.0, RANGE_GRID);
+  }
+  for end in [low, high] {
+    flat.line(plotted([end, 0.0]), plotted([end, 1.0]), 1.0, RANGE_EDGE);
+  }
   let curve = |first: usize| -> Vec<[f32; 2]> {
     (feed[first..first + BANDS].iter().enumerate())
       .map(|(band, level)| {
@@ -1844,15 +1875,19 @@ mod tests {
     for (slot, hz) in VOICE_SLOTS.zip(made) {
       feed[slot] = hz;
     }
-    let flat = spectrum(&feed);
+    let flat = spectrum(&feed, Detected::Mid.hz());
     let edge = SCREEN_AT.x + SCREEN_SIZE.x / 2.0;
     let mut pitch_lines = 0;
     for shape in flat.shapes() {
-      if let Shape::Line { from, to, .. } = shape {
+      if let Shape::Line {
+        from, to, color, ..
+      } = shape
+      {
         for [x, _] in [from, to] {
           assert!((PLOT[0].x..=edge).contains(x), "a line at {x}");
         }
-        pitch_lines += usize::from(from[1] == PLOT[1].y && to[1] == PLOT[0].y);
+        let up = from[1] == PLOT[1].y && to[1] == PLOT[0].y;
+        pitch_lines += usize::from(up && [PITCH, MADE_PITCH].contains(color));
       }
     }
     // the input's and the one voice inside the plot's, and none for the others

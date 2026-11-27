@@ -43,6 +43,12 @@ impl Range {
     }
   }
 
+  /// the lowest and highest pitches the range looks for, in hertz
+  pub(crate) fn hz(self) -> [f32; 2] {
+    let spec = self.spec();
+    [spec.lowest_hz, spec.highest_hz]
+  }
+
   /// period of the lowest pitch of the range, in samples
   pub(crate) fn longest_period(self, sample_rate: f32) -> f32 {
     sample_rate / self.spec().lowest_hz
