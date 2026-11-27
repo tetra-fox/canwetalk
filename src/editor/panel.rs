@@ -1594,7 +1594,7 @@ fn screen_glass() -> Material {
   Material {
     // smoked glass, which mirrors less of the room than clear
     clearcoat: 0.3,
-    ..Material::screen(FACE)
+    ..Material::display_glass(FACE, 1.5)
   }
 }
 
