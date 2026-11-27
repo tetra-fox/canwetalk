@@ -169,9 +169,10 @@ const HERTZ_NAMES: [(f32, &str); 3] = [(100.0, "100"), (1000.0, "1K"), (10_000.0
 /// pitches the voices make and the names of the output's lines
 const FACE: Vec3 = Vec3::new(0.008, 0.014, 0.018);
 const GRID: Color = [0.035, 0.11, 0.14, 1.0];
-/// the lines within the range of pitches detection looks for, and at its ends
-const RANGE_GRID: Color = [0.06, 0.19, 0.24, 1.0];
-const RANGE_EDGE: Color = [0.1, 0.36, 0.45, 1.0];
+/// the dashed lines at the ends of the range of pitches detection looks for: their color, and
+/// how long each dash is and the gap after it
+const RANGE_EDGE: Color = [AMBER.x * 0.8, AMBER.y * 0.8, AMBER.z * 0.8, 1.0];
+const RANGE_DASH: [f32; 2] = [4.0, 3.0];
 const LABELS: Color = [0.12, 0.42, 0.52, 1.0];
 const FILL: Color = [0.02, 0.12, 0.16, 1.0];
 const EDGE: Color = [CYAN.x, CYAN.y, CYAN.z, 1.0];
@@ -1683,27 +1684,6 @@ fn lines() -> Flat {
 /// voices make, with a count of the others. a note there is none of is two dashes
 fn spectrum(feed: &[f32], [lowest, highest]: [f32; 2]) -> Flat {
   let mut flat = Flat::default();
-  // the range of pitches detection looks for, from `lowest` to `highest` hertz: the lines within
-  // it lit brighter over those under, and a line at each end
-  let [low, high] = [HERTZ.turn(lowest), HERTZ.turn(highest)];
-  for hz in HERTZ_LINES {
-    let across = HERTZ.turn(hz);
-    if (low..=high).contains(&across) {
-      flat.line(
-        plotted([across, 0.0]),
-        plotted([across, 1.0]),
-        1.0,
-        RANGE_GRID,
-      );
-    }
-  }
-  for level in LEVEL_LINES {
-    let up = LEVELS.turn(level);
-    flat.line(plotted([low, up]), plotted([high, up]), 1.0, RANGE_GRID);
-  }
-  for end in [low, high] {
-    flat.line(plotted([end, 0.0]), plotted([end, 1.0]), 1.0, RANGE_EDGE);
-  }
   let curve = |first: usize| -> Vec<[f32; 2]> {
     (feed[first..first + BANDS].iter().enumerate())
       .map(|(band, level)| {
@@ -1714,6 +1694,19 @@ fn spectrum(feed: &[f32], [lowest, highest]: [f32; 2]) -> Flat {
   };
   let heard = curve(INPUT_BANDS);
   flat.area(&heard, PLOT[1].y, FILL);
+  // a dashed line up at each end of the range of pitches detection looks for, from `lowest` to
+  // `highest` hertz, dashing from the foot of the plot. it lies over the input's fill and under
+  // the curves
+  let [dash, gap] = RANGE_DASH;
+  let top = plotted([0.0, 1.0])[1];
+  for hz in [lowest, highest] {
+    let [x, foot] = plotted([HERTZ.turn(hz), 0.0]);
+    let mut y = foot;
+    while y > top {
+      flat.line([x, y], [x, (y - dash).max(top)], 1.0, RANGE_EDGE);
+      y -= dash + gap;
+    }
+  }
   flat.curve(&heard, 1.5, EDGE);
   // the output is an edge alone over the input's, which leaves the input's fill to show
   flat.curve(&curve(OUTPUT_BANDS), 1.2, MADE);
