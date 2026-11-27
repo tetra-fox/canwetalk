@@ -26,15 +26,15 @@ use crate::spectrum::{
 };
 
 pub(super) const WIDTH: f32 = 920.0;
-pub(super) const HEIGHT: f32 = 610.0;
+pub(super) const HEIGHT: f32 = 525.0;
 /// how far a point slides across the picture for each unit of its height: seen a little
 /// from in front
 const LEAN: Vec2 = Vec2::new(0.0, -0.3);
 /// how wide the rack ear at each end of the plate is
 const EAR: f32 = 32.0;
 /// the ends of the room the controls have across the panel, clear of the ears
-const LEFT: f32 = EAR + 10.0;
-const RIGHT: f32 = WIDTH - EAR - 10.0;
+const LEFT: f32 = EAR + 8.0;
+const RIGHT: f32 = WIDTH - EAR - 8.0;
 /// the light built into the hardware
 const CYAN: Vec3 = Vec3::new(0.2, 0.85, 1.0);
 /// the color of the caret and the selection while a value is typed
@@ -172,8 +172,7 @@ const MADE: Color = [0.78, 0.96, 1.0, 1.0];
 const MADE_PITCH: Color = [0.38, 0.5, 0.56, 1.0];
 const MADE_LABELS: Color = [0.28, 0.4, 0.46, 1.0];
 
-/// a tier of groups side by side, by where its parts are down the panel: the names of its
-/// groups, the middle of the envelope's
+/// a group by where its parts are down the panel: its name, the middle of the envelope's
 /// screen, the middles of its controls, the names under them and the windows their values show
 /// in
 #[derive(Clone, Copy, Debug)]
@@ -185,14 +184,13 @@ struct Row {
   window: f32,
 }
 
-/// the screen the envelope's shape is drawn on, over the envelope's controls: the least height
-/// of its face, which grows with the room its row has, the width of its bezel, and the room
-/// across between the bezel and the field's rim
-const DISPLAY_LEAST: f32 = 40.0;
+/// the screen the envelope's shape is drawn on, over the envelope's controls: the height of its
+/// face, the width of its bezel, and the room across between the bezel and the field's rim
+const DISPLAY_TALL: f32 = 40.0;
 const DISPLAY_BORDER: f32 = 2.0;
 const DISPLAY_CLEAR: f32 = 4.0;
 /// the room between two fields side by side or one over the other
-const FIELD_GAP: f32 = 8.0;
+const FIELD_GAP: f32 = 6.0;
 
 /// the room over the first row, at the top of the panel, and under the last, over the strip
 const TOP_MARGIN: f32 = 10.0;
@@ -210,8 +208,6 @@ struct Group {
   /// whether it is the envelope's: it shows the envelope's shape on a screen over its
   /// controls, and is dimmed while the mode plays no envelope
   envelope: bool,
-  /// whether its field takes all the width its row leaves, with its controls spread across it
-  wide: bool,
 }
 
 impl Group {
@@ -220,23 +216,16 @@ impl Group {
       name,
       controls,
       envelope: false,
-      wide: false,
     }
   }
 }
 
-/// what a row of the panel holds, left to right
-enum Cell {
-  /// a group in a field as tall as the row
-  Group(Group),
-  /// tiers of groups stacked down the row, top first, each tier's groups side by side
-  Stack(&'static [&'static [Group]]),
-}
-
-/// the rows of the panel, top first. the one group of the first row keeps to the left, beside
-/// the screen, and the cells of the others are spread from end to end
-const ROWS: [&[Cell]; 3] = [
-  &[Cell::Group(Group::new(
+/// the rows of the panel, top first, each a run of columns left to right and each column groups
+/// top to bottom. the first row's one column keeps to the left, beside the screen, and the
+/// columns of the second are spread from end to end, the notes, then the sound, then what the
+/// shifter listens to
+const ROWS: [&[&[Group]]; 2] = [
+  &[&[Group::new(
     "SHIFT",
     &[
       Control::Pitch,
@@ -244,59 +233,62 @@ const ROWS: [&[Cell]; 3] = [
       Control::FormantFollow,
       Control::Smooth,
     ],
-  ))],
+  )]],
   &[
-    Cell::Group(Group::new(
-      "EFFECTS",
-      &[Control::Detune, Control::Smear, Control::Stereo],
-    )),
-    Cell::Group(Group::new(
-      "VIBRATO",
-      &[
-        Control::VibratoDepth,
-        Control::VibratoRate,
-        Control::VibratoSync,
-        Control::VibratoDivision,
-      ],
-    )),
-    Cell::Group(Group::new(
-      "NOTES",
-      &[
-        Control::Mode,
-        Control::Latch,
-        Control::Glide,
-        Control::GlideNotesOnly,
-      ],
-    )),
-  ],
-  &[
-    Cell::Group(Group {
-      envelope: true,
-      wide: true,
-      ..Group::new(
-        "ENVELOPE",
+    &[
+      Group::new(
+        "NOTES",
         &[
-          Control::Attack,
-          Control::Decay,
-          Control::Sustain,
-          Control::Release,
+          Control::Mode,
+          Control::Latch,
+          Control::Glide,
+          Control::GlideNotesOnly,
         ],
-      )
-    }),
-    Cell::Stack(&[
-      &[Group::new(
+      ),
+      Group {
+        envelope: true,
+        ..Group::new(
+          "ENVELOPE",
+          &[
+            Control::Attack,
+            Control::Decay,
+            Control::Sustain,
+            Control::Release,
+          ],
+        )
+      },
+    ],
+    &[
+      Group::new(
+        "EFFECTS",
+        &[
+          Control::Detune,
+          Control::Smear,
+          Control::Stereo,
+          Control::Mix,
+        ],
+      ),
+      Group::new(
+        "VIBRATO",
+        &[
+          Control::VibratoDepth,
+          Control::VibratoRate,
+          Control::VibratoSync,
+          Control::VibratoDivision,
+        ],
+      ),
+    ],
+    &[
+      Group::new(
         "EXPRESSION",
         &[
           Control::PressureLevel,
           Control::SlideFormant,
           Control::BendRange,
         ],
-      )],
-      &[
-        Group::new("DETECTION", &[Control::Detect, Control::Anchor]),
-        Group::new("OUTPUT", &[Control::Mix]),
-      ],
-    ]),
+      ),
+      Group::new("DETECTION", &[Control::Detect, Control::Anchor]),
+    ],
   ],
 ];
 
@@ -528,37 +520,22 @@ impl Display {
   }
 }
 
-/// the kinds of the controls in `groups`
-fn kinds(groups: &[&Group]) -> impl Iterator<Item = Kind> {
-  (groups.iter()).flat_map(|group| group.controls.iter().map(|control| control.kind()))
-}
-
-/// the room down the panel a set of controls takes under their names for windows: the gap
-/// over the windows and the windows with their rims, or none if none of them has a window
-fn window_band(mut kinds: impl Iterator<Item = Kind>) -> [f32; 2] {
-  if kinds.any(Kind::has_window) {
+/// the parts of a group down the panel, from the top of its field to its foot: the name and the
+/// drops of the lines beside it, the envelope's screen if it is the envelope's, its controls,
+/// their names and their windows if they have any
+fn bands(group: &Group) -> [f32; 13] {
+  let kinds = || group.controls.iter().map(|control| control.kind());
+  let largest = |of: fn(Kind) -> f32| kinds().map(of).fold(0.0, f32::max);
+  let [name_gap, window] = if kinds().any(Kind::has_window) {
     [NAME_GAP, WINDOW.y + WINDOW_FRAME]
   } else {
     [0.0, 0.0]
-  }
-}
-
-/// the room down the panel the envelope's screen takes, with a face `tall`, in a set of groups:
-/// the gap over it and the screen with its bezel, or none if the envelope is not among them
-fn display_band(groups: &[&Group], tall: f32) -> [f32; 2] {
-  if groups.iter().any(|group| group.envelope) {
-    [OVER_GAP, tall + 2.0 * DISPLAY_BORDER]
+  };
+  let [display_gap, display] = if group.envelope {
+    [OVER_GAP, DISPLAY_TALL + 2.0 * DISPLAY_BORDER]
   } else {
     [0.0, 0.0]
-  }
-}
-
-/// the parts of a tier of groups down the panel, from the top of its fields to their foot, with
-/// the envelope's screen `tall` if it is among them
-fn bands(groups: &[&Group], tall: f32) -> [f32; 13] {
-  let largest = |of: fn(Kind) -> f32| kinds(groups).map(of).fold(0.0, f32::max);
-  let [name_gap, window] = window_band(kinds(groups));
-  let [display_gap, display] = display_band(groups, tall);
+  };
   [
     FIELD_PAD,
     HEADING_TALL,
@@ -577,55 +554,41 @@ fn bands(groups: &[&Group], tall: f32) -> [f32; 13] {
   ]
 }
 
-/// how wide a field is that holds a group's controls side by side
+/// how tall a group's field is at least
+fn group_tall(group: &Group) -> f32 {
+  bands(group).iter().sum()
+}
+
+/// how wide a group's field is at least, with its controls side by side
 fn group_wide(group: &Group) -> f32 {
-  let slots: f32 = group
-    .controls
-    .iter()
+  let slots: f32 = (group.controls.iter())
     .map(|control| control.kind().slot())
     .sum();
   slots + 2.0 * FIELD_PAD
 }
 
-/// how wide a tier of groups side by side is, with a gap between each two
-fn tier_wide(groups: &[Group]) -> f32 {
-  let fields: f32 = groups.iter().map(group_wide).sum();
-  fields + FIELD_GAP * groups.len().saturating_sub(1) as f32
+/// how tall a column of groups is at least, with a gap between each two
+fn column_tall(column: &[Group]) -> f32 {
+  let fields: f32 = column.iter().map(group_tall).sum();
+  fields + FIELD_GAP * column.len().saturating_sub(1) as f32
 }
 
-/// how tall a stack of tiers is, with a gap between each two
-fn stack_tall(tiers: &[&[Group]]) -> f32 {
-  let tiers_tall: f32 = (tiers.iter())
-    .map(|tier| {
-      bands(&tier.iter().collect::<Vec<_>>(), 0.0)
-        .iter()
-        .sum::<f32>()
-    })
-    .sum();
-  tiers_tall + FIELD_GAP * tiers.len().saturating_sub(1) as f32
-}
-
-/// the groups set directly in a row, as one tier, which the envelope's is among if anywhere
-fn tier_of(row: &[Cell]) -> Vec<&Group> {
-  (row.iter())
-    .filter_map(|cell| match cell {
-      Cell::Group(group) => Some(group),
-      Cell::Stack(_) => None,
-    })
-    .collect()
-}
-
-/// sets a tier of groups `down` the panel, each `across` it, with the envelope's screen `tall`:
-/// a field for each group, and a spot for each control. returns where the tier's parts are
-fn place_tier(
-  groups: &[(&Group, [f32; 2])],
+/// sets a group in a field `across` and `down` the panel, with its controls spread across it and
+/// set halfway down the room under its name: a field, and a spot for each control. returns where
+/// its parts are
+fn place_group(
+  group: &Group,
+  across: [f32; 2],
   down: [f32; 2],
-  tall: f32,
   spots: &mut [Option<Spot>; Control::ALL.len()],
   fields: &mut Vec<Field>,
 ) -> Row {
-  let tier: Vec<&Group> = groups.iter().map(|(group, _)| *group).collect();
-  let placed = <[_; 13]>::try_from(pack(down, &bands(&tier, tall), Pack::Start));
+  let mut bands = bands(group);
+  let spare = down[1] - down[0] - bands.iter().sum::<f32>();
+  // the room over the controls and under the windows
+  bands[5] += spare / 2.0;
+  bands[12] += spare / 2.0;
+  let placed = <[_; 13]>::try_from(pack(down, &bands, Pack::Start));
   let [_, letters, _, _, display, _, over, _, _, name, _, window, _] =
     placed.expect("a place for each band");
   let row = Row {
@@ -635,53 +598,32 @@ fn place_tier(
     name: middle(name),
     window: middle(window),
   };
-  let lines = row;
-  let tier_window: f32 = window_band(kinds(&tier)).iter().sum();
-  let tier_display: f32 = display_band(&tier, tall).iter().sum();
-  for (group, across) in groups {
-    let alone = std::slice::from_ref(group);
-    let inside = [across[0] + FIELD_PAD, across[1] - FIELD_PAD];
-    let display = group.envelope.then(|| Display {
-      at: Vec2::new(middle(*across), row.display),
+  let inside = [across[0] + FIELD_PAD, across[1] - FIELD_PAD];
+  fields.push(Field {
+    name: group.name,
+    across,
+    down,
+    y: row.heading,
+    display: group.envelope.then(|| Display {
+      at: Vec2::new(middle(across), row.display),
       size: Vec2::new(
         inside[1] - inside[0] - 2.0 * (DISPLAY_BORDER + DISPLAY_CLEAR),
-        tall,
+        DISPLAY_TALL,
       ),
+    }),
+  });
+  let slots: Vec<f32> = (group.controls.iter())
+    .map(|control| control.kind().slot())
+    .collect();
+  let slotted = pack(inside, &slots, Pack::Spread);
+  for (&control, slot) in group.controls.iter().zip(slotted) {
+    spots[control as usize] = Some(Spot {
+      x: middle(slot),
+      row,
+      envelope: group.envelope,
     });
-    fields.push(Field {
-      name: group.name,
-      across: *across,
-      down,
-      y: row.heading,
-      display,
-    });
-    // a group without the windows or the screen others in its tier have is moved by half the
-    // room they take, down for windows and up for the screen, which sets it in the middle of
-    // its field
-    let drop = (tier_window - window_band(kinds(alone)).iter().sum::<f32>()) / 2.0
-      - (tier_display - display_band(alone, tall).iter().sum::<f32>()) / 2.0;
-    let row = Row {
-      middle: row.middle + drop,
-      name: row.name + drop,
-      window: row.window + drop,
-      ..row
-    };
-    let slots: Vec<f32> = (group.controls.iter())
-      .map(|control| control.kind().slot())
-      .collect();
-    for (&control, slot) in group
-      .controls
-      .iter()
-      .zip(pack(inside, &slots, Pack::Spread))
-    {
-      spots[control as usize] = Some(Spot {
-        x: middle(slot),
-        row,
-        envelope: group.envelope,
-      });
-    }
   }
-  lines
+  row
 }
 
 /// where each control is, in the order of [`Control::ALL`], and the fields the groups of
@@ -689,84 +631,39 @@ fn place_tier(
 fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
   let mut spots = [None; Control::ALL.len()];
   let mut fields = Vec::new();
-  // each row as tall as the tallest of what it holds: its own groups with the envelope's
-  // screen at its least, each stack, and for the first the screen in its bezel
+  // each row as tall as its tallest column, and the first at least as tall as the screen in its
+  // bezel
   let screen_foot = SCREEN_AT.y + SCREEN_SIZE.y / 2.0 + border + FIELD_PAD;
-  let tall: Vec<f32> = (ROWS.iter().enumerate())
-    .map(|(index, row)| {
-      let mut tall = bands(&tier_of(row), DISPLAY_LEAST).iter().sum::<f32>();
-      for cell in *row {
-        if let Cell::Stack(tiers) = cell {
-          tall = tall.max(stack_tall(tiers));
-        }
-      }
-      if index == 0 {
-        tall = tall.max(screen_foot - TOP_MARGIN);
-      }
-      tall
-    })
-    .collect();
+  let mut tall = ROWS.map(|row| {
+    row
+      .iter()
+      .map(|column| column_tall(column))
+      .fold(0.0, f32::max)
+  });
+  tall[0] = tall[0].max(screen_foot - TOP_MARGIN);
   // the rows spread from the top margin to the strip
   let down = [TOP_MARGIN, STRIP_Y - STRIP_TALL / 2.0 - STRIP_CLEAR];
   let rows = pack(down, &tall, Pack::Spread);
-  // the room each row's cells share. the screen's field reaches to the right end
+  // the room each row's columns share, and how. the screen's field reaches to the right end
   let screen = [RIGHT - SCREEN_SIZE.x - 2.0 * SCREEN_CLEAR, RIGHT];
   let rooms = [
-    ([LEFT, screen[0] - FIELD_PAD * 2.0], Pack::Start),
-    ([LEFT, RIGHT], Pack::Spread),
+    ([LEFT, screen[0] - FIELD_GAP], Pack::Start),
     ([LEFT, RIGHT], Pack::Spread),
   ];
   let mut headings = Vec::new();
   for ((row, &span), (room, how)) in ROWS.iter().zip(&rows).zip(rooms) {
-    // a wide group takes what the others and the gaps between them leave
-    let fixed: f32 = (row.iter())
-      .map(|cell| match cell {
-        Cell::Group(group) if group.wide => 0.0,
-        Cell::Group(group) => group_wide(group),
-        Cell::Stack(tiers) => tiers.iter().map(|tier| tier_wide(tier)).fold(0.0, f32::max),
-      })
-      .sum();
-    let left = room[1] - room[0] - fixed - FIELD_GAP * (row.len() - 1) as f32;
     let widths: Vec<f32> = (row.iter())
-      .map(|cell| match cell {
-        Cell::Group(group) if group.wide => left,
-        Cell::Group(group) => group_wide(group),
-        Cell::Stack(tiers) => tiers.iter().map(|tier| tier_wide(tier)).fold(0.0, f32::max),
-      })
+      .map(|column| column.iter().map(group_wide).fold(0.0, f32::max))
       .collect();
-    let across = pack(room, &widths, how);
-    // the row's own groups are one tier as tall as the row, and the envelope's screen grows
-    // to fill what the tier leaves
-    let own: Vec<(&Group, [f32; 2])> = (row.iter().zip(&across))
-      .filter_map(|(cell, &across)| match cell {
-        Cell::Group(group) => Some((group, across)),
-        Cell::Stack(_) => None,
-      })
-      .collect();
-    let short = bands(&tier_of(row), DISPLAY_LEAST).iter().sum::<f32>();
-    let display_tall = DISPLAY_LEAST + (span[1] - span[0] - short).max(0.0);
-    let lines = place_tier(&own, span, display_tall, &mut spots, &mut fields);
-    headings.push(lines.heading);
-    // each stack's tiers spread down the row, and each tier's groups across the stack
-    for (cell, &across) in row.iter().zip(&across) {
-      let Cell::Stack(tiers) = cell else {
-        continue;
-      };
-      let heights: Vec<f32> = (tiers.iter())
-        .map(|tier| {
-          bands(&tier.iter().collect::<Vec<_>>(), 0.0)
-            .iter()
-            .sum::<f32>()
-        })
+    for (column, across) in row.iter().zip(pack(room, &widths, how)) {
+      // a column shorter than its row shares what it has spare between its groups' fields
+      let spare = (span[1] - span[0] - column_tall(column)) / column.len() as f32;
+      let heights: Vec<f32> = (column.iter())
+        .map(|group| group_tall(group) + spare)
         .collect();
-      for (tier, down) in tiers.iter().zip(pack(span, &heights, Pack::Spread)) {
-        let wide: Vec<f32> = tier.iter().map(group_wide).collect();
-        let placed: Vec<(&Group, [f32; 2])> = if let [group] = tier {
-          vec![(group, across)]
-        } else {
-          tier.iter().zip(pack(across, &wide, Pack::Spread)).collect()
-        };
-        place_tier(&placed, down, 0.0, &mut spots, &mut fields);
+      for (group, down) in column.iter().zip(pack(span, &heights, Pack::Spread)) {
+        let lines = place_group(group, across, down, &mut spots, &mut fields);
+        headings.push(lines.heading);
       }
     }
   }
@@ -1921,14 +1818,9 @@ mod tests {
     let screen = Screen::new(SCREEN_SIZE.x, SCREEN_SIZE.y);
     let (spots, fields) = layout(screen.border);
     // each control is in one group alone, which with every one placed is once each
-    // every group, whether set in its row or in a tier of a stack
-    let mut groups: Vec<&Group> = Vec::new();
-    for cell in ROWS.iter().flat_map(|row| row.iter()) {
-      match cell {
-        Cell::Group(group) => groups.push(group),
-        Cell::Stack(tiers) => groups.extend(tiers.iter().flat_map(|tier| tier.iter())),
-      }
-    }
+    let groups: Vec<&Group> = (ROWS.iter().flat_map(|row| row.iter()))
+      .flat_map(|column| column.iter())
+      .collect();
     let grouped: usize = groups.iter().map(|group| group.controls.len()).sum();
     assert_eq!(grouped, Control::ALL.len());
 
@@ -1968,13 +1860,11 @@ mod tests {
       let foot = field.down[1] - FIELD_BORDER;
       let over = match field.display {
         Some(display) => {
-          // the screen lies in the field, under the drops of the lines, as tall as it is let be
-          // at least
+          // the screen lies in the field, under the drops of the lines
           let (at, half) = (display.at, display.size / 2.0 + DISPLAY_BORDER);
           assert!(at.x - half.x >= field.across[0] + FIELD_BORDER);
           assert!(at.x + half.x <= field.across[1] - FIELD_BORDER);
           assert!(at.y - half.y > field.y + RULE_DROP);
-          assert!(display.size.y >= DISPLAY_LEAST);
           at.y + half.y
         }
         None => field.y + RULE_DROP,
