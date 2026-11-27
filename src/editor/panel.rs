@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use potpot::glam::{Mat4, Vec2, Vec3};
 use potpot::parts::{self, Handle, LedArc, LedRing, LedStops, Meter, PushSwitch, Screen, Vent};
-use potpot::{Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
+use potpot::{Anisotropy, Light, Look, Material, Mesh, Object, Place, Renderer, Scene};
 use potpot_controls::axis::Axis;
 use potpot_controls::flat::{Color, Flat};
 use potpot_controls::furniture::{GripLook, MenuLook};
@@ -42,8 +42,8 @@ const AMBER: Vec3 = Vec3::new(1.0, 0.66, 0.14);
 /// the one color for a warning, which a level meter turns near full scale
 const ORANGE: Vec3 = Vec3::new(1.0, 0.38, 0.05);
 /// the dark metal of the panel, and the darker metal of the strip along its bottom
-const GUNMETAL: Vec3 = Vec3::new(0.12, 0.13, 0.14);
-const STRIP_METAL: Vec3 = Vec3::new(0.06, 0.065, 0.07);
+const GUNMETAL: Vec3 = Vec3::new(0.3, 0.31, 0.32);
+const STRIP_METAL: Vec3 = Vec3::new(0.2, 0.205, 0.21);
 /// how much further apart lit letters are than the face sets them, in units of the grid a
 /// letter is drawn on, and how wide their strokes are for each point of their height
 const TRACKING: f32 = 1.0;
@@ -950,12 +950,9 @@ type Parts = Vec<(Arc<Mesh>, Material)>;
 /// the meshes of a knob that turn with it: its glossy black body, a face of spun aluminium if
 /// it is `capped`, and the lit line on it
 fn knob_parts(knob: parts::Knob, capped: bool) -> Parts {
-  // black plastic with a tight, faint highlight and little of the room in it, which keeps a
-  // knob's top black where the near light's mirror image falls on it
+  // black plastic with a tight highlight
   let body = Material {
-    specular: 0.3,
-    shininess: 600.0,
-    reflect: 0.1,
+    roughness: 0.12,
     ..Material::glossy(Vec3::splat(0.008))
   };
   let mut parts = vec![(Arc::new(knob.body()), body)];
@@ -1033,7 +1030,7 @@ impl Front {
     let flat = |x: f32, y: f32| Vec3::new(x, y, 0.0);
     // bead blasted more than brushed
     let metal = Material {
-      brushed: 0.35,
+      anisotropy: Anisotropy::Brushed(0.35),
       grain: 0.3,
       ..Material::brushed(GUNMETAL)
     };
@@ -1041,7 +1038,7 @@ impl Front {
     let chrome = Material::chrome(Vec3::splat(0.75));
     // polished steel brushed along the bar, which stands out from the darker metal of the panel
     let steel = Material {
-      brushed: 0.6,
+      anisotropy: Anisotropy::Brushed(0.6),
       ..Material::chrome(Vec3::splat(0.85))
     };
     // the far side of anything cut into the plate, which the light reaches
@@ -1143,7 +1140,7 @@ impl Front {
       // only the envelope's field has its screen
       if let Some(display) = shown_at {
         let (screen, at) = (display.screen(), display.at.extend(0.0));
-        put(screen.face(), at, screen_glass(display.size), None);
+        put(screen.face(), at, screen_glass(), None);
         put(screen.bezel(), at, Material::satin(STRIP_METAL), None);
         envelope_display = Some(display);
         dimmed.extend((lights.into_iter()).map(|(mesh, at, level)| (Arc::new(mesh), at, level)));
@@ -1224,7 +1221,7 @@ impl Front {
     let mut put = |mesh: Mesh, at: Vec3, material: Material| {
       fixed.put(&Arc::new(mesh), at, material, None);
     };
-    let glass = screen_glass(SCREEN_SIZE);
+    let glass = screen_glass();
     let Vec2 { x, y } = SCREEN_AT;
     put(screen.face(), flat(x, y), glass);
     put(screen.bezel(), flat(x, y), Material::satin(STRIP_METAL));
@@ -1445,7 +1442,7 @@ impl Front {
     }
 
     let Vec2 { x, y } = SCREEN_AT;
-    let glass = screen_glass(SCREEN_SIZE);
+    let glass = screen_glass();
     let shown = (self.shown.take())
       .filter(|shown| shown.of == feed)
       .unwrap_or_else(|| Kept {
@@ -1474,7 +1471,7 @@ impl Front {
           &envelope_shape(display, [attack, decay, sustain, release], envelope_light),
           x,
           y,
-          screen_glass(display.size),
+          screen_glass(),
           0,
         ),
       });
@@ -1544,13 +1541,10 @@ impl Front {
     light: f32,
   ) {
     let target = Some(Target::Readout(index));
+    // smoked glass, a dimmer mirror than clear
     let glass = Material {
-      reflect: 0.2,
-      // the key light is near and its mirror image falls on the windows at the top left,
-      // which a pane's full shine would grey over
-      specular: 0.08,
-      // sized as a much larger pane, which keeps the sheen to one corner
-      ..Material::pane(FACE, WINDOW.x * 3.5)
+      clearcoat: 0.4,
+      ..Material::pane(FACE)
     };
     let glass = match edit {
       Some(_) => glass.lit(CYAN * 0.4, 0.3, 0.0),
@@ -1596,13 +1590,12 @@ pub(super) fn furniture() -> (MenuLook, GripLook) {
   (menu, grip)
 }
 
-/// the face of a screen of a size, which what it shows is lit on
-fn screen_glass(size: Vec2) -> Material {
+/// the face of a screen, which what it shows is lit on
+fn screen_glass() -> Material {
   Material {
     // smoked glass, which mirrors less of the room than clear
-    reflect: 0.15,
-    // sized as a much larger pane, which keeps the sheen to the corner over the top of the plot
-    ..Material::screen(FACE, size.length() * 5.5)
+    clearcoat: 0.3,
+    ..Material::screen(FACE)
   }
 }
 
