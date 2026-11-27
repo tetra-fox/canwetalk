@@ -69,6 +69,10 @@ pub(crate) struct Shifter {
   lookahead: usize,
   /// the last detected pitch, held while the input is unvoiced
   input_pitch: f64,
+  /// `input_pitch` as each sample of input came in, which the rest of the effect reads as far
+  /// behind as it hears the input, and where the next goes
+  pitches: Vec<f64>,
+  next_pitch: usize,
   /// samples since the detector last held a pitch, and the samples in `FOLLOW_HOLD_SECONDS`.
   /// the count goes on past `follow_hold` and stops only where a `usize` ends
   unvoiced_for: usize,
@@ -114,6 +118,8 @@ impl Shifter {
       ahead: std::array::from_fn(|_| Ring::new(lookahead + 1)),
       lookahead,
       input_pitch,
+      pitches: vec![input_pitch; lookahead + 1],
+      next_pitch: 0,
       // a new shifter has no pitch it has just lost
       unvoiced_for: follow_hold,
       follow_hold,
@@ -145,6 +151,8 @@ impl Shifter {
       ahead,
       lookahead: _,
       input_pitch,
+      pitches,
+      next_pitch: _,
       unvoiced_for,
       follow_hold,
       smear,
@@ -161,6 +169,7 @@ impl Shifter {
       line.clear();
     }
     *input_pitch = lowest_pitch(detector, *sample_rate as f32);
+    pitches.fill(*input_pitch);
     *unvoiced_for = *follow_hold;
     smear.reset();
     for line in input {
@@ -265,21 +274,36 @@ impl Shifter {
     if settings.detect != self.detector.range() {
       self.detector.set_range(settings.detect);
       self.input_pitch = lowest_pitch(&self.detector, self.sample_rate as f32);
+      self.pitches.fill(self.input_pitch);
       self.unvoiced_for = self.follow_hold;
     }
     if let Some(period) = self.detector.push(live[0] + live[1]) {
       self.input_pitch = (2.0 / f64::from(period)).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end());
     }
     let onset = self.detector.voiced() && !self.following();
+    let unvoiced = self.unvoiced_for;
     self.unvoiced_for = if self.detector.voiced() {
       0
     } else {
       self.unvoiced_for.saturating_add(1)
     };
 
+    // the pitch of the input the rest of the effect hears now is what the detector had when it
+    // came in. a pitch found after a stretch with none is written back over the stretch, so
+    // the start of a sound has its own pitch as far as the lookahead reaches over it
+    let len = self.pitches.len();
+    self.pitches[self.next_pitch] = self.input_pitch;
+    if self.detector.voiced() {
+      for back in 1..=unvoiced.min(self.lookahead) {
+        self.pitches[(self.next_pitch + len - back) % len] = self.input_pitch;
+      }
+    }
+    let pitch = self.pitches[(self.next_pitch + len - self.lookahead) % len];
+    self.next_pitch = (self.next_pitch + 1) % len;
+
     let smear = settings.effects.smear;
     let frame = if smear > 0.0 {
-      self.smear.process(frame, 0.5 * self.input_pitch, smear)
+      self.smear.process(frame, 0.5 * pitch, smear)
     } else {
       self.smear.rest();
       frame
@@ -302,13 +326,13 @@ impl Shifter {
     // where the waveform does not repeat there are no cycles to mark, at the start of a word
     // or in a consonant, and the grains count the period off as they do unanchored
     let unmarked = Cycle {
-      pitch: self.input_pitch,
+      pitch,
       phase: None,
       onset,
     };
     let cycle = match settings
       .anchor
-      .then(|| self.marks.tick(&self.input, 2.0 / self.input_pitch))
+      .then(|| self.marks.tick(&self.input, 2.0 / pitch))
     {
       Some(Some((period, phase))) => Cycle {
         pitch: (2.0 / period).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end()),
@@ -1279,5 +1303,46 @@ mod tests {
         "{onsets} sounds started over a gap of {gap} ms"
       );
     }
+  }
+
+  /// the grains are cut at the pitch the detector had when the input they read came in, as
+  /// they are live. one it has the lookahead before them would be of input they have not
+  /// reached, which a voice that slides is already off. past where the pitch is first found,
+  /// the pitch the voices are given of each sample with the lookahead is what they are given
+  /// of it live. unanchored that is the pitch itself. the marks are given it too, but they
+  /// carry on from what they were given where the first pitch found was written back, which
+  /// is not as it is live. so is a pitch found again after the detector loses one, and the
+  /// vibrato here is one it does not lose
+  #[test]
+  fn the_lookahead_gives_the_voices_the_pitches_live_does() {
+    let ms = RATE as usize / 1000;
+    // a semitone either way, five times a second
+    let slide = |index: usize| {
+      let turn = 5.0 * index as f32 / RATE;
+      VOWEL_HZ * 2f32.powf((std::f32::consts::TAU * turn).sin() / 12.0)
+    };
+    let voice = vowel_at(RATE as usize, slide);
+    let found = 100 * ms;
+    let pitches = |live: bool, input: &[f32]| {
+      let mut shifter = shifter_in(&NEUTRAL);
+      shifter.set_live(live);
+      let pitches: Vec<_> = (input.iter().enumerate())
+        .map(|(index, &x)| {
+          shifter.process(&mut [[x, x]], &mut [[0.0; 2]], &[NEUTRAL]);
+          assert!(
+            index < found || shifter.detector.voiced(),
+            "the pitch is lost at {index}"
+          );
+          shifter.heard[0].0.pitch
+        })
+        .collect();
+      (pitches, shifter.latency())
+    };
+    let (ahead, latency) = pitches(false, &voice);
+    let mut late = vec![0.0; latency];
+    late.extend(&voice);
+    let (live, _) = pitches(true, &late);
+    let differs = (found..voice.len()).find(|&index| ahead[index] != live[index]);
+    assert_eq!(differs, None);
   }
 }
