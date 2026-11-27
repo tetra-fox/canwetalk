@@ -17,12 +17,12 @@ each parameter and shows the input's spectrum and the note nearest its detected 
 
 https://github.com/user-attachments/assets/6167cec1-cfab-46a3-8f7f-073d8812b617
 
-## Playing it
+## Behavior
 
 - In Off, Mono and Poly the input sounds through while no note is held, at its own pitch. Mono
   Gate and Poly Gate sound only while a note plays, shaped by the envelope.
-- The Poly modes play up to 16 notes. A note that finds no free voice takes the one that has had
-  its note longest, and the note it replaces comes back when a voice is free.
+- The Poly modes play up to 16 notes and steal voices FIFO. A stolen note comes back when a
+  voice frees up.
 - The detection ranges look for 25 to 700 Hz (Bass), 40 to 1000 Hz (Mid) and 40 to 2000 Hz
   (High).
 - Pitch bend on channel 1 bends every note by up to 2 semitones. On channels 2 to 16 it bends
