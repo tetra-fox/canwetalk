@@ -65,6 +65,8 @@ enum Kind {
   },
   /// a push switch that stays in while it is on
   Switch,
+  /// a small knob set in the strip along the bottom, with its name beside it and no window
+  Trim,
 }
 
 impl Control {
@@ -126,8 +128,8 @@ impl Control {
       | Self::Release
       | Self::PressureLevel
       | Self::SlideFormant
-      | Self::BendRange
-      | Self::Mix => Kind::Knob,
+      | Self::BendRange => Kind::Knob,
+      Self::Mix => Kind::Trim,
     }
   }
 

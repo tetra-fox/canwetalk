@@ -117,9 +117,13 @@ const RULE_IN: f32 = 10.0;
 const STRIP_Y: f32 = HEIGHT - 29.0;
 const STRIP_UP: f32 = 2.0;
 const STRIP_TALL: f32 = 34.0;
-/// the light on the strip that is as bright as the output is loud, and how wide it is
-const LOUD_LIGHT: Vec2 = Vec2::new(WIDTH - 66.0, STRIP_Y);
+/// how wide the light on the strip is that is as bright as the output is loud
 const LOUD_LIGHT_SIZE: f32 = 7.0;
+/// how tall the names on the strip are
+const STRIP_LETTERS: f32 = 4.2;
+/// the small knob on the strip: its radius and height
+const TRIM_RADIUS: f32 = 8.0;
+const TRIM_HEIGHT: f32 = 9.0;
 /// the level meters on the strip: how long each is and how many lights it has, the quietest
 /// level they show in decibels, and the level they turn orange from
 const METER_LONG: f32 = 120.0;
@@ -261,12 +265,7 @@ const ROWS: [&[&[Group]]; 2] = [
     &[
       Group::new(
         "EFFECTS",
-        &[
-          Control::Detune,
-          Control::Smear,
-          Control::Stereo,
-          Control::Mix,
-        ],
+        &[Control::Detune, Control::Smear, Control::Stereo],
       ),
       Group::new(
         "VIBRATO",
@@ -295,6 +294,11 @@ const ROWS: [&[&[Group]]; 2] = [
 /// the knob the shifts are turned by
 fn shift_knob() -> parts::Knob {
   parts::Knob::skirted(SHIFT_RADIUS, SHIFT_HEIGHT)
+}
+
+/// the knob on the strip, ribbed for a fingertip with a capped face
+fn trim_knob() -> parts::Knob {
+  parts::Knob::ribbed(TRIM_RADIUS, TRIM_HEIGHT)
 }
 
 /// the knob a selector is turned by, which points
@@ -346,6 +350,7 @@ impl Kind {
       Self::Selector { printed: true, .. } => 94.0,
       Self::Knob | Self::Selector { printed: false, .. } => 72.0,
       Self::Switch => 70.0,
+      Self::Trim => 2.0 * TRIM_RADIUS,
     }
   }
 
@@ -379,6 +384,7 @@ impl Kind {
         [up, down.max(SELECTOR_RADIUS)]
       }
       // over and under the collar
+      Self::Trim => [TRIM_RADIUS, TRIM_RADIUS],
       Self::Switch => {
         let switch = switch();
         let half = switch.plunger.length / 2.0 + switch.collar;
@@ -392,7 +398,7 @@ impl Kind {
     match self {
       Self::Shift | Self::Knob => true,
       Self::Selector { printed, .. } => !printed,
-      Self::Switch => false,
+      Self::Switch | Self::Trim => false,
     }
   }
 
@@ -402,6 +408,7 @@ impl Kind {
       Self::Shift => 7.5,
       Self::Knob | Self::Selector { .. } => 5.5,
       Self::Switch => 5.0,
+      Self::Trim => STRIP_LETTERS,
     }
   }
 }
@@ -667,6 +674,19 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
       }
     }
   }
+  // the mix's knob is on the strip, which has no rows: every part of it is on its middle
+  let on_strip = Row {
+    heading: STRIP_Y,
+    display: STRIP_Y,
+    middle: STRIP_Y,
+    name: STRIP_Y,
+    window: STRIP_Y,
+  };
+  spots[Control::Mix as usize] = Some(Spot {
+    x: middle(strip().mix),
+    row: on_strip,
+    envelope: false,
+  });
   fields.push(Field {
     name: SCREEN_NAME,
     across: screen,
@@ -721,6 +741,91 @@ fn slanted(mut mesh: Mesh, slope: f32) -> Mesh {
     vertex.position[0] -= vertex.position[1] * slope;
   }
   mesh
+}
+
+/// the vents either side of the plugin's name, with holes coarse enough to show at the panel's
+/// size
+fn vent() -> Vent {
+  Vent {
+    hole: 1.2,
+    hole_pitch: 1.9,
+    ..Vent::new(7, 5.0, 22.0)
+  }
+}
+
+/// where each part of the strip along the bottom is across the panel
+struct Strip {
+  in_meter: [f32; 2],
+  in_name: [f32; 2],
+  in_vent: [f32; 2],
+  logo: [f32; 2],
+  out_vent: [f32; 2],
+  out_name: [f32; 2],
+  out_meter: [f32; 2],
+  mix_name: [f32; 2],
+  mix: [f32; 2],
+  loud: [f32; 2],
+}
+
+/// the names of the meters on the strip, the input's and the output's
+const METER_NAMES: [&str; 2] = ["IN", "OUT"];
+
+/// the parts of the strip: in its middle the plugin's name between two vents, past each a
+/// meter's name and the meter, and at the right end the mix's name, its knob and the light
+/// that shows how loud the output is
+fn strip() -> Strip {
+  let vent = vent();
+  let vent_wide = vent.pitch * (vent.slots - 1) as f32 + vent.width;
+  // both meters' names take the room of the wider, which keeps the plugin's name in the middle
+  let name_wide = (METER_NAMES.iter())
+    .map(|name| lit_width(name, STRIP_LETTERS))
+    .fold(0.0, f32::max);
+  let logo_wide = lit_width("CANWETALK", 13.0);
+  // each part, with the gap after it
+  let middle_parts = [
+    METER_LONG, 8.0, name_wide, 18.0, vent_wide, 22.0, logo_wide, 22.0, vent_wide, 18.0, name_wide,
+    8.0, METER_LONG,
+  ];
+  let [
+    in_meter,
+    _,
+    in_name,
+    _,
+    in_vent,
+    _,
+    logo,
+    _,
+    out_vent,
+    _,
+    out_name,
+    _,
+    out_meter,
+  ] = <[_; 13]>::try_from(pack([EAR, WIDTH - EAR], &middle_parts, Pack::Center))
+    .expect("a place for each part of the middle of the strip");
+  let end_parts = [
+    lit_width(Control::Mix.name(), STRIP_LETTERS),
+    6.0,
+    2.0 * TRIM_RADIUS,
+    10.0,
+    LOUD_LIGHT_SIZE,
+  ];
+  // up to a little way in from the strip's right end
+  let end = WIDTH - EAR - 18.0;
+  let start = end - end_parts.iter().sum::<f32>();
+  let [mix_name, _, mix, _, loud] = <[_; 5]>::try_from(pack([start, end], &end_parts, Pack::Start))
+    .expect("a place for each part of the end of the strip");
+  Strip {
+    in_meter,
+    in_name,
+    in_vent,
+    logo,
+    out_vent,
+    out_name,
+    out_meter,
+    mix_name,
+    mix,
+    loud,
+  }
 }
 
 /// a level meter on the strip, lying on its side once turned a quarter
@@ -886,6 +991,7 @@ struct Front {
   shift_knob: Parts,
   selector_knob: Parts,
   small_knob: Parts,
+  trim_knob: Parts,
   switch: PushSwitch,
   plunger: Arc<Mesh>,
   ring: LedRing,
@@ -899,7 +1005,9 @@ struct Front {
   arcs: Vec<Option<Kept<[f32; 3]>>>,
   /// the light at each stop of a selector
   stop_light: Arc<Mesh>,
+  /// the light that shows how loud the output is, and its middle
   loud_light: Arc<Mesh>,
+  loud: Vec2,
   meter: Meter,
   meter_light: Arc<Mesh>,
   /// where the input's meter and the output's lie, each from its quiet end
@@ -1069,8 +1177,8 @@ impl Front {
             fixed.put(&figure, at.extend(0.0), lit(LABEL_LIT), None);
           }
         }
-        // its light and the gap it is set in change with its value, so are drawn with it
-        Kind::Knob => {}
+        // a knob's light and the gap it is set in change with its value, so are drawn with it
+        Kind::Knob | Kind::Trim => {}
         Kind::Selector { choices, printed } => {
           let stops = selector_stops(choices);
           fixed.extend(stops.seats(&stop_seat, x, y));
@@ -1092,12 +1200,15 @@ impl Front {
           );
         }
       }
-      let name = Arc::new(lit_legend(control.name(), kind.name_tall()));
-      let at = flat(x, spot.row.name);
-      if spot.envelope {
-        dimmed.push((name, at, LABEL_LIT));
-      } else {
-        fixed.put(&name, at, lit(LABEL_LIT), None);
+      // the strip's knob has its name drawn with the strip
+      if kind != Kind::Trim {
+        let name = Arc::new(lit_legend(control.name(), kind.name_tall()));
+        let at = flat(x, spot.row.name);
+        if spot.envelope {
+          dimmed.push((name, at, LABEL_LIT));
+        } else {
+          fixed.put(&name, at, lit(LABEL_LIT), None);
+        }
       }
       // the rim the window its value shows in is sunk behind. the glass in it changes with
       // what it shows
@@ -1121,57 +1232,29 @@ impl Front {
     let grid_objects = grid.len();
     fixed.extend(grid);
 
-    // a strip of darker metal between the ears along the bottom. the plugin's name is lit on
-    // it over a line of light, between two vents with light coming through them. past each
-    // vent is a name and a meter running left to right, the input's on the left and the
-    // output's on the right, and at the right end is the light that shows how loud the
-    // output is
+    // a strip of darker metal between the ears along the bottom, with the parts `strip` places.
+    // the plugin's name is lit over a line of light, light comes through the vents, and the
+    // meters run left to right
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, None);
     };
-    let strip = Material::brushed(STRIP_METAL);
+    let strip_metal = Material::brushed(STRIP_METAL);
     let strip_wide = WIDTH - 2.0 * EAR - 8.0;
     let slab = parts::chamfered_slab(strip_wide, STRIP_TALL, STRIP_UP, 1.2, 4.0);
-    put(slab, half_wide, STRIP_Y, 0.0, strip);
-    // holes coarse enough to show at the panel's size
-    let vent = Vent {
-      hole: 1.2,
-      hole_pitch: 1.9,
-      ..Vent::new(7, 5.0, 22.0)
-    };
-    let vent_wide = vent.pitch * (vent.slots - 1) as f32 + vent.width;
-    // both meters' names take the room of the wider, which keeps the name of the plugin in the
-    // middle of the panel
-    let names = ["IN", "OUT"];
-    let name_wide = names
-      .map(|name| lit_width(name, 4.2))
-      .into_iter()
-      .fold(0.0, f32::max);
-    let logo_wide = lit_width("CANWETALK", 13.0);
-    // each part across the strip, with the gap after it
-    let [
+    put(slab, half_wide, STRIP_Y, 0.0, strip_metal);
+    let vent = vent();
+    let Strip {
       in_meter,
-      _,
       in_name,
-      _,
       in_vent,
-      _,
       logo,
-      _,
       out_vent,
-      _,
       out_name,
-      _,
       out_meter,
-    ] = <[_; 13]>::try_from(pack(
-      [EAR, WIDTH - EAR],
-      &[
-        METER_LONG, 8.0, name_wide, 18.0, vent_wide, 22.0, logo_wide, 22.0, vent_wide, 18.0,
-        name_wide, 8.0, METER_LONG,
-      ],
-      Pack::Center,
-    ))
-    .expect("a place for each part of the strip");
+      mix_name,
+      loud,
+      ..
+    } = strip();
     let name = slanted(lit_legend("CANWETALK", 13.0), 0.2);
     put(name, middle(logo), STRIP_Y - 2.0, STRIP_UP, lit(1.0));
     let underline = [
@@ -1197,9 +1280,10 @@ impl Front {
       Mat4::from_translation(Vec3::new(span[0], STRIP_Y, STRIP_UP))
         * Mat4::from_rotation_z(FRAC_PI_2)
     });
-    for (name, span) in names.into_iter().zip([in_name, out_name]) {
+    let names = METER_NAMES.into_iter().zip([in_name, out_name]);
+    for (name, span) in names.chain([(Control::Mix.name(), mix_name)]) {
       put(
-        lit_legend(name, 4.2),
+        lit_legend(name, STRIP_LETTERS),
         middle(span),
         STRIP_Y,
         STRIP_UP,
@@ -1216,8 +1300,8 @@ impl Front {
       .collect();
     put(
       parts::led_seat(LOUD_LIGHT_SIZE),
-      LOUD_LIGHT.x,
-      LOUD_LIGHT.y,
+      middle(loud),
+      STRIP_Y,
       STRIP_UP,
       hole,
     );
@@ -1230,6 +1314,7 @@ impl Front {
       shift_knob: knob_parts(shift_knob(), true),
       selector_knob: knob_parts(selector_knob(), false),
       small_knob: knob_parts(small_knob(), true),
+      trim_knob: knob_parts(trim_knob(), true),
       plunger: Arc::new(switch.plunger()),
       switch,
       ring_light: Arc::new(ring.segment()),
@@ -1239,6 +1324,7 @@ impl Front {
       arcs: Control::ALL.map(|_| None).into(),
       stop_light: Arc::new(stop.light()),
       loud_light: Arc::new(parts::led(LOUD_LIGHT_SIZE)),
+      loud: Vec2::new(middle(loud), STRIP_Y),
       meter_light: Arc::new(meter.segment()),
       meter,
       meters,
@@ -1321,6 +1407,7 @@ impl Front {
           drawn.extend(stops.lights(&self.stop_light, x, y, reading.value, CYAN));
           &self.selector_knob
         }
+        Kind::Trim => &self.trim_knob,
         Kind::Switch => {
           // a switch that is on stays in and is lit from under it, and throws its light
           // around it. one that is off is lit barely
@@ -1339,7 +1426,14 @@ impl Front {
           continue;
         }
       };
-      let transform = parts::knob_transform(x, y, reading.value, parts::KNOB_SWEEP);
+      // the strip's knob stands on the strip
+      let lift = if control.kind() == Kind::Trim {
+        STRIP_UP
+      } else {
+        0.0
+      };
+      let transform = Mat4::from_translation(Vec3::Z * lift)
+        * parts::knob_transform(x, y, reading.value, parts::KNOB_SWEEP);
       for (mesh, material) in knob {
         drawn.place(mesh, transform, *material, target);
       }
@@ -1400,11 +1494,11 @@ impl Front {
     let [_, loud] = levels;
     drawn.put(
       &self.loud_light,
-      LOUD_LIGHT.extend(STRIP_UP),
+      self.loud.extend(STRIP_UP),
       parts::led_material(CYAN, loud, LOUD_LIGHT_SIZE),
       None,
     );
-    let over = LOUD_LIGHT.extend(STRIP_UP + LOUD_LIGHT_SIZE);
+    let over = self.loud.extend(STRIP_UP + LOUD_LIGHT_SIZE);
     lamps.push(parts::led_lamp(
       over,
       CYAN,
@@ -1822,7 +1916,8 @@ mod tests {
       .flat_map(|column| column.iter())
       .collect();
     let grouped: usize = groups.iter().map(|group| group.controls.len()).sum();
-    assert_eq!(grouped, Control::ALL.len());
+    // and the mix on the strip
+    assert_eq!(grouped + 1, Control::ALL.len());
 
     // between the ears and over the strip, and clear of each other
     for field in &fields {
