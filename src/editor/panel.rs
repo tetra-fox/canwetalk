@@ -173,6 +173,8 @@ const GRID: Color = [0.035, 0.11, 0.14, 1.0];
 /// how long each dash is and the gap after it
 const RANGE_EDGE: Color = [AMBER.x * 0.8, AMBER.y * 0.8, AMBER.z * 0.8, 1.0];
 const RANGE_DASH: [f32; 2] = [4.0, 3.0];
+/// how much of the dashes' amber the screen's colors take within the range
+const RANGE_TINT: f32 = 0.14;
 const LABELS: Color = [0.12, 0.42, 0.52, 1.0];
 const FILL: Color = [0.02, 0.12, 0.16, 1.0];
 const EDGE: Color = [CYAN.x, CYAN.y, CYAN.z, 1.0];
@@ -1659,14 +1661,7 @@ fn plotted([across, up]: [f32; 2]) -> [f32; 2] {
 /// the line that sets the note's column apart
 fn lines() -> Flat {
   let mut flat = Flat::default();
-  for hz in HERTZ_LINES {
-    let across = HERTZ.turn(hz);
-    flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, GRID);
-  }
-  for level in LEVEL_LINES {
-    let up = LEVELS.turn(level);
-    flat.line(plotted([0.0, up]), plotted([1.0, up]), 1.0, GRID);
-  }
+  grid(&mut flat, [0.0, 1.0], GRID);
   for (hz, name) in HERTZ_NAMES {
     let [x, y] = plotted([HERTZ.turn(hz), 0.0]);
     flat.centered(name, [x, y + 7.0], 5.0, 1.0, LABELS);
@@ -1677,11 +1672,34 @@ fn lines() -> Flat {
   flat
 }
 
-/// what the screen shows of the feed: over the range of pitches detection looks for, the level
-/// of each band of the input's spectrum as a curve over a fill, the output's as a curve over that, and a line up at the detected pitch
-/// and at each pitch a voice makes. beside them are the note nearest the detected pitch, how
-/// many cents off it the pitch is and the pitch itself, and under those the notes the latest
-/// voices make, with a count of the others. a note there is none of is two dashes
+/// the lines of the plot across and up it, from `from` to `to` of the way across, in `color`
+fn grid(flat: &mut Flat, [from, to]: [f32; 2], color: Color) {
+  for hz in HERTZ_LINES {
+    let across = HERTZ.turn(hz);
+    if (from..=to).contains(&across) {
+      flat.line(plotted([across, 0.0]), plotted([across, 1.0]), 1.0, color);
+    }
+  }
+  for level in LEVEL_LINES {
+    let up = LEVELS.turn(level);
+    flat.line(plotted([from, up]), plotted([to, up]), 1.0, color);
+  }
+}
+
+/// a color of the screen as it shows within the range detection looks for
+fn tinted([red, green, blue, cover]: Color) -> Color {
+  let [red, green, blue] = Vec3::new(red, green, blue)
+    .lerp(AMBER, RANGE_TINT)
+    .to_array();
+  [red, green, blue, cover]
+}
+
+/// what the screen shows of the feed: the range of pitches detection looks for, tinted amber, the
+/// level of each band of the input's spectrum as a curve over a fill, the output's as a curve over
+/// that, and a line up at the detected pitch and at each pitch a voice makes. beside them are the
+/// note nearest the detected pitch, how many cents off it the pitch is and the pitch itself, and
+/// under those the notes the latest voices make, with a count of the others. a note there is none
+/// of is two dashes
 fn spectrum(feed: &[f32], [lowest, highest]: [f32; 2]) -> Flat {
   let mut flat = Flat::default();
   let curve = |first: usize| -> Vec<[f32; 2]> {
@@ -1693,10 +1711,23 @@ fn spectrum(feed: &[f32], [lowest, highest]: [f32; 2]) -> Flat {
       .collect()
   };
   let heard = curve(INPUT_BANDS);
+  // the range of pitches detection looks for, from `lowest` to `highest` hertz, tinted amber.
+  // a picture's shapes cover what is under them, with no clear colors, so the face, the grid and
+  // the input's fill within the range are each drawn again in their tinted colors
+  // TODO: one clear amber rect over the range once potpot's screen pictures blend
+  let [low, high] = [HERTZ.turn(lowest), HERTZ.turn(highest)];
+  let face = [FACE.x, FACE.y, FACE.z, 1.0];
+  flat.rect(plotted([low, 1.0]), plotted([high, 0.0]), tinted(face));
+  grid(&mut flat, [low, high], tinted(GRID));
   flat.area(&heard, PLOT[1].y, FILL);
-  // a dashed line up at each end of the range of pitches detection looks for, from `lowest` to
-  // `highest` hertz, dashing from the foot of the plot. it lies over the input's fill and under
-  // the curves
+  let [left, right] = [plotted([low, 0.0])[0], plotted([high, 0.0])[0]];
+  let within: Vec<[f32; 2]> = (heard.iter())
+    .filter(|[x, _]| (left..=right).contains(x))
+    .copied()
+    .collect();
+  flat.area(&within, PLOT[1].y, tinted(FILL));
+  // a dashed line up at each end of the range, dashing from the foot of the plot, over the fill
+  // and under the curves
   let [dash, gap] = RANGE_DASH;
   let top = plotted([0.0, 1.0])[1];
   for hz in [lowest, highest] {
