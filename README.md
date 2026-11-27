@@ -23,8 +23,6 @@ https://github.com/user-attachments/assets/6167cec1-cfab-46a3-8f7f-073d8812b617
   Gate and Poly Gate sound only while a note plays, shaped by the envelope.
 - The Poly modes play up to 16 notes and steal voices FIFO. A stolen note comes back when a
   voice frees up.
-- The detection ranges look for 25 to 700 Hz (Bass), 40 to 1000 Hz (Mid) and 40 to 2000 Hz
-  (High).
 - Pitch bend on channel 1 bends every note by up to 2 semitones. On channels 2 to 16 it bends
   that channel's notes by up to the Bend setting.
 - Channel pressure and CC 74 set the pressure and slide of a channel's notes. Per-note pressure,
