@@ -15,7 +15,10 @@ use potpot_controls::layout::{Pack, middle, pack};
 use potpot_controls::stroke;
 use potpot_window::{Gpu, Skin, View, wgpu};
 
+use nice_plug::prelude::Enum;
+
 use super::{Control, Kind, note};
+use crate::notes::Mode;
 use crate::params::SHIFT_SEMITONES;
 use crate::spectrum::{
   BANDS, FLOOR_DB, FOLLOW_SLOT, HERTZ, HERTZ_ENDS, INPUT_BANDS, INPUT_LEVEL, OUTPUT_BANDS,
@@ -23,7 +26,7 @@ use crate::spectrum::{
 };
 
 pub(super) const WIDTH: f32 = 920.0;
-pub(super) const HEIGHT: f32 = 500.0;
+pub(super) const HEIGHT: f32 = 550.0;
 /// how far a point slides across the picture for each unit of its height: seen a little
 /// from in front
 const LEAN: Vec2 = Vec2::new(0.0, -0.3);
@@ -90,6 +93,11 @@ const CHOICE_OUT: f32 = 31.0;
 const CHOICE_TALL: f32 = 5.0;
 /// how bright a light is that is off: a selector's at a stop it is not at, and a switch's
 const DARK: f32 = 0.1;
+/// how brightly the envelope's lettering, lights and screen are lit, for each part of their
+/// full light, while the mode plays no envelope
+const DIMMED: f32 = 0.3;
+/// how wide the envelope's screen draws the sustain held, in turns of a time's knob
+const HOLD: f32 = 0.6;
 /// how bright a shift's ring is over what formant follow adds to the shift
 const FOLLOW_LIT: f32 = 0.35;
 /// the field each group of controls is set in: how wide its rim is, how high and the radius
@@ -165,16 +173,21 @@ const MADE_PITCH: Color = [0.38, 0.5, 0.56, 1.0];
 const MADE_LABELS: Color = [0.28, 0.4, 0.46, 1.0];
 
 /// a row of controls across the panel, by where its parts are down it: the top and the foot
-/// of the fields its groups are set in, the names of its groups, the middles of its controls,
-/// the names under them and the windows their values show in
+/// of the fields its groups are set in, the names of its groups, the middle of the envelope's
+/// screen, the middles of its controls, the names under them and the windows their values show
+/// in
 #[derive(Clone, Copy, Debug)]
 struct Row {
   field: [f32; 2],
   heading: f32,
+  display: f32,
   middle: f32,
   name: f32,
   window: f32,
 }
+
+/// the face of the screen the envelope's shape is drawn on, over the envelope's controls
+const DISPLAY_SIZE: Vec2 = Vec2::new(272.0, 40.0);
 
 /// the room over the first row, at the top of the panel, and under the last, over the strip
 const TOP_MARGIN: f32 = 10.0;
@@ -185,63 +198,85 @@ const OVER_GAP: f32 = 5.5;
 const UNDER_GAP: f32 = 10.0;
 const NAME_GAP: f32 = 6.0;
 
-/// the groups of controls in each row, left to right, each under its name. the one group of
-/// the first row keeps to the left, beside the screen, and the groups of the others are
-/// spread from end to end
-const GROUPS: [&[(&str, &[Control])]; 3] = [
-  &[(
-    "SHIFT",
-    &[
+/// a group of controls, set in a field under its name
+struct Group {
+  name: &'static str,
+  controls: &'static [Control],
+  /// whether it is the envelope's: it shows the envelope's shape on a screen over its
+  /// controls, and is dimmed while the mode plays no envelope
+  envelope: bool,
+}
+
+/// the groups of controls in each row, left to right. the one group of the first row keeps to
+/// the left, beside the screen, and the groups of the others are spread from end to end
+const GROUPS: [&[Group]; 3] = [
+  &[Group {
+    name: "SHIFT",
+    controls: &[
       Control::Pitch,
       Control::Formant,
       Control::FormantFollow,
       Control::Smooth,
     ],
-  )],
+    envelope: false,
+  }],
   &[
-    (
-      "EFFECTS",
-      &[Control::Detune, Control::Smear, Control::Stereo],
-    ),
-    (
-      "VIBRATO",
-      &[
+    Group {
+      name: "EFFECTS",
+      controls: &[Control::Detune, Control::Smear, Control::Stereo],
+      envelope: false,
+    },
+    Group {
+      name: "VIBRATO",
+      controls: &[
         Control::VibratoDepth,
         Control::VibratoRate,
         Control::VibratoSync,
         Control::VibratoDivision,
       ],
-    ),
-    (
-      "NOTES",
-      &[
+      envelope: false,
+    },
+    Group {
+      name: "NOTES",
+      controls: &[
         Control::Mode,
         Control::Latch,
         Control::Glide,
         Control::GlideNotesOnly,
       ],
-    ),
+      envelope: false,
+    },
   ],
   &[
-    (
-      "ENVELOPE",
-      &[
+    Group {
+      name: "ENVELOPE",
+      controls: &[
         Control::Attack,
         Control::Decay,
         Control::Sustain,
         Control::Release,
       ],
-    ),
-    (
-      "EXPRESSION",
-      &[
+      envelope: true,
+    },
+    Group {
+      name: "EXPRESSION",
+      controls: &[
         Control::PressureLevel,
         Control::SlideFormant,
         Control::BendRange,
       ],
-    ),
-    ("DETECTION", &[Control::Detect, Control::Anchor]),
-    ("OUTPUT", &[Control::Mix]),
+      envelope: false,
+    },
+    Group {
+      name: "DETECTION",
+      controls: &[Control::Detect, Control::Anchor],
+      envelope: false,
+    },
+    Group {
+      name: "OUTPUT",
+      controls: &[Control::Mix],
+      envelope: false,
+    },
   ],
 ];
 
@@ -427,11 +462,13 @@ fn switch() -> PushSwitch {
   PushSwitch::backlit(30.0, 18.0, 6.0)
 }
 
-/// where a control is: across the panel, and its row
+/// where a control is: across the panel, and its row. `envelope` is whether it is one of the
+/// envelope's
 #[derive(Clone, Copy, Debug)]
 struct Spot {
   x: f32,
   row: Row,
+  envelope: bool,
 }
 
 impl Spot {
@@ -445,18 +482,29 @@ impl Spot {
 }
 
 /// a field set into the panel, `across` and `down` it, with a name over what is in it. `y` is
-/// how far down the name is
+/// how far down the name is. the envelope's has the middle of the screen its shape is drawn on
 #[derive(Clone, Debug)]
 struct Field {
   name: &'static str,
   across: [f32; 2],
   down: [f32; 2],
   y: f32,
+  display: Option<Vec2>,
 }
 
 /// the kinds of the controls in `groups`
-fn kinds(groups: &[(&str, &[Control])]) -> impl Iterator<Item = Kind> {
-  (groups.iter()).flat_map(|(_, controls)| controls.iter().map(|control| control.kind()))
+fn kinds(groups: &[Group]) -> impl Iterator<Item = Kind> {
+  (groups.iter()).flat_map(|group| group.controls.iter().map(|control| control.kind()))
+}
+
+/// the room down the panel the envelope's screen takes in a set of groups: the gap over it and
+/// the screen with its bezel, or none if the envelope is not among them
+fn display_band(groups: &[Group], border: f32) -> [f32; 2] {
+  if groups.iter().any(|group| group.envelope) {
+    [OVER_GAP, DISPLAY_SIZE.y + 2.0 * border]
+  } else {
+    [0.0, 0.0]
+  }
 }
 
 /// the room down the panel a set of controls takes under their names for windows: the gap
@@ -478,11 +526,14 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
   let bands = GROUPS.map(|groups| {
     let largest = |of: fn(Kind) -> f32| kinds(groups).map(of).fold(0.0, f32::max);
     let [name_gap, window] = window_band(kinds(groups));
+    let [display_gap, display] = display_band(groups, border);
     [
       FIELD_PAD,
       HEADING_TALL,
       // the drop starts at the middle of the letters
       RULE_DROP - HEADING_TALL / 2.0,
+      display_gap,
+      display,
       OVER_GAP,
       largest(|kind| kind.reach()[0]),
       largest(|kind| kind.reach()[1]),
@@ -501,12 +552,13 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
   let down = [TOP_MARGIN, STRIP_Y - STRIP_TALL / 2.0 - STRIP_CLEAR];
   let rows: Vec<Row> = (pack(down, &tall, Pack::Spread).into_iter().zip(bands))
     .map(|(span, bands)| {
-      let placed = <[_; 11]>::try_from(pack(span, &bands, Pack::Start));
-      let [_, letters, _, _, over, _, _, name, _, window, _] =
+      let placed = <[_; 13]>::try_from(pack(span, &bands, Pack::Start));
+      let [_, letters, _, _, display, _, over, _, _, name, _, window, _] =
         placed.expect("a place for each band");
       Row {
         field: span,
         heading: middle(letters),
+        display: middle(display),
         middle: over[1],
         name: middle(name),
         window: middle(window),
@@ -528,35 +580,37 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
   ];
   for ((&row, groups), (room, how)) in rows.iter().zip(GROUPS).zip(rooms) {
     let widths: Vec<f32> = (groups.iter())
-      .map(|(_, controls)| slots(controls).iter().sum::<f32>() + 2.0 * FIELD_PAD)
+      .map(|group| slots(group.controls).iter().sum::<f32>() + 2.0 * FIELD_PAD)
       .collect();
     let row_window: f32 = window_band(kinds(groups)).iter().sum();
-    for (&(name, controls), span) in groups.iter().zip(pack(room, &widths, how)) {
+    let row_display: f32 = display_band(groups, border).iter().sum();
+    for (group, span) in groups.iter().zip(pack(room, &widths, how)) {
+      let alone = std::slice::from_ref(group);
       fields.push(Field {
-        name,
+        name: group.name,
         across: span,
         down: row.field,
         y: row.heading,
+        display: group.envelope.then(|| Vec2::new(middle(span), row.display)),
       });
-      // a group with no windows in a row that has them sits halfway down into the room the
-      // windows take, which sets it in the middle of its field
-      let drop = row_window
-        - window_band(controls.iter().map(|control| control.kind()))
-          .iter()
-          .sum::<f32>();
+      // a group without the windows or the screen others in its row have is moved by half the
+      // room they take, down for windows and up for the screen, which sets it in the middle of
+      // its field
+      let drop = (row_window - window_band(kinds(alone)).iter().sum::<f32>()) / 2.0
+        - (row_display - display_band(alone, border).iter().sum::<f32>()) / 2.0;
       let row = Row {
-        middle: row.middle + drop / 2.0,
-        name: row.name + drop / 2.0,
+        middle: row.middle + drop,
+        name: row.name + drop,
+        window: row.window + drop,
         ..row
       };
       let inside = [span[0] + FIELD_PAD, span[1] - FIELD_PAD];
-      for (&control, slot) in controls
-        .iter()
-        .zip(pack(inside, &slots(controls), Pack::Start))
-      {
+      let slotted = pack(inside, &slots(group.controls), Pack::Start);
+      for (&control, slot) in group.controls.iter().zip(slotted) {
         spots[control as usize] = Some(Spot {
           x: middle(slot),
           row,
+          envelope: group.envelope,
         });
       }
     }
@@ -566,6 +620,7 @@ fn layout(border: f32) -> ([Spot; Control::ALL.len()], Vec<Field>) {
     across: screen,
     down: rows[0].field,
     y: rows[0].heading,
+    display: None,
   });
   (
     spots.map(|spot| spot.expect("every control is in a group")),
@@ -768,6 +823,14 @@ struct Front {
   spots: [Spot; Control::ALL.len()],
   /// everything that never moves or changes
   fixed: Drawn,
+  /// the lit lettering and lines of the envelope's group, each with how brightly it is lit
+  /// while the envelope plays
+  dimmed: Vec<(Arc<Mesh>, Vec3, f32)>,
+  /// the envelope's screen, its middle, and its shape as last drawn, kept for as long as its
+  /// controls and its light are the same
+  display: Screen,
+  display_at: Vec2,
+  shape: Option<Kept<[f32; 5]>>,
   /// the parts of a shift's knob and of the others
   shift_knob: Parts,
   selector_knob: Parts,
@@ -780,8 +843,9 @@ struct Front {
   arc: LedArc,
   /// the dark gap an arc is set in and its lens
   arc_meshes: [Arc<Mesh>; 2],
-  /// the lit arc around each control, kept for as long as it is lit over the same run
-  arcs: Vec<Option<Kept<[f32; 2]>>>,
+  /// the lit arc around each control, kept for as long as it is lit over the same run as
+  /// brightly
+  arcs: Vec<Option<Kept<[f32; 3]>>>,
   /// the light at each stop of a selector
   stop_light: Arc<Mesh>,
   loud_light: Arc<Mesh>,
@@ -881,11 +945,15 @@ impl Front {
 
     // each group of controls and the screen are set in a field with a cut rim, with the name
     // over them between two lines of light that turn down at their far ends
+    let mut dimmed = Vec::new();
+    let display = Screen::new(DISPLAY_SIZE.x, DISPLAY_SIZE.y);
+    let mut display_at = None;
     for Field {
       name,
       across: [left, right],
       down: [top, foot],
       y,
+      display: shown_at,
     } in fields
     {
       let field = parts::inset(
@@ -897,12 +965,8 @@ impl Front {
       );
       let at = middle([left, right]);
       put(field, flat(at, middle([top, foot])), metal, None);
-      put(
-        lit_legend(name, HEADING_TALL),
-        flat(at, y),
-        lit(HEADING_LIT),
-        None,
-      );
+      // the name and the lines are lit, and the envelope's are dimmed with it
+      let mut lights = vec![(lit_legend(name, HEADING_TALL), flat(at, y), HEADING_LIT)];
       let clear = lit_width(name, HEADING_TALL) / 2.0 + 6.0;
       for (near, far) in [(at - clear, left + RULE_IN), (at + clear, right - RULE_IN)] {
         let path = [
@@ -916,7 +980,28 @@ impl Front {
           hole,
           None,
         );
-        put(parts::light_line(&path, 0.9), Vec3::ZERO, lit(0.6), None);
+        lights.push((parts::light_line(&path, 0.9), Vec3::ZERO, 0.6));
+      }
+      // only the envelope's field has its screen
+      if let Some(shown_at) = shown_at {
+        put(
+          display.face(),
+          shown_at.extend(0.0),
+          screen_glass(DISPLAY_SIZE),
+          None,
+        );
+        put(
+          display.bezel(),
+          shown_at.extend(0.0),
+          Material::satin(STRIP_METAL),
+          None,
+        );
+        display_at = Some(shown_at);
+        dimmed.extend((lights.into_iter()).map(|(mesh, at, level)| (Arc::new(mesh), at, level)));
+      } else {
+        for (mesh, at, level) in lights {
+          put(mesh, at, lit(level), None);
+        }
       }
     }
 
@@ -967,7 +1052,12 @@ impl Front {
         }
       }
       let name = Arc::new(lit_legend(control.name(), kind.name_tall()));
-      fixed.put(&name, flat(x, spot.row.name), lit(LABEL_LIT), None);
+      let at = flat(x, spot.row.name);
+      if spot.envelope {
+        dimmed.push((name, at, LABEL_LIT));
+      } else {
+        fixed.put(&name, at, lit(LABEL_LIT), None);
+      }
       // the rim the window its value shows in is sunk behind. the glass in it changes with
       // what it shows
       if kind.has_window() {
@@ -982,7 +1072,7 @@ impl Front {
     let mut put = |mesh: Mesh, at: Vec3, material: Material| {
       fixed.put(&Arc::new(mesh), at, material, None);
     };
-    let glass = screen_glass();
+    let glass = screen_glass(SCREEN_SIZE);
     let Vec2 { x, y } = SCREEN_AT;
     put(screen.face(), flat(x, y), glass);
     put(screen.bezel(), flat(x, y), Material::satin(STRIP_METAL));
@@ -991,8 +1081,10 @@ impl Front {
     fixed.extend(grid);
 
     // a strip of darker metal between the ears along the bottom. the plugin's name is lit on
-    // it over a line of light, between two vents with light coming through them, and to the
-    // right is the light that shows how loud the output is
+    // it over a line of light, between two vents with light coming through them. past each
+    // vent is a name and a meter running left to right, the input's on the left and the
+    // output's on the right, and at the right end is the light that shows how loud the
+    // output is
     let mut put = |mesh: Mesh, x: f32, y: f32, z: f32, material: Material| {
       fixed.put(&Arc::new(mesh), Vec3::new(x, y, z), material, None);
     };
@@ -1000,12 +1092,50 @@ impl Front {
     let strip_wide = WIDTH - 2.0 * EAR - 8.0;
     let slab = parts::chamfered_slab(strip_wide, STRIP_TALL, STRIP_UP, 1.2, 4.0);
     put(slab, half_wide, STRIP_Y, 0.0, strip);
+    // holes coarse enough to show at the panel's size
+    let vent = Vent {
+      hole: 1.2,
+      hole_pitch: 1.9,
+      ..Vent::new(7, 5.0, 22.0)
+    };
+    let vent_wide = vent.pitch * (vent.slots - 1) as f32 + vent.width;
+    // both meters' names take the room of the wider, which keeps the name of the plugin in the
+    // middle of the panel
+    let names = ["IN", "OUT"];
+    let name_wide = names
+      .map(|name| lit_width(name, 4.2))
+      .into_iter()
+      .fold(0.0, f32::max);
+    let logo_wide = lit_width("CANWETALK", 13.0);
+    // each part across the strip, with the gap after it
+    let [
+      in_meter,
+      _,
+      in_name,
+      _,
+      in_vent,
+      _,
+      logo,
+      _,
+      out_vent,
+      _,
+      out_name,
+      _,
+      out_meter,
+    ] = <[_; 13]>::try_from(pack(
+      [EAR, WIDTH - EAR],
+      &[
+        METER_LONG, 8.0, name_wide, 18.0, vent_wide, 22.0, logo_wide, 22.0, vent_wide, 18.0,
+        name_wide, 8.0, METER_LONG,
+      ],
+      Pack::Center,
+    ))
+    .expect("a place for each part of the strip");
     let name = slanted(lit_legend("CANWETALK", 13.0), 0.2);
-    put(name, half_wide, STRIP_Y - 2.0, STRIP_UP, lit(1.0));
-    let logo_half = lit_width("CANWETALK", 13.0) / 2.0;
+    put(name, middle(logo), STRIP_Y - 2.0, STRIP_UP, lit(1.0));
     let underline = [
-      Vec2::new(half_wide - logo_half, STRIP_Y + 9.5),
-      Vec2::new(half_wide + logo_half - 4.0, STRIP_Y + 9.5),
+      Vec2::new(logo[0], STRIP_Y + 9.5),
+      Vec2::new(logo[1] - 4.0, STRIP_Y + 9.5),
     ];
     let seat = parts::light_line_seat(&underline, 0.9, 0.5);
     put(seat, 0.0, 0.0, STRIP_UP, hole);
@@ -1016,44 +1146,33 @@ impl Front {
       STRIP_UP,
       lit(0.7),
     );
-    // holes coarse enough to show at the panel's size
-    let vent = Vent {
-      hole: 1.2,
-      hole_pitch: 1.9,
-      ..Vent::new(7, 5.0, 22.0)
-    };
-    let vent_half = vent.pitch * (vent.slots - 1) as f32 / 2.0 + vent.width / 2.0;
-    for side in [-1.0, 1.0] {
-      let x = half_wide + side * (logo_half + 22.0 + vent_half);
-      put(vent.slots(), x, STRIP_Y, STRIP_UP, hole);
-      put(vent.holes(), x, STRIP_Y, STRIP_UP, lit(0.55));
+    for span in [in_vent, out_vent] {
+      put(vent.slots(), middle(span), STRIP_Y, STRIP_UP, hole);
+      put(vent.holes(), middle(span), STRIP_Y, STRIP_UP, lit(0.55));
     }
-    // past each vent its name and a meter running left to right, the input's on the left and
-    // the output's on the right, with the names nearer the vents
-    let vent_out = logo_half + 44.0 + 2.0 * vent_half;
     let meter = meter();
     let meter_seat = Arc::new(meter.seat());
-    let mut meters = [Mat4::IDENTITY; 2];
-    let mut meter_seats = Vec::new();
-    for ((side, name), place) in [(-1.0, "IN"), (1.0, "OUT")].into_iter().zip(&mut meters) {
-      let name_wide = lit_width(name, 4.2);
-      let name_x = half_wide + side * (vent_out + 18.0 + name_wide / 2.0);
+    let meters = [in_meter, out_meter].map(|span| {
+      Mat4::from_translation(Vec3::new(span[0], STRIP_Y, STRIP_UP))
+        * Mat4::from_rotation_z(FRAC_PI_2)
+    });
+    for (name, span) in names.into_iter().zip([in_name, out_name]) {
       put(
         lit_legend(name, 4.2),
-        name_x,
+        middle(span),
         STRIP_Y,
         STRIP_UP,
         lit(LABEL_LIT),
       );
-      let near = half_wide + side * (vent_out + 26.0 + name_wide);
-      let quiet = if side < 0.0 { near - METER_LONG } else { near };
-      *place = Mat4::from_translation(Vec3::new(quiet, STRIP_Y, STRIP_UP))
-        * Mat4::from_rotation_z(FRAC_PI_2);
-      meter_seats.extend(meter.seats(&meter_seat, 0.0, 0.0).map(|seat| Object {
-        transform: *place * seat.transform,
-        ..seat
-      }));
     }
+    let meter_seats: Vec<Object> = (meters.iter())
+      .flat_map(|place| {
+        meter.seats(&meter_seat, 0.0, 0.0).map(|seat| Object {
+          transform: *place * seat.transform,
+          ..seat
+        })
+      })
+      .collect();
     put(
       parts::led_seat(LOUD_LIGHT_SIZE),
       LOUD_LIGHT.x,
@@ -1087,6 +1206,10 @@ impl Front {
         (WINDOW / 2.0).extend(GLASS_UP),
       )),
       readouts: Control::ALL.map(|_| None).into(),
+      dimmed,
+      display,
+      display_at: display_at.expect("a field for the envelope"),
+      shape: None,
       caret: Arc::new(Mesh::cuboid(
         Vec3::new(-0.6, -READOUT_TALL / 2.0 - 2.0, 0.0),
         Vec3::new(0.6, READOUT_TALL / 2.0 + 2.0, 0.3),
@@ -1110,10 +1233,19 @@ impl Front {
     // the scene owns this frame's objects, so the ones that never move are copied into it
     let mut drawn = self.fixed.clone();
     let mut lamps = Vec::new();
+    let envelope_light = if plays_envelope(&controls[Control::Mode as usize]) {
+      1.0
+    } else {
+      DIMMED
+    };
+    for (mesh, at, level) in &self.dimmed {
+      drawn.put(mesh, *at, lit(level * envelope_light), None);
+    }
     for (index, (control, spot)) in Control::ALL.into_iter().zip(self.spots).enumerate() {
       let Vec2 { x, y } = spot.middle();
       let reading = &controls[index];
       let target = Some(Target::Control(index));
+      let light = if spot.envelope { envelope_light } else { 1.0 };
       let knob = match control.kind() {
         Kind::Shift => {
           // lit from nothing to the knob's shift, and for the formant more dimly on from there
@@ -1135,10 +1267,10 @@ impl Front {
         Kind::Knob => {
           let run = [control.rest(), reading.value];
           let kept = (self.arcs[index].take())
-            .filter(|kept| kept.of == run)
+            .filter(|kept| kept.of == [run[0], run[1], light])
             .unwrap_or_else(|| Kept {
-              of: run,
-              objects: (self.arc.lights(&self.arc_meshes, x, y, run, CYAN)).collect(),
+              of: [run[0], run[1], light],
+              objects: (self.arc.lights(&self.arc_meshes, x, y, run, CYAN * light)).collect(),
             });
           drawn.extend(kept.objects.iter().cloned());
           self.arcs[index] = Some(kept);
@@ -1174,12 +1306,12 @@ impl Front {
       if control.kind().has_window() {
         let edit = edit.filter(|edit| edit.control == index);
         let Reading { text, unit, .. } = reading;
-        self.readout(&mut drawn, index, spot.window(), (text, unit), edit);
+        self.readout(&mut drawn, index, spot.window(), (text, unit), edit, light);
       }
     }
 
     let Vec2 { x, y } = SCREEN_AT;
-    let glass = screen_glass();
+    let glass = screen_glass(SCREEN_SIZE);
     let shown = (self.shown.take())
       .filter(|shown| shown.of == feed)
       .unwrap_or_else(|| Kept {
@@ -1189,6 +1321,35 @@ impl Front {
     drawn.extend(shown.objects.iter().cloned());
     self.shown = Some(shown);
     lamps.extend(self.screen.lamps(x, y, CYAN, 0.3));
+
+    let times = [
+      Control::Attack,
+      Control::Decay,
+      Control::Sustain,
+      Control::Release,
+    ];
+    let [attack, decay, sustain, release] = times.map(|control| controls[control as usize].value);
+    let of = [attack, decay, sustain, release, envelope_light];
+    let Vec2 { x, y } = self.display_at;
+    let shape = (self.shape.take())
+      .filter(|shape| shape.of == of)
+      .unwrap_or_else(|| Kept {
+        of,
+        objects: parts::picture(
+          &envelope_shape(
+            self.display_at,
+            [attack, decay, sustain, release],
+            envelope_light,
+          ),
+          x,
+          y,
+          screen_glass(DISPLAY_SIZE),
+          0,
+        ),
+      });
+    drawn.extend(shape.objects.iter().cloned());
+    self.shape = Some(shape);
+    lamps.extend(self.display.lamps(x, y, CYAN, 0.2 * envelope_light));
 
     let levels = [INPUT_LEVEL, OUTPUT_LEVEL].map(|slot| meter_level(feed[slot]));
     for (place, level) in self.meters.iter().zip(levels) {
@@ -1238,7 +1399,8 @@ impl Front {
     (scene, drawn.targets)
   }
 
-  /// a control's window: smoked glass sunk in the panel, with its value and unit lit on it.
+  /// a control's window: smoked glass sunk in the panel, with its value and unit lit on it at
+  /// `light` of their full light.
   /// while the value is typed the glass is lit too and shows what has been typed, with an
   /// amber caret in it or, for as long as all of it is selected, dark on an amber block
   fn readout(
@@ -1248,6 +1410,7 @@ impl Front {
     at: Vec3,
     (figures, unit): (&str, &str),
     edit: Option<&Edit>,
+    light: f32,
   ) {
     let target = Some(Target::Readout(index));
     let glass = Material {
@@ -1268,7 +1431,7 @@ impl Front {
     let lettering = (self.readouts[index].take())
       .filter(|shown| shown.of.0 == figures && shown.of.1 == unit && shown.of.2 == selected)
       .unwrap_or_else(|| Lettering::new(figures, unit, selected));
-    let figure_light = Material::lamp(CYAN);
+    let figure_light = Material::lamp(CYAN * light);
     let typing = Material::lamp(AMBER);
     let on_glass = at + Vec3::Z * GLASS_UP;
     let figures_at = on_glass + Vec3::X * lettering.figures_at;
@@ -1302,14 +1465,46 @@ pub(super) fn furniture() -> (MenuLook, GripLook) {
   (menu, grip)
 }
 
-/// the face of the screen, which what it shows is lit on
-fn screen_glass() -> Material {
+/// the face of a screen of a size, which what it shows is lit on
+fn screen_glass(size: Vec2) -> Material {
   Material {
     // smoked glass, which mirrors less of the room than clear
     reflect: 0.15,
     // sized as a much larger pane, which keeps the sheen to the corner over the top of the plot
-    ..Material::screen(FACE, SCREEN_SIZE.length() * 5.5)
+    ..Material::screen(FACE, size.length() * 5.5)
   }
+}
+
+/// whether the mode a reading of the mode's control is at plays notes through the envelope
+fn plays_envelope(mode: &Reading) -> bool {
+  let last = Mode::variants().len() - 1;
+  Mode::from_index((mode.value * last as f32).round() as usize).is_gated()
+}
+
+/// the envelope's shape on its screen, whose middle is `at`, lit at `light` of its full light.
+/// the attack, the decay and the release each run across as far as their knobs are turned,
+/// from none at the start of a knob's turn to a third of the screen at its end, with the
+/// sustain held at its level between the decay and the release
+fn envelope_shape(at: Vec2, [attack, decay, sustain, release]: [f32; 4], light: f32) -> Flat {
+  let inside = DISPLAY_SIZE / 2.0 - 5.0;
+  let [left, right] = [at.x - inside.x, at.x + inside.x];
+  let [top, foot] = [at.y - inside.y, at.y + inside.y];
+  // one turn of a time's knob, so that all three at the ends of their turns and the hold fill
+  // the screen
+  let turn = (right - left) / (3.0 + HOLD);
+  let held = foot - sustain * (foot - top);
+  let mut x = left;
+  let mut points = vec![[x, foot]];
+  for (run, y) in [(attack, top), (decay, held), (HOLD, held), (release, foot)] {
+    x += run * turn;
+    points.push([x, y]);
+  }
+  let dim = |[red, green, blue, cover]: Color| [red * light, green * light, blue * light, cover];
+  let mut flat = Flat::default();
+  flat.line([left, foot], [right, foot], 1.0, dim(GRID));
+  flat.area(&points, foot, dim(FILL));
+  flat.curve(&points, 1.5, dim(EDGE));
+  flat
 }
 
 /// the point of the panel at a place in the plot: a part of the way across it and a part of
@@ -1583,7 +1778,7 @@ mod tests {
     let (spots, fields) = layout(screen.border);
     // each control is in one group alone, which with every one placed is once each
     let groups = GROUPS.iter().flat_map(|row| row.iter());
-    let grouped: usize = groups.clone().map(|(_, controls)| controls.len()).sum();
+    let grouped: usize = groups.clone().map(|group| group.controls.len()).sum();
     assert_eq!(grouped, Control::ALL.len());
 
     // between the ears and over the strip, and clear of each other
@@ -1613,13 +1808,26 @@ mod tests {
     }
 
     // each control lies inside its group's field, all it reaches between the drops of the
-    // lines beside the name and the rim at the foot, and its name no wider than its slot
-    for (group, controls) in groups {
+    // lines beside the name, or the envelope's screen, and the rim at the foot, and its name
+    // no wider than its slot
+    for group in groups {
       let field = (fields.iter())
-        .find(|field| field.name == *group)
+        .find(|field| field.name == group.name)
         .expect("a field for each group");
       let foot = field.down[1] - FIELD_BORDER;
-      for &control in *controls {
+      let half_display = DISPLAY_SIZE / 2.0 + Screen::new(DISPLAY_SIZE.x, DISPLAY_SIZE.y).border;
+      let over = match field.display {
+        Some(display) => {
+          // the screen lies in the field, under the drops of the lines
+          assert!(display.x - half_display.x >= field.across[0] + FIELD_BORDER);
+          assert!(display.x + half_display.x <= field.across[1] - FIELD_BORDER);
+          assert!(display.y - half_display.y > field.y + RULE_DROP);
+          display.y + half_display.y
+        }
+        None => field.y + RULE_DROP,
+      };
+      assert_eq!(field.display.is_some(), group.envelope, "{}", group.name);
+      for &control in group.controls {
         let (kind, spot) = (control.kind(), spots[control as usize]);
         let [up, down] = kind.reach();
         let half = kind.slot() / 2.0;
@@ -1627,7 +1835,7 @@ mod tests {
           spot.x - half >= field.across[0] && spot.x + half <= field.across[1],
           "{control:?}"
         );
-        assert!(spot.row.middle - up > field.y + RULE_DROP, "{control:?}");
+        assert!(spot.row.middle - up > over, "{control:?}");
         assert!(spot.row.middle + down < spot.row.name, "{control:?}");
         // and the names on it clear of the rim of the field at either end of a row, by a few
         // points
