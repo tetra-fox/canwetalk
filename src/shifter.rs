@@ -23,6 +23,10 @@ const HISTORY_SECONDS: f32 = 4.5;
 const FOLLOW_HOLD_SECONDS: f64 = 0.2;
 /// the range the detected pitch is kept in, periods of 6400 down to 4 samples
 const INPUT_PITCH: std::ops::RangeInclusive<f64> = 3.125e-4..=0.5;
+/// seconds the detector hears the input before the rest of the effect does, so that where a
+/// voice starts its pitch is already known. the detector finds a pitch about two and a half
+/// periods after it starts, which this is for down to about 125 Hz
+const LOOKAHEAD_SECONDS: f32 = 0.02;
 /// the most frames taken at once. a block's input goes into the lines before the voices
 /// read them, which puts that many of the oldest samples out early. no grain reads those,
 /// since the limit on how far one stretches keeps it out of the oldest fortieth of a line
@@ -58,6 +62,9 @@ pub(crate) struct Settings {
 pub(crate) struct Shifter {
   sample_rate: f64,
   detector: Detector,
+  /// the input as it comes, which the rest of the effect reads `lookahead` samples behind
+  ahead: [Ring; 2],
+  lookahead: usize,
   /// the last detected pitch, held while the input is unvoiced
   input_pitch: f64,
   /// samples since the detector last held a pitch, and the samples in `FOLLOW_HOLD_SECONDS`.
@@ -79,6 +86,11 @@ pub(crate) struct Shifter {
   heard: [(Cycle, f64); BLOCK],
 }
 
+/// the samples in `LOOKAHEAD_SECONDS`
+fn lookahead_samples(sample_rate: f32) -> usize {
+  (sample_rate * LOOKAHEAD_SECONDS).round() as usize
+}
+
 /// the pitch assumed until one is detected, the lowest of the detector's range
 fn lowest_pitch(detector: &Detector, sample_rate: f32) -> f64 {
   let lowest = 2.0 / f64::from(detector.range().longest_period(sample_rate));
@@ -88,14 +100,17 @@ fn lowest_pitch(detector: &Detector, sample_rate: f32) -> f64 {
 
 impl Shifter {
   /// `range` is the detection range the host has set, which the pitch assumed until one is
-  /// detected goes by
+  /// detected goes by. it starts out with the lookahead
   pub(crate) fn new(sample_rate: f32, range: Range) -> Self {
     let detector = Detector::new(sample_rate, range);
     let input_pitch = lowest_pitch(&detector, sample_rate);
     let follow_hold = (f64::from(sample_rate) * FOLLOW_HOLD_SECONDS) as usize;
+    let lookahead = lookahead_samples(sample_rate);
     Self {
       sample_rate: f64::from(sample_rate),
       detector,
+      ahead: std::array::from_fn(|_| Ring::new(lookahead + 1)),
+      lookahead,
       input_pitch,
       // a new shifter has no pitch it has just lost
       unvoiced_for: follow_hold,
@@ -117,12 +132,15 @@ impl Shifter {
     }
   }
 
-  /// back to how `new` makes it with the range the detector has. does not allocate
+  /// back to how `new` makes it with the range the detector has and the lookahead it has. does
+  /// not allocate
   pub(crate) fn reset(&mut self) {
     // every field is named so that one added later cannot be left out
     let Self {
       sample_rate,
       detector,
+      ahead,
+      lookahead: _,
       input_pitch,
       unvoiced_for,
       follow_hold,
@@ -136,6 +154,9 @@ impl Shifter {
       heard: _,
     } = self;
     detector.reset();
+    for line in ahead {
+      line.clear();
+    }
     *input_pitch = lowest_pitch(detector, *sample_rate as f32);
     *unvoiced_for = *follow_hold;
     smear.reset();
@@ -149,10 +170,26 @@ impl Shifter {
     stereo.reset();
   }
 
-  /// the most samples the output can go on for after the input stops: what smear holds,
-  /// then what the voices read back over, then the delays of detune and stereo
+  /// live, the rest of the effect hears the input as the detector does, with no latency.
+  /// otherwise it hears it `LOOKAHEAD_SECONDS` later
+  pub(crate) fn set_live(&mut self, live: bool) {
+    self.lookahead = if live {
+      0
+    } else {
+      lookahead_samples(self.sample_rate as f32)
+    };
+  }
+
+  /// samples the output is behind the input
+  pub(crate) fn latency(&self) -> usize {
+    self.lookahead
+  }
+
+  /// the most samples the output can go on for after the input stops: the lookahead, what
+  /// smear holds, then what the voices read back over, then the delays of detune and stereo
   pub(crate) fn tail(&self) -> usize {
-    self.smear.longest_delay()
+    self.lookahead
+      + self.smear.longest_delay()
       + self.input[0].len()
       + self.detune.longest_delay()
       + self.stereo.longest_delay()
@@ -184,13 +221,25 @@ impl Shifter {
     made.map(|pitch| (pitch * hertz) as f32)
   }
 
-  /// the effect alone on up to `BLOCK` frames, each with its own settings, with no latency
-  /// against the input. the mode and latch of the settings are given to `notes` beforehand,
-  /// ahead of the notes of the first frame, and no note comes with a later one
-  pub(crate) fn process(&mut self, frames: &mut [[f32; 2]], settings: &[Settings]) {
+  /// the effect alone on up to `BLOCK` frames of input, each with its own settings, `latency`
+  /// samples behind them. `dry` gets the input as the effect heard it, as far behind. the mode
+  /// and latch of the settings are given to `notes` beforehand, ahead of the notes of the first
+  /// frame, and no note comes with a later one
+  pub(crate) fn process(
+    &mut self,
+    frames: &mut [[f32; 2]],
+    dry: &mut [[f32; 2]],
+    settings: &[Settings],
+  ) {
     let count = frames.len();
-    for (index, (frame, settings)) in frames.iter().zip(settings).enumerate() {
-      self.heard[index] = self.hear(*frame, settings);
+    for (index, ((frame, dry), settings)) in
+      frames.iter().zip(dry.iter_mut()).zip(settings).enumerate()
+    {
+      for (line, &sample) in self.ahead.iter_mut().zip(frame) {
+        line.push(sample);
+      }
+      *dry = self.ahead.each_ref().map(|line| line.ago(self.lookahead));
+      self.heard[index] = self.hear(*frame, *dry, settings);
     }
     let mut voiced = [[0.0; 2]; BLOCK];
     let voiced = &mut voiced[..count];
@@ -206,15 +255,16 @@ impl Shifter {
     }
   }
 
-  /// takes one frame of input into the lines the voices read, after smear, and gives the
-  /// cycle the input is in there and the ratio the vibrato moves the voices' pitch by
-  fn hear(&mut self, frame: [f32; 2], settings: &Settings) -> (Cycle, f64) {
+  /// gives the detector the newest frame of input, `live`, and takes `frame`, the one the rest
+  /// of the effect hears now, into the lines the voices read, after smear. gives the cycle the
+  /// input is in there and the ratio the vibrato moves the voices' pitch by
+  fn hear(&mut self, live: [f32; 2], frame: [f32; 2], settings: &Settings) -> (Cycle, f64) {
     if settings.detect != self.detector.range() {
       self.detector.set_range(settings.detect);
       self.input_pitch = lowest_pitch(&self.detector, self.sample_rate as f32);
       self.unvoiced_for = self.follow_hold;
     }
-    if let Some(period) = self.detector.push(frame[0] + frame[1]) {
+    if let Some(period) = self.detector.push(live[0] + live[1]) {
       self.input_pitch = (2.0 / f64::from(period)).clamp(*INPUT_PITCH.start(), *INPUT_PITCH.end());
     }
     self.unvoiced_for = if self.detector.voiced() {
@@ -332,7 +382,12 @@ mod tests {
       for (frame, &x) in frames.iter_mut().zip(block) {
         *frame = [x, x];
       }
-      shifter.process(frames, &[*settings; BLOCK][..block.len()]);
+      let mut dry = [[0.0; 2]; BLOCK];
+      shifter.process(
+        frames,
+        &mut dry[..block.len()],
+        &[*settings; BLOCK][..block.len()],
+      );
       output.extend(frames.iter().map(|frame| frame[0]));
     }
     output
@@ -402,14 +457,18 @@ mod tests {
     let input = vowel_for((periods / VOWEL_HZ).ceil() as usize + 2);
     for anchor in [false, true] {
       let settings = Settings { anchor, ..NEUTRAL };
-      let output = run(&mut Shifter::new(RATE, NEUTRAL.detect), &input, &settings);
-      let settled = input.len() - RATE as usize;
-      let error = output[settled..]
-        .iter()
-        .zip(&input[settled..])
-        .fold(0f32, |worst, (a, b)| worst.max((a - b).abs()));
+      let mut shifter = Shifter::new(RATE, NEUTRAL.detect);
+      let output = run(&mut shifter, &input, &settings);
+      let error = furthest_from_input(&output, &input, &shifter, input.len() - RATE as usize);
       assert!(error < 1e-3, "error {error} with anchor {anchor}");
     }
+  }
+
+  /// how far the output strays from the input from the input's sample `from` on, the output
+  /// taken as far behind as `shifter` is
+  fn furthest_from_input(output: &[f32], input: &[f32], shifter: &Shifter, from: usize) -> f32 {
+    let output = &output[from + shifter.latency()..];
+    (output.iter().zip(&input[from..])).fold(0f32, |worst, (a, b)| worst.max((a - b).abs()))
   }
 
   /// a new shifter counts the input's period and its own off from the same sample, so its
@@ -420,12 +479,9 @@ mod tests {
       let input = vowel_sampled_at(rate, rate as usize / 2, |_| VOWEL_HZ);
       for anchor in [false, true] {
         let settings = Settings { anchor, ..NEUTRAL };
-        let output = run(&mut Shifter::new(rate, settings.detect), &input, &settings);
-        let settled = rate as usize / 100;
-        let error = output[settled..]
-          .iter()
-          .zip(&input[settled..])
-          .fold(0f32, |worst, (a, b)| worst.max((a - b).abs()));
+        let mut shifter = Shifter::new(rate, settings.detect);
+        let output = run(&mut shifter, &input, &settings);
+        let error = furthest_from_input(&output, &input, &shifter, rate as usize / 100);
         assert!(
           error < 1e-3,
           "error {error} at {rate} Hz with anchor {anchor}"
@@ -434,6 +490,9 @@ mod tests {
     }
   }
 
+  /// unanchored grains start where the count of the input's periods puts them, which can be
+  /// where this vowel's pulse is, and a grain rising there leaves out the resonance that rings
+  /// after it. so the formant is kept for anchored grains, which start away from the pulse
   #[test]
   fn pitch_moves_the_fundamental_and_keeps_the_formant() {
     let settings = Settings {
@@ -449,8 +508,10 @@ mod tests {
       let expected = VOWEL_HZ * 2f32.powf(7.0 / 12.0);
       let fundamental = pitch_hz(&output);
       assert_near(fundamental, expected, 0.005 * expected, "fundamental");
-      let formant = strongest_harmonic_hz(&output, fundamental);
-      assert_near(formant, FORMANT_HZ, fundamental, "formant");
+      if anchor {
+        let formant = strongest_harmonic_hz(&output, fundamental);
+        assert_near(formant, FORMANT_HZ, fundamental, "formant");
+      }
     }
   }
 
@@ -897,7 +958,7 @@ mod tests {
       ..NEUTRAL
     };
     let mut shifter = Shifter::new(192_000.0, Range::Mid);
-    shifter.process(&mut [[0.0; 2]], &[settings]);
+    shifter.process(&mut [[0.0; 2]], &mut [[0.0; 2]], &[settings]);
     assert!(
       INPUT_PITCH.contains(&shifter.input_pitch),
       "{} is out of range",
@@ -980,7 +1041,7 @@ mod tests {
   fn shifter_in(settings: &Settings) -> Shifter {
     let mut shifter = Shifter::new(RATE, settings.detect);
     shifter.notes.set_play(&settings.play);
-    shifter.process(&mut [[0.0; 2]], &[*settings]);
+    shifter.process(&mut [[0.0; 2]], &mut [[0.0; 2]], &[*settings]);
     shifter
   }
 
@@ -1066,5 +1127,51 @@ mod tests {
     shifter.notes.on(key(57));
     let output = run(&mut shifter, &vowel(), &settings);
     assert_near(pitch_hz(&output), VOWEL_HZ, 0.55, "fundamental");
+  }
+
+  /// with formant follow at its whole, the octaves a note's formants follow by are those from
+  /// the input pitch its last grain was cut at to the note's, which so says what that was.
+  /// with the lookahead every grain cut from where a sound reaches the voices on is cut at the
+  /// sound's own period. live, the first are cut at the pitch assumed before any is found
+  #[test]
+  fn the_first_grains_of_a_sound_are_cut_at_its_period_with_the_lookahead() {
+    let hz = 200.0;
+    let settings = Settings {
+      shape: Shape {
+        formant_follow: 1.0,
+        ..NEUTRAL.shape
+      },
+      ..NEUTRAL
+    };
+    let mut input = vec![0.0; RATE as usize / 4];
+    input.extend(vowel_at(RATE as usize / 10, |_| hz));
+    let sounds = input
+      .iter()
+      .position(|&x| x != 0.0)
+      .expect("the vowel sounds");
+    for anchor in [false, true] {
+      for live in [false, true] {
+        let settings = Settings { anchor, ..settings };
+        let mut shifter = shifter_in(&settings);
+        shifter.set_live(live);
+        shifter.notes.on(key(57));
+        let mut cut = Vec::new();
+        for (index, &x) in input.iter().enumerate() {
+          let mut dry = [[0.0; 2]];
+          shifter.process(&mut [[x, x]], &mut dry, &[settings]);
+          // two of the note's periods from where the sound reaches the voices
+          let reached = sounds + shifter.latency();
+          if (reached..reached + 2 * (RATE / A3) as usize).contains(&index) {
+            let followed = shifter.notes.followed(true).expect("the note plays");
+            cut.push(A3 / 2f32.powf(followed as f32));
+          }
+        }
+        let own = cut.iter().all(|&cut| (cut / hz - 1.0).abs() < 0.01);
+        assert_eq!(
+          own, !live,
+          "cut at {cut:?} Hz, anchor {anchor}, live {live}"
+        );
+      }
+    }
   }
 }

@@ -34,6 +34,10 @@ pub(crate) struct CanWeTalkParams {
   pub(crate) detect: EnumParam<Range>,
   #[id = "anchor"]
   pub(crate) anchor: BoolParam,
+  /// on, the effect has no latency. off, it hears the input a little after the pitch detector
+  /// does, which is the latency it reports
+  #[id = "live"]
+  pub(crate) live: BoolParam,
   #[id = "mix"]
   pub(crate) mix: FloatParam,
   /// how many times its own size the editor's window is, kept with the plugin's state so
@@ -212,6 +216,7 @@ impl Default for CanWeTalkParams {
       expression: ExpressionParams::default(),
       detect: EnumParam::new("Detection Range", Range::Mid),
       anchor: BoolParam::new("Anchor Grains", true),
+      live: BoolParam::new("Live", false),
       mix: percent("Mix", 1.0),
       editor_scale: AtomicF32::new(1.0),
     }

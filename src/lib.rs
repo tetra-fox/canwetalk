@@ -1,5 +1,6 @@
 //! canwetalk, a pitch and formant shifter for a monophonic input, played by MIDI notes
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use nice_plug::midi::{Channel, Key};
@@ -40,11 +41,15 @@ const SLIDE_CC: u8 = 74;
 /// larger ones or ones that are no numbers, which would overflow the sums taken over the
 /// input and never leave the filters
 const INPUT_LIMIT: f32 = 1e6;
+/// notes and the like that can wait at once to be played, which they do while the input they
+/// came with is still in the lookahead. as many as a host can hand over with four buffers
+const WAITING_EVENTS: usize = 4 * CanWeTalk::INPUT_EVENT_CAPACITY;
 
 pub struct CanWeTalk {
   params: Arc<CanWeTalkParams>,
   shifter: Shifter,
-  /// the spectra of the input and of the output, after the mix
+  /// the spectra of the input as the effect hears it and of the output, after the mix, so the
+  /// two are shown at the same time
   heard: Analyzer,
   made: Analyzer,
   /// what the editor draws the spectra, the detected pitch and the voices' pitches from
@@ -52,6 +57,11 @@ pub struct CanWeTalk {
   sample_rate: f32,
   /// the settings for each sample of a block, kept only for the room it has for them
   settings: Vec<Settings>,
+  /// what the host sent about notes, each with the sample it is played at, which is as far
+  /// behind where it came as the output is behind the input
+  waiting: VecDeque<(u64, PluginNoteEvent<Self>)>,
+  /// samples taken since the plugin was activated or reset
+  clock: u64,
 }
 
 impl Default for CanWeTalk {
@@ -68,6 +78,8 @@ impl Default for CanWeTalk {
       params,
       sample_rate,
       settings: Vec::with_capacity(BLOCK),
+      waiting: VecDeque::with_capacity(WAITING_EVENTS),
+      clock: 0,
     }
   }
 }
@@ -130,17 +142,24 @@ impl Plugin for CanWeTalk {
     &mut self,
     _audio_io_layout: &AudioIOLayout,
     buffer_config: &BufferConfig,
-    _context: &mut impl ActivateContext<Self>,
+    context: &mut impl ActivateContext<Self>,
   ) -> bool {
     self.sample_rate = buffer_config.sample_rate;
     self.shifter = Shifter::new(self.sample_rate, self.params.detect.value());
+    self.shifter.set_live(self.params.live.value());
+    context.set_latency_samples(self.shifter.latency() as u32);
     self.heard = Analyzer::new(self.sample_rate, INPUT_BANDS, INPUT_LEVEL, &self.feed);
     self.made = Analyzer::new(self.sample_rate, OUTPUT_BANDS, OUTPUT_LEVEL, &self.feed);
+    self.waiting.clear();
+    self.clock = 0;
     true
   }
 
+  // the shifter lets go of every note, and so the notes still waiting go too
   fn reset(&mut self) {
     self.shifter.reset();
+    self.waiting.clear();
+    self.clock = 0;
     self.rest_feed();
   }
 
@@ -164,21 +183,49 @@ impl Plugin for CanWeTalk {
       .params
       .block(context.transport(), self.sample_rate, mono);
 
+    let was = self.shifter.latency();
+    self.shifter.set_live(self.params.live.value());
+    let latency = self.shifter.latency();
+    // the wrapper tells the host only when this is not what it told it last
+    context.set_latency_samples(latency as u32);
+    if latency < was {
+      // the output jumps ahead, and what waited to be played with the input it skips over is
+      // played now, before anything that comes in this buffer
+      while let Some((_, event)) = self.waiting.pop_front() {
+        self.handle(event);
+      }
+    }
+    while let Some(event) = context.next_event() {
+      if self.waiting.len() == WAITING_EVENTS {
+        // played early rather than lost, and in the order it came
+        let (_, early) = self
+          .waiting
+          .pop_front()
+          .expect("the waiting events are full");
+        self.handle(early);
+      }
+      let at = self.clock + u64::from(event.timing()) + latency as u64;
+      self.waiting.push_back((at, event));
+    }
+
     let samples = buffer.samples();
     let channels = buffer.as_slice();
-    let mut next_event = context.next_event();
     let mut start = 0;
     while start < samples {
+      let now = self.clock + start as u64;
       let first = self.params.settings(&block, start);
       // before the sample's notes, which are taken up in the mode they come in. the mode and
       // latch are not smoothed, so they stay as they are to the end of the buffer
       self.shifter.notes.set_play(&first.play);
-      while let Some(event) = next_event.filter(|event| event.timing() <= start as u32) {
+      while let Some(&(_, event)) = self.waiting.front().filter(|(at, _)| *at <= now) {
+        self.waiting.pop_front();
         self.handle(event);
-        next_event = context.next_event();
       }
       // a block goes up to the next sample that has something played at it
-      let played = next_event.map_or(samples, |event| event.timing() as usize);
+      let played = self
+        .waiting
+        .front()
+        .map_or(samples, |&(at, _)| (at - self.clock) as usize);
       let count = BLOCK.min(samples.min(played) - start);
       self.settings.clear();
       self.settings.push(first);
@@ -186,21 +233,22 @@ impl Plugin for CanWeTalk {
         self.settings.push(self.params.settings(&block, index));
       }
 
-      let mut dry = [[0.0; 2]; BLOCK];
-      for (index, dry) in dry[..count].iter_mut().enumerate() {
-        for (dry, channel) in dry.iter_mut().zip(channels.iter()) {
+      let mut wet = [[0.0; 2]; BLOCK];
+      for (index, input) in wet[..count].iter_mut().enumerate() {
+        for (input, channel) in input.iter_mut().zip(channels.iter()) {
           let sample = channel[start + index];
           // false for a sample that is no number too, which is then silence
           if sample.abs() <= INPUT_LIMIT {
-            *dry = sample;
+            *input = sample;
           }
         }
         if mono {
-          dry[1] = dry[0];
+          input[1] = input[0];
         }
       }
-      let mut wet = dry;
-      self.shifter.process(&mut wet[..count], &self.settings);
+      // the input as the effect heard it, which the output is mixed and shown against
+      let mut dry = [[0.0; 2]; BLOCK];
+      (self.shifter).process(&mut wet[..count], &mut dry[..count], &self.settings);
       let mut mixed = [[0.0; 2]; BLOCK];
       let frames = dry.iter().zip(wet).zip(&mut mixed).take(count);
       for (index, ((dry, wet), mixed)) in frames.enumerate() {
@@ -216,10 +264,13 @@ impl Plugin for CanWeTalk {
       }
       self.heard.take(&dry[..count], &self.feed);
       self.made.take(&mixed[..count], &self.feed);
+      // the detected pitch is the detector's, which hears the input the lookahead before the
+      // spectra do. the screen draws a frame in about that long, so it is shown as it is
       let (pitch, followed) = (self.shifter.detected_hz(), self.shifter.formant_followed());
       write_played(&self.feed, pitch, followed, &self.shifter.made_hz());
       start += count;
     }
+    self.clock += samples as u64;
 
     ProcessStatus::Tail(self.shifter.tail() as u32)
   }
@@ -325,6 +376,7 @@ nice_export_vst3!(CanWeTalk);
 
 #[cfg(test)]
 mod tests {
+  use std::cell::Cell;
   use std::collections::VecDeque;
 
   use nice_plug::context::process::SendEventError;
@@ -337,12 +389,14 @@ mod tests {
   const RATE: f32 = 48_000.0;
 
   /// stands in for the host over one buffer
-  struct Host {
+  struct Host<'a> {
     transport: Transport,
     events: VecDeque<PluginNoteEvent<CanWeTalk>>,
+    /// the latency the plugin last told the host it has
+    latency: &'a Cell<Option<u32>>,
   }
 
-  impl ProcessContext<CanWeTalk> for Host {
+  impl ProcessContext<CanWeTalk> for Host<'_> {
     fn plugin_api(&self) -> PluginApi {
       PluginApi::Clap
     }
@@ -366,7 +420,9 @@ mod tests {
       Err((event, SendEventError::NoOutputBuffer))
     }
 
-    fn set_latency_samples(&self, _samples: u32) {}
+    fn set_latency_samples(&self, samples: u32) {
+      self.latency.set(Some(samples));
+    }
 
     fn request_restart(&self) {}
 
@@ -466,6 +522,13 @@ mod tests {
 
   /// the plugin after `take`, as `render` plays it, and what it made
   fn run(take: &Take, sizes: &[usize]) -> (CanWeTalk, Vec<[f32; 2]>) {
+    let (plugin, output, _) = run_telling_latency(take, sizes);
+    (plugin, output)
+  }
+
+  /// `run`, and the latency the plugin last told the host it has
+  fn run_telling_latency(take: &Take, sizes: &[usize]) -> (CanWeTalk, Vec<[f32; 2]>, Option<u32>) {
+    let latency = Cell::new(None);
     let Take {
       rate, ref input, ..
     } = *take;
@@ -518,6 +581,7 @@ mod tests {
       let mut host = Host {
         transport,
         events: events.collect(),
+        latency: &latency,
       };
       let mut channels = [0, 1].map(|side| frames.iter().map(|frame| frame[side]).collect());
       let [left, right]: &mut [Vec<f32>; 2] = &mut channels;
@@ -543,7 +607,7 @@ mod tests {
       let right = if take.mono { left } else { right };
       output.extend(left.iter().zip(right).map(|(&left, &right)| [left, right]));
     }
-    (plugin, output)
+    (plugin, output, latency.get())
   }
 
   /// a few harmonics of a low note, not the same on the two sides
@@ -854,6 +918,14 @@ mod tests {
         },
       ),
       (
+        "chord live",
+        Take {
+          played: chord(),
+          set: vec![(0, "live", 1.0)],
+          ..second()
+        },
+      ),
+      (
         "mix",
         Take {
           played: chord(),
@@ -984,42 +1056,43 @@ mod tests {
 
   /// hashes of what the plugin made of each take when the reference was taken. they hold for
   /// one platform's math library, whose last bit is not the same everywhere
-  const REFERENCE: [(&str, u64); 35] = [
-    ("follow", 0xd730fc61f7b1501b),
-    ("follow shifted", 0x47ef3d9e21acb49c),
-    ("follow mono", 0xbdc5eda7e86d0b8d),
-    ("follow unanchored", 0xaa5e787ea7fce5f8),
-    ("pitch", 0x3476dd1b0ea23286),
-    ("formant", 0xed5ae0964baba809),
-    ("chord", 0x49adda083c6907eb),
-    ("chord unanchored", 0xd3b4ae5f37eec33b),
-    ("more notes than voices", 0xb8e712a9c169cb05),
-    ("envelope", 0x880e5387349d6fb8),
-    ("envelope with no times", 0xc157a10e67cbc5ae),
-    ("latch", 0x26e230cf17d7bc4a),
-    ("glide", 0x866e841f406c7c67),
-    ("glide between notes only", 0xb476dacd690980e6),
-    ("expression", 0x4c5dd9f9c88f5898),
-    ("vibrato", 0x1acb0cea34e44465),
-    ("vibrato by the tempo", 0x6f221352df09c893),
-    ("vibrato by the tempo of a stopped host", 0x5213d4153a1e2900),
-    ("effects", 0x7ea06f30bd2282d7),
-    ("effects mono", 0x636203403d3878fd),
-    ("mix", 0x692c22e2b10ab69e),
-    ("bass", 0x11f603aa825c401e),
-    ("bass at 192 kHz", 0xfbc703b4d4871bce),
-    ("high", 0x8580a9e6b01fa46c),
-    ("detection range changes", 0x580688fd9482e07d),
-    ("mode off", 0x01951e067400b942),
-    ("mode mono", 0xbd10fdb9b3d9dfa3),
-    ("mode poly", 0x86bafeb655b3c103),
-    ("mode mono gate", 0xe6b81f1c5f839069),
-    ("mode poly gate", 0x8c6984fc01bcdb21),
-    ("chord at 44.1 kHz", 0x4d03bb0d3cbfba21),
-    ("chord at 96 kHz", 0xbf915b48559f17fa),
-    ("chord at 192 kHz", 0x8c85323dc07b9020),
-    ("four seconds of everything", 0xe29fdb7cac794c64),
-    ("unanchored at 96 kHz", 0x20f53474fe3dd47e),
+  const REFERENCE: [(&str, u64); 36] = [
+    ("follow", 0x68fc3332d2da7c64),
+    ("follow shifted", 0x4fc5de30e69fe5cf),
+    ("follow mono", 0xd0b9332149d13c65),
+    ("follow unanchored", 0x8fc472970c19d382),
+    ("pitch", 0xdf587375a42ed812),
+    ("formant", 0x5ac5c9c98acee3de),
+    ("chord", 0x37ad6e6a0b95a269),
+    ("chord unanchored", 0x5a008a4aaaa52753),
+    ("more notes than voices", 0xe46cd41bcdbca377),
+    ("envelope", 0xd67264cb0445c28e),
+    ("envelope with no times", 0xff66977d85997431),
+    ("latch", 0x12995472cec63fdb),
+    ("glide", 0x7ba775c63f747b4b),
+    ("glide between notes only", 0xad219a7530863b6c),
+    ("expression", 0xee056ebaeedc2492),
+    ("vibrato", 0x1c03b4144d541304),
+    ("vibrato by the tempo", 0x4ec2986401cd4515),
+    ("vibrato by the tempo of a stopped host", 0x228dc8653c3738fd),
+    ("effects", 0x5c90c9a0c6d8ca90),
+    ("effects mono", 0xcd9e1859c87a1121),
+    ("chord live", 0x49adda083c6907eb),
+    ("mix", 0x6156e4aefb39d416),
+    ("bass", 0x8499a72061950051),
+    ("bass at 192 kHz", 0x22ec6ef9d95c2a50),
+    ("high", 0x72d78b387b9c7828),
+    ("detection range changes", 0x9e34be246289828b),
+    ("mode off", 0x5eaa26a37aa76ba7),
+    ("mode mono", 0x73e9f8156dced625),
+    ("mode poly", 0x5a424d5525e03b95),
+    ("mode mono gate", 0x01f8701aff6bb076),
+    ("mode poly gate", 0xa9ba9701f11fd4fd),
+    ("chord at 44.1 kHz", 0xe9003b91ee7e6180),
+    ("chord at 96 kHz", 0xf9566fea80676d81),
+    ("chord at 192 kHz", 0x218e09b39e45bd57),
+    ("four seconds of everything", 0xb0808b51bee6d6eb),
+    ("unanchored at 96 kHz", 0x0c7da29430c7d32f),
   ];
 
   /// every sample of every take is what it was when the reference was taken, in buffers of
@@ -1303,5 +1376,53 @@ mod tests {
       last.iter().flatten().any(|x| x.abs() > 0.1),
       "the note is silent"
     );
+  }
+
+  /// the input passes through the effect unchanged with no shift, so with half of it mixed
+  /// in the output is the input as it was, as far behind as the plugin told the host. a dry
+  /// signal that was not as far behind would be heard twice, a comb
+  #[test]
+  fn the_dry_signal_lines_up_with_the_effect() {
+    for (live, behind) in [(0.0, (0.02 * RATE) as usize), (1.0, 0)] {
+      let take = Take {
+        set: vec![(0, "mix", 0.5), (0, "live", live)],
+        ..Take::new(RATE, tone(RATE as usize / 2))
+      };
+      let (_, output, told) = run_telling_latency(&take, &[512]);
+      assert_eq!(told, Some(behind as u32), "live at {live}");
+      // once the voice has faded in for the plain input
+      let settled = RATE as usize / 100;
+      let furthest = (output[settled + behind..].iter().flatten())
+        .zip(take.input[settled..].iter().flatten())
+        .fold(0f32, |furthest, (out, input)| {
+          furthest.max((out - input).abs())
+        });
+      assert!(furthest < 1e-3, "{furthest} off, live at {live}");
+    }
+  }
+
+  /// in a gate mode nothing sounds until a note is played, and the note starts with the input
+  /// that came with it, as far behind it as the plugin told the host the output is
+  #[test]
+  fn a_note_starts_with_the_input_it_came_with() {
+    for live in [0.0, 1.0] {
+      let take = Take {
+        played: vec![on(200, 0, 57)],
+        set: vec![(0, "midi", 3.0), (0, "attack", 0.0), (0, "live", live)],
+        ..Take::new(RATE, tone(RATE as usize / 2))
+      };
+      let (_, output, told) = run_telling_latency(&take, &[512]);
+      let starts = take.sample(200) + told.expect("the latency is told") as usize;
+      let loudest = |frames: &[[f32; 2]]| frames.iter().flatten().fold(0f32, |a, x| a.max(x.abs()));
+      // the take's first sample is played in the mode a new plugin has, and the voice that
+      // follows the input there is released over the first 100 ms
+      let early = loudest(&output[take.sample(100)..starts]);
+      assert_eq!(early, 0.0, "sounds early, live at {live}");
+      let first = loudest(&output[starts..starts + RATE as usize / 50]);
+      assert!(
+        first > 0.1,
+        "{first} in the note's first 20 ms, live at {live}"
+      );
+    }
   }
 }
