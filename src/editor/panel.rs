@@ -1510,7 +1510,6 @@ impl Front {
       // under a dim wide light, which leaves what glows to show
       light: Light {
         color: Vec3::splat(0.6),
-        ambient: Vec3::splat(0.2),
         softness: 3.0,
         ..Light::default()
       },
