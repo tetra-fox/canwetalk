@@ -80,6 +80,9 @@ const SHORTER_WINS_ABOVE: f32 = 0.95;
 /// percent of the later half that the two halves of a stretch of crossings have to differ by
 /// less than, for the stretch to count as whole periods
 const HALVES_PERCENT: u64 = 2;
+/// the least a score compares, so that a short lag is compared over several of its periods.
+/// noise, or a formant ringing after one pulse, can repeat for a period or two by chance
+const SHORTEST_COMPARED_SECONDS: f32 = 0.005;
 /// mean magnitude of an analysis sample below which the input is taken for silence
 const SILENCE_LEVEL: f32 = 5e-5;
 /// lags scored side by side: the ones tracking scores and one either side of them
@@ -138,6 +141,8 @@ pub(crate) struct Detector {
   decimation: usize,
   shortest_lag: usize,
   longest_lag: usize,
+  /// `SHORTEST_COMPARED_SECONDS` in analysis samples
+  shortest_compared: usize,
   analysis_filter: Biquad,
   crossing_filters: [Biquad; 2],
   /// input samples until the next analysis sample
@@ -176,6 +181,7 @@ impl Detector {
       decimation: 1,
       shortest_lag: 0,
       longest_lag: 0,
+      shortest_compared: 0,
       analysis_filter: Biquad::default(),
       crossing_filters: [Biquad::default(); 2],
       until_tick: 1,
@@ -220,6 +226,7 @@ impl Detector {
     // two periods of the longest lag and the neighbours tracking scores have to fit
     self.longest_lag =
       ((analysis_rate / spec.lowest_hz) as usize).min(HISTORY / 2 - TRACK_ABOVE - 2);
+    self.shortest_compared = (analysis_rate * SHORTEST_COMPARED_SECONDS).ceil() as usize;
     self.analysis_filter = Biquad::low_pass(spec.analysis_hz, self.sample_rate);
     self.crossing_filters = [
       Biquad::low_pass(spec.crossing_hz, self.sample_rate),
@@ -342,27 +349,31 @@ impl Detector {
   }
 
   /// how alike the newest samples and the ones before them are, 1 for identical, over each
-  /// of the `LANES` lags from `first` up. a lag takes as many samples of each as it is long.
+  /// of the `LANES` lags from `first` up. a lag takes as many samples of each as it is long,
+  /// and `shortest_compared` at least.
   /// the lags are summed side by side, each in the order it would be alone, since one sum
   /// has to wait for each of its additions and many can wait together
   fn scores(&self, first: usize) -> [f32; LANES] {
     let longest = first + LANES - 1;
-    let recent = &self.history[self.next + KEPT - 2 * longest..self.next + KEPT];
+    let compared = longest.max(self.shortest_compared);
+    let recent = &self.history[self.next + KEPT - longest - compared..self.next + KEPT];
     // a lane for each lag, the longest first, which puts the samples a lag behind in order
     let (mut products, mut energies) = ([0f32; LANES], [0f32; LANES]);
     let mut add = |age: usize, lanes: usize| {
-      let newer = recent[2 * longest - 1 - age];
-      let behind = &recent[longest - 1 - age..][..lanes];
+      let newer = recent[longest + compared - 1 - age];
+      let behind = &recent[compared - 1 - age..][..lanes];
       for ((product, energy), older) in products.iter_mut().zip(&mut energies).zip(behind) {
         *product += newer * older;
         *energy += newer * newer + older * older;
       }
     };
-    // every lag goes as far as the shortest, then each stops a sample before the next
-    for age in 0..first {
+    // every lag goes as far as the shortest or the least compared, then each stops a sample
+    // before the next
+    let all = first.max(self.shortest_compared).min(compared);
+    for age in 0..all {
       add(age, LANES);
     }
-    for age in first..longest {
+    for age in all..compared {
       add(age, longest - age);
     }
     let mut scores = [0.0; LANES];
@@ -494,7 +505,7 @@ impl Detector {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::signals::vowel_sampled_at;
+  use crate::signals::{VOWEL_HZ, spoken, vowel_sampled_at};
 
   const RATE: f32 = 48_000.0;
 
@@ -535,7 +546,7 @@ mod tests {
     let ago = |age: usize| detector.history[(detector.next + KEPT - 1 - age) % KEPT];
     let alone = |lag: usize| {
       let (mut product, mut energy) = (0.0, 0.0);
-      for age in 0..lag {
+      for age in 0..lag.max(detector.shortest_compared) {
         let (newer, older) = (ago(age), ago(age + lag));
         product += newer * older;
         energy += newer * newer + older * older;
@@ -672,6 +683,24 @@ mod tests {
           periods.is_some_and(|periods| periods <= 2.5),
           "{hz} Hz in {range:?} at {rate} Hz is found after {periods:?} periods"
         );
+      }
+    }
+  }
+
+  /// a consonant after a pause is noise, and the vowel after it starts with its formant
+  /// ringing alone before the next pulse. neither is taken for a pitch, though each can
+  /// repeat over a period or two of a high one
+  #[test]
+  fn a_consonant_and_the_ringing_after_it_are_no_pitch() {
+    let mut detector = Detector::new(RATE, Range::Mid);
+    for (index, x) in spoken(RATE, RATE as usize, VOWEL_HZ)
+      .into_iter()
+      .enumerate()
+    {
+      if let Some(period) = detector.push(x) {
+        // the vowel wanders a little over a semitone either way
+        let off = 12.0 * (RATE / period / VOWEL_HZ).log2();
+        assert!(off.abs() < 1.5, "{off} semitones off at {index}");
       }
     }
   }

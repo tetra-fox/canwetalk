@@ -26,3 +26,25 @@ pub(crate) fn vowel_sampled_at(rate: f32, samples: usize, hz: impl Fn(usize) -> 
     })
     .collect()
 }
+
+/// a vowel at `hz`, wandering a tenth of an octave either way, with a pause from 40 to 46
+/// percent of the way through and noise like a consonant from there to 52
+pub(crate) fn spoken(rate: f32, samples: usize, hz: f32) -> Vec<f32> {
+  let wander = |index: usize| {
+    let turn = (1.7 * index as f32 / rate).fract();
+    hz * 2f32.powf(0.1 * (std::f32::consts::TAU * turn).sin())
+  };
+  let mut voice = vowel_sampled_at(rate, samples, wander);
+  let mut state = 0x2545_f491_u32;
+  for (index, sample) in voice.iter_mut().enumerate() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    *sample = match 100 * index / samples {
+      40..46 => 0.0,
+      46..52 => 0.2 * (state as f32 / u32::MAX as f32 - 0.5),
+      _ => 0.1 * *sample,
+    };
+  }
+  voice
+}

@@ -384,7 +384,7 @@ mod tests {
   use nice_plug::params::internals::ParamPtr;
 
   use super::*;
-  use crate::signals::vowel_sampled_at;
+  use crate::signals::spoken;
 
   const RATE: f32 = 48_000.0;
 
@@ -626,25 +626,9 @@ mod tests {
   /// a voice about `hz` whose pitch rises and falls, with a gap of silence and then a burst
   /// of noise in it, and not the same on the two sides
   fn voice(rate: f32, seconds: f32, hz: f32) -> Vec<[f32; 2]> {
-    let samples = (rate * seconds) as usize;
-    let wander = |index: usize| {
-      let turn = (1.7 * index as f32 / rate).fract();
-      hz * 2f32.powf(0.1 * (std::f32::consts::TAU * turn).sin())
-    };
-    let mut voice = vowel_sampled_at(rate, samples, wander);
-    let mut state = 0x2545_f491_u32;
-    for (index, sample) in voice.iter_mut().enumerate() {
-      state ^= state << 13;
-      state ^= state >> 17;
-      state ^= state << 5;
-      *sample = match 100 * index / samples {
-        40..46 => 0.0,
-        46..52 => 0.2 * (state as f32 / u32::MAX as f32 - 0.5),
-        _ => 0.1 * *sample,
-      };
-    }
+    let voice = spoken(rate, (rate * seconds) as usize, hz);
     let behind = |index: usize| voice[index.saturating_sub(29)];
-    (0..samples)
+    (0..voice.len())
       .map(|index| [voice[index], 0.6 * voice[index] + 0.4 * behind(index)])
       .collect()
   }
@@ -1059,7 +1043,7 @@ mod tests {
   const REFERENCE: [(&str, u64); 36] = [
     ("follow", 0x68fc3332d2da7c64),
     ("follow shifted", 0xf270886f35a8f6d9),
-    ("follow mono", 0x61485eb5f2c31271),
+    ("follow mono", 0x1e0bed049eb17cb1),
     ("follow unanchored", 0x45c52177d30307cd),
     ("pitch", 0x0224ce4d1381e694),
     ("formant", 0xc25433c79d10dbbc),
@@ -1076,12 +1060,12 @@ mod tests {
     ("vibrato by the tempo", 0x68c0dff06732d53c),
     ("vibrato by the tempo of a stopped host", 0x04fce4ab1ec0d3a5),
     ("effects", 0x4c461c41c997f163),
-    ("effects mono", 0x60692fc09a5a0965),
+    ("effects mono", 0xfe13b99671b18ef9),
     ("chord live", 0x4972a1fa78fa2e17),
     ("mix", 0x642407fcd13192a8),
     ("bass", 0x8f1527fcfed414c1),
     ("bass at 192 kHz", 0x6f65ac5c42e4b489),
-    ("high", 0xcf41cb1d0a96641f),
+    ("high", 0xbc58d69ba0be6b40),
     ("detection range changes", 0xf28028c1ba2105c5),
     ("mode off", 0x08f9c7780d5bc223),
     ("mode mono", 0x642fdea960574c33),
@@ -1091,7 +1075,7 @@ mod tests {
     ("chord at 44.1 kHz", 0x246a81dde68fb5b3),
     ("chord at 96 kHz", 0x93962a5033a88663),
     ("chord at 192 kHz", 0x33169ed9b93d75f5),
-    ("four seconds of everything", 0x55caeff1b0b5d5ed),
+    ("four seconds of everything", 0xc38ff3a5c8addc26),
     ("unanchored at 96 kHz", 0x3454a6609385e0a7),
   ];
 
