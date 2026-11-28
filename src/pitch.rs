@@ -90,6 +90,10 @@ const STEADY_SECONDS: f32 = 0.01;
 /// moves further only from one sound to the next, and the best of the lags near the held one
 /// can run off that fast where the input is barely periodic
 const REACH_SEMITONES: f32 = 2.0;
+/// seconds a lost pitch still bounds the next one taken up. a harmonic or a resonance can
+/// repeat well enough to be taken the moment the fundamental under it fades, where a voice
+/// moving to another note leaves a gap or slides
+const REMEMBERED_SECONDS: f32 = 0.05;
 /// mean magnitude of an analysis sample below which the input is taken for silence
 const SILENCE_LEVEL: f32 = 5e-5;
 /// lags scored side by side: the ones tracking scores and one either side of them
@@ -161,8 +165,9 @@ pub(crate) struct Detector {
   longest_lag: usize,
   /// `SHORTEST_COMPARED_SECONDS` in analysis samples
   shortest_compared: usize,
-  /// `STEADY_SECONDS` in analysis samples
+  /// `STEADY_SECONDS` and `REMEMBERED_SECONDS` in analysis samples
   steady_samples: f32,
+  remembered_samples: u64,
   analysis_filter: Biquad,
   crossing_filters: [Biquad; 2],
   /// input samples until the next analysis sample
@@ -188,6 +193,8 @@ pub(crate) struct Detector {
   until_track: usize,
   /// the pitch taken up, while there is one
   held: Option<Held>,
+  /// the pitch last held, from when it was lost
+  lost: Option<Held>,
   /// score the next estimate has to reach, LOCK_SCORE until one reaches it and HOLD_SCORE
   /// from then until one falls to HOLD_SCORE or under
   needed: f32,
@@ -203,6 +210,7 @@ impl Detector {
       longest_lag: 0,
       shortest_compared: 0,
       steady_samples: 1.0,
+      remembered_samples: 0,
       analysis_filter: Biquad::default(),
       crossing_filters: [Biquad::default(); 2],
       until_tick: 1,
@@ -217,6 +225,7 @@ impl Detector {
       level: 0.0,
       until_track: TRACK_EVERY,
       held: None,
+      lost: None,
       needed: LOCK_SCORE,
     };
     detector.set_range(range);
@@ -249,6 +258,7 @@ impl Detector {
       ((analysis_rate / spec.lowest_hz) as usize).min(HISTORY / 2 - TRACK_ABOVE - 2);
     self.shortest_compared = (analysis_rate * SHORTEST_COMPARED_SECONDS).ceil() as usize;
     self.steady_samples = analysis_rate * STEADY_SECONDS;
+    self.remembered_samples = (analysis_rate * REMEMBERED_SECONDS) as u64;
     self.analysis_filter = Biquad::low_pass(spec.analysis_hz, self.sample_rate);
     self.crossing_filters = [
       Biquad::low_pass(spec.crossing_hz, self.sample_rate),
@@ -269,6 +279,7 @@ impl Detector {
     self.patience = 0;
     self.until_track = TRACK_EVERY;
     self.held = None;
+    self.lost = None;
     self.needed = LOCK_SCORE;
   }
 
@@ -300,7 +311,7 @@ impl Detector {
         self.patience -= 1;
         if self.patience == 0 {
           self.until_look = None;
-          self.held = None;
+          self.lose();
         }
       }
       false
@@ -337,25 +348,41 @@ impl Detector {
         Some(CROSSINGS_TO_RETRY)
       };
     }
-    self.held = held;
+    match held {
+      Some(_) => self.held = held,
+      None => self.lose(),
+    }
     held
       .and(period)
       .map(|period| period * self.decimation as f32)
   }
 
+  fn lose(&mut self) {
+    if let Some(held) = self.held.take() {
+      self.lost = Some(held);
+    }
+  }
+
   /// what is held once an estimate of `period` analysis samples at `lag` is taken, none if it is
-  /// out of reach of the pitch held
+  /// out of reach of the pitch held, or of the one lost if that was lately
   fn steadied(&self, lag: usize, period: f32) -> Option<Held> {
     let octaves = period.log2();
-    let steady = match self.held {
-      Some(Held { steady, at, .. }) => {
-        if 12.0 * (octaves - steady).abs() > REACH_SEMITONES {
+    let out_of_reach = |steady: f32| 12.0 * (octaves - steady).abs() > REACH_SEMITONES;
+    let steady = match (self.held, self.lost) {
+      (Some(Held { steady, at, .. }), _) => {
+        if out_of_reach(steady) {
           return None;
         }
         let follow = 1.0 - (-((self.now - at) as f32) / self.steady_samples).exp();
         steady + follow * (octaves - steady)
       }
-      None => octaves,
+      (None, Some(lost)) if self.now - lost.at <= self.remembered_samples => {
+        if out_of_reach(lost.steady) {
+          return None;
+        }
+        octaves
+      }
+      (None, _) => octaves,
     };
     Some(Held {
       lag,
@@ -386,7 +413,7 @@ impl Detector {
     let span = self.now - self.crossings[0];
     if self.level <= SILENCE_LEVEL * span as f32 {
       self.until_look = None;
-      self.held = None;
+      self.lose();
       return false;
     }
     true
