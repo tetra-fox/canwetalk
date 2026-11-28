@@ -83,6 +83,13 @@ const HALVES_PERCENT: u64 = 2;
 /// the least a score compares, so that a short lag is compared over several of its periods.
 /// noise, or a formant ringing after one pulse, can repeat for a period or two by chance
 const SHORTEST_COMPARED_SECONDS: f32 = 0.005;
+/// seconds a one-pole filter follows the held pitch by. an estimate is compared with that,
+/// where the pitch has been, and not only with the last estimate
+const STEADY_SECONDS: f32 = 0.01;
+/// semitones an estimate may be from the followed pitch and still be the held pitch. a voice
+/// moves further only from one sound to the next, and the best of the lags near the held one
+/// can run off that fast where the input is barely periodic
+const REACH_SEMITONES: f32 = 2.0;
 /// mean magnitude of an analysis sample below which the input is taken for silence
 const SILENCE_LEVEL: f32 = 5e-5;
 /// lags scored side by side: the ones tracking scores and one either side of them
@@ -135,6 +142,17 @@ impl Biquad {
 /// a lag and the scores of the `LANES` lags from it up
 type Scored = (usize, [f32; LANES]);
 
+/// what is kept of a pitch taken up
+#[derive(Clone, Copy)]
+struct Held {
+  /// the lag of the last estimate, in analysis samples
+  lag: usize,
+  /// octaves of the period the estimates are followed to by `STEADY_SECONDS`
+  steady: f32,
+  /// when `steady` was last moved
+  at: u64,
+}
+
 pub(crate) struct Detector {
   sample_rate: f32,
   range: Range,
@@ -143,6 +161,8 @@ pub(crate) struct Detector {
   longest_lag: usize,
   /// `SHORTEST_COMPARED_SECONDS` in analysis samples
   shortest_compared: usize,
+  /// `STEADY_SECONDS` in analysis samples
+  steady_samples: f32,
   analysis_filter: Biquad,
   crossing_filters: [Biquad; 2],
   /// input samples until the next analysis sample
@@ -166,8 +186,8 @@ pub(crate) struct Detector {
   /// sum of analysis sample magnitudes since the fresh start
   level: f32,
   until_track: usize,
-  /// the lag taken for the period, in analysis samples
-  held: Option<usize>,
+  /// the pitch taken up, while there is one
+  held: Option<Held>,
   /// score the next estimate has to reach, LOCK_SCORE until one reaches it and HOLD_SCORE
   /// from then until one falls to HOLD_SCORE or under
   needed: f32,
@@ -182,6 +202,7 @@ impl Detector {
       shortest_lag: 0,
       longest_lag: 0,
       shortest_compared: 0,
+      steady_samples: 1.0,
       analysis_filter: Biquad::default(),
       crossing_filters: [Biquad::default(); 2],
       until_tick: 1,
@@ -227,6 +248,7 @@ impl Detector {
     self.longest_lag =
       ((analysis_rate / spec.lowest_hz) as usize).min(HISTORY / 2 - TRACK_ABOVE - 2);
     self.shortest_compared = (analysis_rate * SHORTEST_COMPARED_SECONDS).ceil() as usize;
+    self.steady_samples = analysis_rate * STEADY_SECONDS;
     self.analysis_filter = Biquad::low_pass(spec.analysis_hz, self.sample_rate);
     self.crossing_filters = [
       Biquad::low_pass(spec.crossing_hz, self.sample_rate),
@@ -297,12 +319,16 @@ impl Detector {
       best = self.look(best);
     }
     let (lag, score) = best;
-    let accepted = score >= self.needed;
-    self.needed = if score >= LOCK_SCORE || (self.needed == HOLD_SCORE && score > HOLD_SCORE) {
-      HOLD_SCORE
-    } else {
-      LOCK_SCORE
-    };
+    let scored = tracked.map(|(_, scored)| scored);
+    let period = (score >= self.needed).then(|| self.refined(lag, score, scored));
+    let held = period.and_then(|period| self.steadied(lag, period));
+    let accepted = held.is_some();
+    self.needed =
+      if accepted && (score >= LOCK_SCORE || (self.needed == HOLD_SCORE && score > HOLD_SCORE)) {
+        HOLD_SCORE
+      } else {
+        LOCK_SCORE
+      };
     if look {
       // found, so the next look starts from fresh crossings. otherwise it comes soon
       self.until_look = if accepted {
@@ -311,13 +337,31 @@ impl Detector {
         Some(CROSSINGS_TO_RETRY)
       };
     }
-    if !accepted {
-      self.held = None;
-      return None;
-    }
-    self.held = Some(lag);
-    let scored = tracked.map(|(_, scored)| scored);
-    Some(self.refined(lag, score, scored) * self.decimation as f32)
+    self.held = held;
+    held
+      .and(period)
+      .map(|period| period * self.decimation as f32)
+  }
+
+  /// what is held once an estimate of `period` analysis samples at `lag` is taken, none if it is
+  /// out of reach of the pitch held
+  fn steadied(&self, lag: usize, period: f32) -> Option<Held> {
+    let octaves = period.log2();
+    let steady = match self.held {
+      Some(Held { steady, at, .. }) => {
+        if 12.0 * (octaves - steady).abs() > REACH_SEMITONES {
+          return None;
+        }
+        let follow = 1.0 - (-((self.now - at) as f32) / self.steady_samples).exp();
+        steady + follow * (octaves - steady)
+      }
+      None => octaves,
+    };
+    Some(Held {
+      lag,
+      steady,
+      at: self.now,
+    })
   }
 
   /// records a crossing at the current time and says whether it is time to look
@@ -409,6 +453,7 @@ impl Detector {
   fn track(&self) -> Option<((usize, f32), Scored)> {
     let held = self
       .held
+      .map(|held| held.lag)
       .filter(|&lag| self.shortest_lag < lag && lag < self.longest_lag)?;
     let lags = held.saturating_sub(TRACK_BELOW).max(1)..=held + TRACK_ABOVE;
     let first = held.saturating_sub(TRACK_BELOW + 1);
@@ -621,6 +666,31 @@ mod tests {
     assert!(estimates(noise, RATE, Range::Mid).is_empty());
     let silence = std::iter::repeat_n(0.0, RATE as usize / 2);
     assert!(estimates(silence, RATE, Range::Mid).is_empty());
+  }
+
+  /// a voice slides an octave in a tenth of a second at the fastest, which is still one pitch
+  /// moving and is followed without losing it
+  #[test]
+  fn the_fastest_slide_of_a_voice_is_followed() {
+    let (before, rise) = (RATE as usize / 2, RATE as usize / 5);
+    let mut detector = Detector::new(RATE, Range::Mid);
+    let (mut phase, mut lost, mut last) = (0f32, 0, None);
+    for i in 0..before + rise + before {
+      let risen = (i.saturating_sub(before) as f32 / rise as f32).min(1.0);
+      let hz = 110.0 * 4f32.powf(risen);
+      phase = (phase + hz / RATE).fract();
+      let was_held = detector.voiced();
+      if let Some(period) = detector.push(phase - 0.5) {
+        last = Some((RATE / period, hz));
+      }
+      lost += usize::from(was_held && !detector.voiced());
+    }
+    let (detected, actual) = last.expect("the slide was found");
+    assert!(
+      (detected / actual - 1.0).abs() < 0.01,
+      "{actual} Hz detected as {detected} Hz"
+    );
+    assert_eq!(lost, 0, "the pitch was dropped on the way");
   }
 
   /// a held pitch that glides is followed without losing it
