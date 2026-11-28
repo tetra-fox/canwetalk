@@ -325,36 +325,39 @@ impl Detector {
 
     // a held lag that has left the range scores nothing, like no lag at all
     let tracked = self.track();
-    let mut best = tracked.map_or((0, 0.0), |(best, _)| best);
-    if look {
-      best = self.look(best);
-    }
-    let (lag, score) = best;
     let scored = tracked.map(|(_, scored)| scored);
-    let period = (score >= self.needed).then(|| self.refined(lag, score, scored));
-    let held = period.and_then(|period| self.steadied(lag, period));
-    let accepted = held.is_some();
-    self.needed =
-      if accepted && (score >= LOCK_SCORE || (self.needed == HOLD_SCORE && score > HOLD_SCORE)) {
+    let tracked_best = tracked.map_or((0, 0.0), |(best, _)| best);
+    // what a look finds goes first, and the held pitch stands where that is out of its reach
+    let looked = look.then(|| self.look(tracked_best));
+    let taken = looked
+      .into_iter()
+      .chain([tracked_best])
+      .find_map(|(lag, score)| {
+        let period = (score >= self.needed).then(|| self.refined(lag, score, scored))?;
+        Some((self.steadied(lag, period)?, score, period))
+      });
+    self.needed = match taken {
+      Some((_, score, _))
+        if score >= LOCK_SCORE || (self.needed == HOLD_SCORE && score > HOLD_SCORE) =>
+      {
         HOLD_SCORE
-      } else {
-        LOCK_SCORE
-      };
+      }
+      _ => LOCK_SCORE,
+    };
     if look {
       // found, so the next look starts from fresh crossings. otherwise it comes soon
-      self.until_look = if accepted {
+      self.until_look = if taken.is_some() {
         None
       } else {
         Some(CROSSINGS_TO_RETRY)
       };
     }
-    match held {
-      Some(_) => self.held = held,
-      None => self.lose(),
-    }
-    held
-      .and(period)
-      .map(|period| period * self.decimation as f32)
+    let (held, _, period) = taken.or_else(|| {
+      self.lose();
+      None
+    })?;
+    self.held = Some(held);
+    Some(period * self.decimation as f32)
   }
 
   fn lose(&mut self) {
